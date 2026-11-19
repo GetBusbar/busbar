@@ -209,7 +209,8 @@ impl NativeListener {
                 leftover: &[],
                 head: &[],
                 local_fingerprint: "",
-                mono_ns: busbar_kernel::store::monotonic_ns(),
+                // The host clock the plugin's Host::mono_ns and WAKE_AT are stated on.
+                mono_ns: busbar_plugin_abi::host_side::host_vt::vt::mono(),
             },
             self.limits.stall_ms,
             Instant::now(),

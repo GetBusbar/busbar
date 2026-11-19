@@ -80,11 +80,19 @@ pub const CARRIER_KEYS: &[(&str, &str)] = &[
 /// unknown key, a key stated twice, a value that is not a `linked` row on the `min3-images` axis (only an admitted
 /// image has a header to admit), and one row under two keys (one image frames one carrier). No table: no carrier
 /// is assigned.
+///
+/// A value names the row by its key or by its package (`rtc = "busbar-transport-webrtc"`); the package spelling is
+/// the one a build that excludes the plugin finds and drops with the plugin's other rows (the FIPS repository's
+/// `ci/exclude-plugins.sh` deletes a row naming `busbar-<package>`). The returned row is always the key.
 pub fn carrier_rows(manifest: &str) -> Vec<(String, &'static str, String)> {
     let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
     let mut out: Vec<(String, &'static str, String)> = Vec::new();
-    for (key, row) in metadata_map(manifest, CARRIERS_TABLE) {
+    for (key, named) in metadata_map(manifest, CARRIERS_TABLE) {
+        let row = plugins
+            .iter()
+            .find(|(feature, krate)| *feature == named || *krate == named)
+            .map_or(named, |(feature, _)| feature.clone());
         let constant = CARRIER_KEYS
             .iter()
             .find(|(word, _)| *word == key)

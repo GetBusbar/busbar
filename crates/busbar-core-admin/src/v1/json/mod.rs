@@ -666,14 +666,73 @@ fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Resp
     let bare = bare.trim_matches('"');
     bare.parse::<u64>().map(Some).map_err(|_| {
         err_json_cond(
-            &AdminError::Validation(
-                "malformed If-Match: expected the config-plane ETag (a quoted config version, e.g. \
-                 \"42\") or *"
-                    .into(),
-            ),
+            &AdminError::Validation(MALFORMED_CONFIG_IF_MATCH.into()),
             Cond::MalformedIfMatch,
         )
     })
+}
+
+/// The refusal text of a malformed config-plane `If-Match`: it names the form every config write
+/// takes, the generation ETag.
+const MALFORMED_CONFIG_IF_MATCH: &str = "malformed If-Match: expected the quoted config ETag \
+     \"<deployment_id>.<config_generation>\" from a config read or write, or *";
+
+/// `POST /restart`'s `If-Match`. The config-plane ETag every config write takes is accepted, and
+/// so is the bare quoted `config_version` the route took first, so no current client breaks.
+#[derive(Debug, PartialEq, Eq)]
+enum RestartIfMatch {
+    /// `"<deployment_id>.<config_generation>"`, as sent: compared to the live config ETag.
+    Generation(String),
+    /// A bare quoted `config_version` (`"7"`): compared to the process's `config_version`.
+    Version(u64),
+}
+
+impl RestartIfMatch {
+    /// `None` (no guard) when absent or `*`; a malformed value is the 400 every config write gives.
+    fn read(headers: &axum::http::HeaderMap) -> Result<Option<Self>, Box<Response>> {
+        let Some(raw) = headers.get(axum::http::header::IF_MATCH) else {
+            return Ok(None);
+        };
+        let value = raw.to_str().unwrap_or("").trim();
+        if value == "*" {
+            return Ok(None);
+        }
+        let tag = value.strip_prefix("W/").unwrap_or(value);
+        match tag
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+        {
+            Some(inner) if !inner.is_empty() => Ok(Some(match inner.parse::<u64>() {
+                Ok(version) => Self::Version(version),
+                Err(_) => Self::Generation(tag.to_string()),
+            })),
+            _ => Err(Box::new(err_json_cond(
+                &AdminError::Validation(
+                    "malformed If-Match: expected the quoted config ETag \
+                     \"<deployment_id>.<config_generation>\" from a config read or write (a \
+                     quoted config_version is still accepted), or *"
+                        .into(),
+                ),
+                Cond::MalformedIfMatch,
+            ))),
+        }
+    }
+
+    /// The 409 when the guard no longer matches `app`, the configuration the restart is admitted
+    /// against.
+    fn stale(&self, app: &busbar_kernel::state::App) -> Option<AdminError> {
+        match self {
+            Self::Version(version) => stale_if_match(Some(*version), app.config_version),
+            Self::Generation(tag) => {
+                let current = generation::config_etag(app);
+                (*tag != current).then(|| {
+                    AdminError::VersionConflict(format!(
+                        "If-Match {tag} is stale (current is {current})"
+                    ))
+                })
+            }
+        }
+    }
 }
 
 fn stale_if_match(expected: Option<u64>, current: u64) -> Option<AdminError> {

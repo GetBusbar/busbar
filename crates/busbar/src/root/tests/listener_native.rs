@@ -299,6 +299,10 @@ impl TransportPort for ObservedBegin {
 
 #[tokio::test]
 async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_begin() {
+    // The host clock's zero point is this process's first reading of it, taken here, before any
+    // other clock in the process starts: a begin stated on another zero point is then 50 ms off.
+    let _ = busbar_plugin_abi::host_side::host_vt::vt::mono();
+    std::thread::sleep(Duration::from_millis(50));
     busbar_core_admin::install();
     let app = crate::root::min3_auth::tests::physical_app().await;
     let port = Arc::new(ObservedBegin {
@@ -337,12 +341,13 @@ async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_beg
         .unwrap();
     let client_address = client.local_addr().unwrap();
     let (stream, _) = listener.accept().await.unwrap();
-    let before = crate::root::loader::dispatch::now_ns();
+    // ConnInfo.mono_ns is on the clock the plugin's Host::mono_ns and its WAKE_AT are on.
+    let before = busbar_plugin_abi::host_side::host_vt::vt::mono();
     assert!(matches!(
         native.accepted(stream, None).await,
         Err(InputError::Transport(_))
     ));
-    let after = crate::root::loader::dispatch::now_ns();
+    let after = busbar_plugin_abi::host_side::host_vt::vt::mono();
     let seen = port.seen.lock().unwrap().take().unwrap();
     assert_eq!(seen.0, client_address.to_string());
     assert_eq!(seen.1, server_address.to_string());

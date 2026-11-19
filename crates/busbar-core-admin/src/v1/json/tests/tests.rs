@@ -1252,3 +1252,63 @@ fn restart_answer_does_not_carry_supervisor_detected() {
         "RestartView still documents supervisor_detected: {view:?}"
     );
 }
+
+fn if_match(value: &str) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        axum::http::HeaderValue::from_str(value).unwrap(),
+    );
+    headers
+}
+
+/// `POST /restart` takes the generation ETag every config write takes, and still takes the bare
+/// quoted `config_version` it took first.
+#[test]
+fn restart_if_match_takes_the_generation_etag_and_the_version_form() {
+    let etag = "\"dep_0123456789abcdef0123456789abcdef.42\"";
+    assert_eq!(
+        RestartIfMatch::read(&if_match(etag)).unwrap(),
+        Some(RestartIfMatch::Generation(etag.to_string()))
+    );
+    assert_eq!(
+        RestartIfMatch::read(&if_match(&format!("W/{etag}"))).unwrap(),
+        Some(RestartIfMatch::Generation(etag.to_string())),
+        "a weak prefix compares as the config writes compare it"
+    );
+    assert_eq!(
+        RestartIfMatch::read(&if_match("\"7\"")).unwrap(),
+        Some(RestartIfMatch::Version(7))
+    );
+    assert_eq!(RestartIfMatch::read(&if_match("*")).unwrap(), None);
+    assert_eq!(
+        RestartIfMatch::read(&axum::http::HeaderMap::new()).unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn malformed_if_match_names_the_generation_etag() {
+    for value in ["7", "\"\"", "dep_0123456789abcdef0123456789abcdef.42"] {
+        let refused = RestartIfMatch::read(&if_match(value)).expect_err(value);
+        let (status, _, body) = parts(*refused).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+        assert_eq!(body["error"]["reason"], "malformed_if_match", "{value}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("<deployment_id>.<config_generation>"),
+            "{value}: {message}"
+        );
+    }
+    let mut headers = if_match("not-a-tag");
+    let refused = if_match_version(&headers).expect_err("unquoted");
+    let (status, _, body) = parts(refused).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("<deployment_id>.<config_generation>") && !message.contains("\"42\""),
+        "the config-plane refusal names the generation ETag, not a version: {message}"
+    );
+    headers.clear();
+    assert_eq!(if_match_version(&headers).unwrap(), None);
+}

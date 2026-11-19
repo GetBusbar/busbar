@@ -140,9 +140,12 @@ busbar-auth-oauth = { workspace = true }
 # THE TRANSPORTS: MIN-3 images only. The http transport (its logic crate's `PLUGIN` header) on `min3-images`
 # declares the `listen` and `admin_listen` slots and carries the `http` dial carrier (deletion plan E3). The old
 # door rows are gone with the old plugin interface: tcp (the listener binds core's own sockets) and stdio (core's
-# `--stdio` over the plane's ROUTE_LINE) are retired; grpc (E8), ws (E9b) and webrtc (E10) are not served until
-# their MIN-3 images are linked.
+# `--stdio` over the plane's ROUTE_LINE) are retired; grpc (E8) and ws (E9b) are not served until their MIN-3
+# images are linked.
 busbar-transport-http = { workspace = true }
+# WebRTC: a MIN-3 image (its logic crate's `PLUGIN` header) in the datagram role (ICE, SRTP, SCTP), on
+# `min3-images`; it carries the `rtc` carrier (deletion plan E10). Always linked.
+busbar-transport-webrtc = { workspace = true }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
@@ -202,6 +205,7 @@ openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-sch
 loom-model = ["busbar-kernel/loom-model"]
 
 [package.metadata.busbar.always-on]
+transport-webrtc = "busbar-transport-webrtc"
 plane-llm-door = "busbar-plane-llm"
 store-memory = "busbar-store-memory"
 secret-env = "busbar-secret-env"
@@ -253,6 +257,7 @@ secret-env = "busbar-secret-env"
 secret-file = "busbar-secret-file"
 # THE TRANSPORTS: MIN-3 images (the http image carries the `http` dial carrier and the listener slots).
 transport-http = "busbar-transport-http"
+transport-webrtc = "busbar-transport-webrtc"
 # THE PLANES: MIN-3 images.
 plane-decisions = "busbar-plane-decisions"
 plane-llm-door = "busbar-plane-llm"
@@ -276,6 +281,8 @@ auth-sigv4 = "min3-images"
 auth-oauth = "min3-images"
 # The http transport is a MIN-3 image: its PLUGIN header, admitted as one transport instance.
 transport-http = "min3-images"
+# The webrtc transport is a MIN-3 image in the datagram role, admitted as one transport instance.
+transport-webrtc = "min3-images"
 plane-decisions = "min3-images"
 # MIN-3 planes register their PLUGIN header; open describes their dialects and routes.
 plane-llm-door = "min3-images"
@@ -345,16 +352,18 @@ row = "auth-admin-tokens"
 # key per carrier (`http`, `grpc`, `websocket`, `rtc`), each naming the linked row whose MIN-3 image
 # carries that dial, stated here in packaging so the root's source names no transport:
 #   [package.metadata.busbar.carriers]
-#   http = "<row key>"
-# The generator (src/linked_gen.rs `carrier_rows`) refuses an unknown key, a key stated twice, a value
+#   http = "<the row's package, or its row key>"
+# Each value here is the row's PACKAGE name (`busbar-...`), so a build that excludes the plugin drops this line with
+# the plugin's other rows: the FIPS repository's `ci/exclude-plugins.sh` deletes a non-comment line naming
+# `busbar-<package>`, and its post-check refuses any remaining mention. The generator (src/linked_gen.rs `carrier_rows`) refuses an unknown key, a key stated twice, a value
 # that is not a linked row on `min3-images`, and one row under two keys (one image frames one carrier);
 # boot and every config read refuse an assigned image that is not an admitted transport with the
-# carrier's role. http is assigned with its row's move to `min3-images` (deletion step E3); grpc (E8),
-# websocket (E9b) and rtc (E10) are not yet, so `busbar --list-plugins` and the boot line print `none`
-# for them. The FIPS build's exclude script must drop an
-# excluded row's key with its row (its post-check refuses any remaining mention of the package).
+# carrier's role. http (deletion step E3) and rtc (E10) are assigned with their rows' move to
+# `min3-images`; grpc (E8) and websocket (E9b) are not yet, so `busbar --list-plugins` and the boot line
+# print `none` for them.
 [package.metadata.busbar.carriers]
-http = "transport-http"
+http = "busbar-transport-http"
+rtc = "busbar-transport-webrtc"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
@@ -607,6 +616,11 @@ busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", re
 # `linked_hook_ranking` tests prove the double states what this door states.
 busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "0e2337f63338bd806c44d9554deb356f3b7d5cfc" }
 busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-complexity", rev = "372b3a6f618fbe387d343d4fbac10956b02932e4" }
+# THE WEBRTC TRANSPORT (kind: transport), a MIN-3 image in the datagram role (ICE, SRTP, SCTP), pulled at a
+# pinned rev; the logic crate whose `PLUGIN` header the root admits. The pin is its dev head a9d7912 (house/oss-green
+# merged: the image declares its alias `webrtc` as a former name). Its dropped-in cdylib twin and its gates live in
+# that repo's plugin CI. Its media stack (str0m, aes) is pinned in that repo's own manifest.
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "a9d7912abcd63ec991c649eb135b44826f726b1f" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its tests link the external testkit's R-FIX3
@@ -890,6 +904,13 @@ sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef
 # Canonical JSON: olpc-cjson 0.1.4 with serde_json optional and a sonic-rs Formatter, offered upstream
 # (awslabs/tough). busbar's workspace row turns its default (serde_json) off and takes the sonic-rs formatter.
 olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }
+# The webrtc image's media stack random source (IF §8.7 round 18, §15.4 rule 4): str0m-proto gains `set_fill`, which
+# the plugin points at the host in `open`, so every ICE credential is Host-random. One fork of the str0m workspace at
+# its 0.24.1 tag plus that commit (not yet proposed upstream to algesten/str0m); the same three rows and revision the
+# webrtc repository's own manifest carries. A patch applies only at the consuming workspace root.
+str0m = { git = "https://github.com/MattJackson/str0m", rev = "36833da71bb86b5dfc9a88e3f56afa3353bb70db" }
+str0m-proto = { git = "https://github.com/MattJackson/str0m", rev = "36833da71bb86b5dfc9a88e3f56afa3353bb70db" }
+is = { git = "https://github.com/MattJackson/str0m", rev = "36833da71bb86b5dfc9a88e3f56afa3353bb70db" }
 
 [profile.dev]
 # The assembled distribution links every first-party plugin into one `busbar` test executable.

@@ -93,7 +93,7 @@ const HOP_BY_HOP: &[&str] = &[
 
 /// The cause stages a failed connection reports (`ConnCause::stage`), the connection table's own numbering.
 pub mod stage {
-    pub use busbar_contract::abi::host::conn::connector::{
+    pub use busbar_contract::conn::codes::{
         CAUSE_CONNECT as CONNECT, CAUSE_DEADLINE as DEADLINE, CAUSE_FRAMER as FRAMER,
         CAUSE_SECURITY as SECURITY,
     };

@@ -13,7 +13,7 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
@@ -54,18 +54,36 @@ struct Sched {
     inbox: Vec<Task>,
 }
 
+/// One live sleep: its deadline on the clock `run` is given, whether it fired, the task waiting on it.
 struct Slot {
+    id: u64,
     deadline_ns: u64,
     fired: bool,
     waker: Option<Waker>,
 }
 
+/// The conn's live sleeps, in no order. Each `MemSleep` names its slot by `id` and removes it when
+/// dropped, so `live` holds only sleeps someone still awaits. Its buffer is kept by `Shared`, grows
+/// to the most sleeps live at once (hyper keeps a few per conn) and is released with the conn.
+#[derive(Default)]
+struct Timers {
+    next: u64,
+    live: Vec<Slot>,
+}
+impl Timers {
+    fn slot(&mut self, id: u64) -> Option<&mut Slot> {
+        self.live.iter_mut().find(|s| s.id == id)
+    }
+}
+
 struct Shared {
     pipes: Mutex<Pipes>,
     sched: Mutex<Sched>,
-    timers: Mutex<Vec<Weak<Mutex<Slot>>>>,
+    timers: Mutex<Timers>,
     now_ns: AtomicU64,
-    /// The anchor `std::time::Instant` deadlines (hyper's timer API) are measured from.
+    /// The `Instant` that stands for zero on the clock `run` is given: `MemTimer::now` answers
+    /// `base + now_ns`, and a deadline `Instant` (hyper's timer API) is read back as its distance
+    /// from `base`. Only an anchor: no time is ever read from it.
     base: Instant,
 }
 
@@ -111,7 +129,7 @@ impl MemIo {
             shared: Arc::new(Shared {
                 pipes: Mutex::new(Pipes::default()),
                 sched: Mutex::new(Sched::default()),
-                timers: Mutex::new(Vec::new()),
+                timers: Mutex::new(Timers::default()),
                 now_ns: AtomicU64::new(0),
                 base: Instant::now(),
             }),
@@ -252,17 +270,13 @@ impl MemIo {
             lock(&self.shared.sched).ready.push_back(id);
         }
     }
+    /// One walk of the live sleeps under one lock; the due ones' tasks are woken after it is released.
     fn fire_timers(&self, now: u64) {
         let mut wakers = Vec::new();
-        {
-            let mut timers = lock(&self.shared.timers);
-            timers.retain(|w| w.strong_count() > 0);
-            for slot in timers.iter().filter_map(Weak::upgrade) {
-                let mut s = lock(&slot);
-                if !s.fired && s.deadline_ns <= now {
-                    s.fired = true;
-                    wakers.extend(s.waker.take());
-                }
+        for s in lock(&self.shared.timers).live.iter_mut() {
+            if !s.fired && s.deadline_ns <= now {
+                s.fired = true;
+                wakers.extend(s.waker.take());
             }
         }
         for w in wakers {
@@ -271,12 +285,10 @@ impl MemIo {
     }
     fn earliest(&self) -> Option<u64> {
         lock(&self.shared.timers)
+            .live
             .iter()
-            .filter_map(Weak::upgrade)
-            .filter_map(|slot| {
-                let s = lock(&slot);
-                (!s.fired).then_some(s.deadline_ns)
-            })
+            .filter(|s| !s.fired)
+            .map(|s| s.deadline_ns)
             .min()
     }
 }
@@ -293,9 +305,13 @@ impl hyper::rt::Read for MemStream {
     ) -> Poll<io::Result<()>> {
         let mut p = lock(&self.shared.pipes);
         if !p.read.is_empty() {
+            // Straight from the queue's two slices into hyper's cursor, then dropped from the queue.
             let n = p.read.len().min(buf.remaining());
-            let chunk: Vec<u8> = p.read.drain(..n).collect();
-            buf.put_slice(&chunk);
+            let (front, back) = p.read.as_slices();
+            let a = front.len().min(n);
+            buf.put_slice(&front[..a]);
+            buf.put_slice(&back[..n - a]);
+            p.read.drain(..n);
             return Poll::Ready(Ok(()));
         }
         if p.eof {
@@ -370,23 +386,45 @@ pub struct MemTimer {
     shared: Arc<Shared>,
 }
 impl MemTimer {
+    /// One allocation, the box hyper's trait asks for: the slot lives in the conn's `Timers`.
     fn sleep_at(&self, deadline_ns: u64) -> Pin<Box<dyn hyper::rt::Sleep>> {
-        let slot = Arc::new(Mutex::new(Slot {
-            deadline_ns,
-            fired: false,
-            waker: None,
-        }));
-        lock(&self.shared.timers).push(Arc::downgrade(&slot));
+        let id = {
+            let mut timers = lock(&self.shared.timers);
+            let id = timers.next;
+            timers.next = id.wrapping_add(1);
+            timers.live.push(Slot {
+                id,
+                deadline_ns,
+                fired: false,
+                waker: None,
+            });
+            id
+        };
         Box::pin(MemSleep {
             shared: self.shared.clone(),
-            slot,
+            id,
         })
     }
+    /// A deadline `Instant` as nanoseconds on the clock `run` is given: its distance from `base`.
     fn offset(&self, at: Instant) -> u64 {
         u64::try_from(at.saturating_duration_since(self.shared.base).as_nanos()).unwrap_or(u64::MAX)
     }
+    /// The `Instant` that names `ns` on the clock `run` is given: the inverse of `offset`. An
+    /// `Instant` reaches far more than 2^64 nanoseconds (585 years) past any `base` on every std
+    /// target, so the add does not fail; `base` only stands in for a time no `Instant` can name.
+    fn instant_at(&self, ns: u64) -> Instant {
+        self.shared
+            .base
+            .checked_add(Duration::from_nanos(ns))
+            .unwrap_or(self.shared.base)
+    }
 }
 impl hyper::rt::Timer for MemTimer {
+    /// The time `run` was last given, never the OS clock: hyper states its deadlines as
+    /// `now() + d`, so each one lands on the one clock `run` compares with and WAKE_AT names.
+    fn now(&self) -> Instant {
+        self.instant_at(self.shared.now_ns.load(Ordering::Acquire))
+    }
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn hyper::rt::Sleep>> {
         let add = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
         self.sleep_at(
@@ -402,18 +440,20 @@ impl hyper::rt::Timer for MemTimer {
     fn reset(&self, sleep: &mut Pin<Box<dyn hyper::rt::Sleep>>, new_deadline: Instant) {
         let at = self.offset(new_deadline);
         if let Some(s) = sleep.as_mut().downcast_mut_pin::<MemSleep>() {
-            let mut slot = lock(&s.slot);
-            slot.deadline_ns = at;
-            slot.fired = false;
+            if let Some(slot) = lock(&s.shared.timers).slot(s.id) {
+                slot.deadline_ns = at;
+                slot.fired = false;
+            }
         } else {
             *sleep = self.sleep_at(at);
         }
     }
 }
 
+/// A sleep hyper holds: its slot in the conn's `Timers`, by id, for as long as it lives.
 struct MemSleep {
     shared: Arc<Shared>,
-    slot: Arc<Mutex<Slot>>,
+    id: u64,
 }
 impl hyper::rt::Sleep for MemSleep {}
 
@@ -421,13 +461,32 @@ impl Future for MemSleep {
     type Output = ();
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let now = self.shared.now_ns.load(Ordering::Acquire);
-        let mut s = lock(&self.slot);
+        let mut timers = lock(&self.shared.timers);
+        // The slot is removed only when this sleep is dropped, so it is always there.
+        let Some(s) = timers.slot(self.id) else {
+            return Poll::Ready(());
+        };
         if s.fired || s.deadline_ns <= now {
             s.fired = true;
             return Poll::Ready(());
         }
-        s.waker = Some(cx.waker().clone());
+        match &mut s.waker {
+            Some(w) if w.will_wake(cx.waker()) => {}
+            w => *w = Some(cx.waker().clone()),
+        }
         Poll::Pending
+    }
+}
+
+impl Drop for MemSleep {
+    fn drop(&mut self) {
+        let gone = {
+            let mut timers = lock(&self.shared.timers);
+            let at = timers.live.iter().position(|s| s.id == self.id);
+            at.map(|i| timers.live.swap_remove(i))
+        };
+        // The slot's waker is released after the lock, as it was when the slot was its own `Arc`.
+        drop(gone);
     }
 }
 
@@ -583,6 +642,148 @@ mod tests {
         let mut out = Rec::default();
         m.flush(&mut out).unwrap();
         assert!(out.0.is_empty());
+    }
+
+    #[test]
+    fn a_dropped_sleep_leaves_no_slot_and_names_no_wake_at() {
+        let mut m = MemIo::new();
+        let timer = m.timer();
+        let sooner = timer.sleep(Duration::from_secs(5));
+        let later = timer.sleep(Duration::from_secs(9));
+        drop(sooner);
+        m.run(0, 256);
+        let mut out = Rec::default();
+        m.flush(&mut out).unwrap();
+        assert_eq!(
+            out.0,
+            vec![(tag::WAKE_AT, 9_000_000_000u64.to_le_bytes().to_vec())]
+        );
+        drop(later);
+        assert!(lock(&m.shared.timers).live.is_empty());
+    }
+
+    /// A host clock far from zero: an engine that has been up a minute states times like this.
+    const MINUTE: u64 = 60_000_000_000;
+    const GET: &[u8] = b"GET / HTTP/1.1\r\nhost: peer.test\r\n\r\n";
+
+    /// hyper arms its timers with `timer.now() + d`: `now` must be the time `run` was given, so the
+    /// deadline lands on the clock WAKE_AT is stated in.
+    #[test]
+    fn now_is_the_time_run_was_given_and_a_deadline_from_it_lands_on_that_clock() {
+        let mut m = MemIo::new();
+        let timer = m.timer();
+        let done = Arc::new(AtomicBool::new(false));
+        let d = done.clone();
+        m.spawn(async move {
+            let at = timer.now() + Duration::from_millis(10);
+            timer.sleep_until(at).await;
+            d.store(true, Ordering::SeqCst);
+        });
+        assert_eq!(m.run(MINUTE, 256), Ran::Idle);
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "a ten-millisecond sleep fired at once"
+        );
+        let mut out = Rec::default();
+        m.flush(&mut out).unwrap();
+        assert_eq!(
+            out.0,
+            vec![(tag::WAKE_AT, (MINUTE + 10_000_000).to_le_bytes().to_vec())]
+        );
+        m.run(MINUTE + 9_999_999, 256);
+        assert!(!done.load(Ordering::SeqCst));
+        m.run(MINUTE + 10_000_000, 256);
+        assert!(done.load(Ordering::SeqCst));
+    }
+
+    /// `reset` (hyper's kept-alive header timer) states its new deadline from `now` too.
+    #[test]
+    fn a_reset_deadline_lands_on_the_run_clock() {
+        let mut m = MemIo::new();
+        let timer = m.timer();
+        let done = Arc::new(AtomicBool::new(false));
+        let d = done.clone();
+        m.spawn(async move {
+            let mut sleep = timer.sleep(Duration::from_secs(1));
+            timer.reset(&mut sleep, timer.now() + Duration::from_secs(30));
+            sleep.await;
+            d.store(true, Ordering::SeqCst);
+        });
+        m.run(MINUTE, 256);
+        assert!(!done.load(Ordering::SeqCst), "a reset sleep fired at once");
+        let mut out = Rec::default();
+        m.flush(&mut out).unwrap();
+        assert_eq!(
+            out.0,
+            vec![(
+                tag::WAKE_AT,
+                (MINUTE + 30_000_000_000).to_le_bytes().to_vec()
+            )]
+        );
+        m.run(MINUTE + 30_000_000_000, 256);
+        assert!(done.load(Ordering::SeqCst));
+    }
+
+    /// An HTTP/1.1 server conn over this MemIo with hyper's thirty-second header-read timeout.
+    fn http1_server(m: &mut MemIo) {
+        let io = m.io();
+        let timer = m.timer();
+        m.spawn(async move {
+            let mut b = hyper::server::conn::http1::Builder::new();
+            b.timer(timer).header_read_timeout(Duration::from_secs(30));
+            let service =
+                hyper::service::service_fn(|_: hyper::Request<hyper::body::Incoming>| async {
+                    Ok::<_, std::convert::Infallible>(hyper::Response::new(String::from("ok")))
+                });
+            let _ = b.serve_connection(io, service).await;
+        });
+    }
+
+    /// The `200` status lines in what `flush` wrote.
+    fn served(m: &mut MemIo) -> usize {
+        let mut out = Rec::default();
+        m.flush(&mut out).unwrap();
+        let wrote: Vec<u8> = out
+            .0
+            .iter()
+            .filter(|(t, _)| *t == tag::WRITE)
+            .flat_map(|(_, body)| body.iter().copied())
+            .collect();
+        wrote.windows(12).filter(|w| *w == b"HTTP/1.1 200").count()
+    }
+
+    #[test]
+    fn a_kept_alive_http1_conn_serves_a_second_request_a_minute_in() {
+        let mut m = MemIo::new();
+        http1_server(&mut m);
+        m.run(MINUTE, 256);
+        m.feed(GET);
+        m.run(MINUTE + 1_000, 256);
+        assert_eq!(served(&mut m), 1, "the first request was not served");
+        m.feed(GET);
+        m.run(MINUTE + 2_000, 256);
+        assert_eq!(
+            served(&mut m),
+            1,
+            "the second request on a kept-alive conn was not served"
+        );
+    }
+
+    #[test]
+    fn a_head_split_across_two_reads_is_served_a_minute_in() {
+        let mut m = MemIo::new();
+        http1_server(&mut m);
+        m.run(MINUTE, 256);
+        let (a, b) = GET.split_at(20);
+        m.feed(a);
+        m.run(MINUTE + 1_000, 256);
+        m.feed(b);
+        m.run(MINUTE + 2_000, 256);
+        assert_eq!(
+            served(&mut m),
+            1,
+            "a head split across two reads was not served"
+        );
     }
 
     #[test]

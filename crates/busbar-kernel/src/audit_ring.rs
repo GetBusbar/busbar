@@ -64,8 +64,9 @@ pub struct AuditEntry {
     /// record without this field is scheme 1. A verifier checks each record under its own scheme.
     #[serde(default = "audit_scheme_default")]
     pub scheme: u8,
-    /// The config generation after the change, as a decimal string: on every applied row of a
-    /// config-changing request, null otherwise.
+    /// The durable config generation after the change (the `config_generation` `GET /info` and
+    /// the config ETag report, never the per-process `config_version`), as a decimal string: on
+    /// every applied row of a config-changing request, null otherwise.
     #[serde(default)]
     pub config_generation: Option<String>,
     /// The config sections the change touched (empty when it touched none, or none is known).

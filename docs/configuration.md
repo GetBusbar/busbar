@@ -691,7 +691,7 @@ configure 0 to make it free, or a rate in range
 — rather than booting and refusing on the first hit. Configure an explicit `0`, or a rate inside
 the representable range.
 
-<!-- docs-truth: `plugin_rate_cards` is deleted by !2667 (unmerged); its section is removed. Dev still accepts the key until that MR lands. -->
+<!-- docs-truth: `plugin_rate_cards` is not a configuration key: the config file and `PUT /config/settings` refuse it as an unknown field (`DeployCfg` and `RootSettings` deny unknown fields and have no such member). Plugin measurement rates are set only by a signed rate-history amendment of a measurement lane (`POST /ledger/amend-rate-history`), and the stored card keeps what it set. -->
 
 #### Per-plane rate cards (`tools.rate_card`, `agents.rate_card`, `streams.rate_card`, `decisions.rate_card`)
 
