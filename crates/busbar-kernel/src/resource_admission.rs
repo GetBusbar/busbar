@@ -822,6 +822,29 @@ impl ValidatedForward {
     }
 }
 
+/// The plane's RESOURCE_SELECT answer over a frozen request: the outer error is the frozen
+/// input's, the inner one the plane's.
+pub type Selection = Result<Result<Vec<u8>, busbar_ports::PortError>, ResourceError>;
+
+/// The plane's RESOURCE_SELECT crossing over `frozen`, returned with it.
+pub async fn select_resources(
+    port: Arc<dyn busbar_ports::plane::PlanePort>,
+    frozen: FrozenRequest,
+) -> Result<(FrozenRequest, Selection), tokio::task::JoinError> {
+    tokio::task::spawn_blocking(move || {
+        let selection = frozen.with_selection_input(|input, body| {
+            port.resource_facts(
+                busbar_plugin_abi::plane::RESOURCE_SELECT,
+                input,
+                body,
+                busbar_plugin_abi::resource_admission::MAX_SELECTION_BYTES,
+            )
+        });
+        (frozen, selection)
+    })
+    .await
+}
+
 #[cfg(test)]
 #[path = "tests/resource_admission_tests.rs"]
 mod tests;

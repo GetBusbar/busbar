@@ -1501,3 +1501,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/port_input_custody.rs"]
 mod input_custody_tests;
+
+#[cfg(test)]
+#[path = "tests/port_thread_tests.rs"]
+mod thread_tests;

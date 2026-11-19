@@ -486,20 +486,10 @@ pub(super) async fn prepare(
     let data_route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
     let original = binding.snapshot().map_err(|_| InputError::Capacity)?;
     let frozen = FrozenRequest::from_snapshot(binding.invocation(), route, original);
-    let port = seat.driver.port();
-    let (frozen, selection) = tokio::task::spawn_blocking(move || {
-        let selection = frozen.with_selection_input(|input, body| {
-            port.resource_facts(
-                busbar_plugin_abi::plane::RESOURCE_SELECT,
-                input,
-                body,
-                busbar_plugin_abi::resource_admission::MAX_SELECTION_BYTES,
-            )
-        });
-        (frozen, selection)
-    })
-    .await
-    .map_err(|_| InputError::Invalid)?;
+    let (frozen, selection) =
+        busbar_kernel::resource_admission::select_resources(seat.driver.port(), frozen)
+            .await
+            .map_err(|_| InputError::Invalid)?;
     let selection = selection
         .map_err(|_| InputError::Invalid)?
         .map_err(|_| InputError::Invalid)?;
