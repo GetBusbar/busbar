@@ -481,6 +481,7 @@ fn fixture_of(
     // physical factory, real charged selection, concrete verifier, publication and replay.
     let admission = crate::auth::admission_table::admission_of(&record);
     let route = Arc::new(NativeDataRoute {
+        ticket: None,
         withheld: withheld_carriers(&chain, None),
         audience: None,
         challenge: None,
@@ -1903,3 +1904,7 @@ fn the_keys_member_exists_only_on_a_data_chain_that_names_it() {
         "the admin listener's chain has no `keys` member"
     );
 }
+
+/// A ticket route at its own preparation, end to end.
+#[path = "native_data_ticket_tests.rs"]
+mod ticket;

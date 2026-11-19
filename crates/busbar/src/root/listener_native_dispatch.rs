@@ -137,6 +137,19 @@ fn unbilled(served: UnbilledResponse) -> Answered {
     )
 }
 
+/// The answer of a ticket route that opens a unit: the data path's own response, authority and
+/// settlement, whether a ticket or the route's chain admitted the request.
+fn ticket_billed(prepared: data::DataResponse) -> Answered {
+    (
+        prepared.response,
+        match prepared.authority {
+            data::DataAuthority::Executing(owner) => ResponseAuthority::Data(owner),
+            data::DataAuthority::Refused(owner) => ResponseAuthority::Refused(owner),
+        },
+        prepared.settlement.map(Settlement::Data),
+    )
+}
+
 /// The answer to a plane request its own input refused. A route that verifies runs its chain on
 /// the head first: a denial is the one 401 (or 503, 409) exactly as on a served request, and only
 /// a verified caller is told the row, rendered by the route's plane. A route that verifies
@@ -149,9 +162,13 @@ async fn input_refused(
 ) -> Result<Answered, InputError> {
     let binding = request.binding().clone();
     let verified_route = match admission {
-        Admission::Walk | Admission::Selected | Admission::PrincipalOnly | Admission::Catalog => {
-            true
-        }
+        // A ticket route verifies as any of these does: its preparation judges the ticket (or
+        // runs its chain), so an unverified caller receives the one 401 and a verified one the row.
+        Admission::Walk
+        | Admission::Selected
+        | Admission::PrincipalOnly
+        | Admission::Catalog
+        | Admission::Ticket => true,
         Admission::Optional => {
             let route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
             answer::presented(&binding, route.withheld())
@@ -159,7 +176,6 @@ async fn input_refused(
         Admission::Public => false,
         // An upgrade request carries no body to refuse; the rest are not a data listener's.
         Admission::Upgrade
-        | Admission::Ticket
         | Admission::SignedIngress
         | Admission::Operator
         | Admission::Internal => return Err(InputError::Invalid),
@@ -218,6 +234,7 @@ pub(super) async fn prepare(
                 | Admission::Optional
                 | Admission::Public
                 | Admission::Upgrade
+                | Admission::Ticket
         )
     );
     let work = async {
@@ -345,12 +362,40 @@ pub(super) async fn prepare(
                         (VerifyBy::Nobody, _) => {
                             unbilled(super::unbilled::prepare_unverified(ready.request).await?)
                         }
-                        // A ticket and a sender's signature have no native verifier yet, so the
-                        // plan mounts no such route; one that arrives here is the engine's
-                        // fault and is never served.
-                        (VerifyBy::TicketOrChain | VerifyBy::Signature, _) => {
-                            return Err(InputError::Invalid.into())
+                        // A ticket route. Core's ticket verifier judges the head inside the
+                        // route's own preparation (`NativeDataRoute::prepare`): a ticket is
+                        // spent there, once, and the request runs under its issuer's key as it
+                        // stands now; a refused ticket is the one 401 and never reaches the
+                        // chain; a request with none is the chain's where the record also
+                        // admits a principal. So the serving code is the data path's and the
+                        // unbilled path's, unchanged: with a unit where the record says money,
+                        // verified and not billed where it says none.
+                        (VerifyBy::TicketOrChain, Authority::Billed | Authority::Walk) => {
+                            ticket_billed(
+                                data::prepare(
+                                    ready.request,
+                                    slot,
+                                    Arc::clone(&node),
+                                    ready.owner.clone(),
+                                )
+                                .await?,
+                            )
                         }
+                        (VerifyBy::TicketOrChain, Authority::Unbilled | Authority::Catalog) => {
+                            let route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
+                            unbilled(super::unbilled::prepare_verified(ready.request, route).await?)
+                        }
+                        // A ticket admits a request, never a switch of protocols, and it is
+                        // nobody's public or operator route: the table and this match disagree,
+                        // and nothing is served.
+                        (
+                            VerifyBy::TicketOrChain,
+                            Authority::Upgrade | Authority::Public | Authority::Operator,
+                        ) => return Err(InputError::Invalid.into()),
+                        // A sender's signature has no native verifier yet, so the plan mounts no
+                        // such route; one that arrives here is the engine's fault and is never
+                        // served.
+                        (VerifyBy::Signature, _) => return Err(InputError::Invalid.into()),
                         // A plane's admin routes are mounted on the admin door.
                         (VerifyBy::AdminChain, _) => return Err(InputError::Invalid.into()),
                         // The chain verified a caller for an authority the chain does not

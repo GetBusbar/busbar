@@ -212,6 +212,18 @@ impl std::fmt::Debug for Admitted {
 }
 
 impl Admitted {
+    /// The admission of a request a core ticket already admitted at its route's native desk
+    /// (`auth::native_ticket`): the ticket's identity and the record its plane stored at the mint. The ticket is
+    /// spent there, once; nothing is redeemed again here.
+    #[must_use]
+    pub(crate) fn ticket(identity: Identity, record: &[u8]) -> Self {
+        Self {
+            auth: AUTH_TICKET,
+            identity: Some(identity),
+            ticket_record: (!record.is_empty()).then(|| SecureVec::from(record)),
+        }
+    }
+
     /// `PlaneIn::identity`: the identity records, empty when there is none.
     #[must_use]
     pub fn identity_records(&self) -> &[u8] {

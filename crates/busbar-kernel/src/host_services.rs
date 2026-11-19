@@ -1996,6 +1996,13 @@ impl KernelServices {
         self.standing.is_some()
     }
 
+    /// The live standing re-check itself (a key as it stands now, or `None` once it no longer does): what the
+    /// boot binds into the ticket store, so a ticket dies or narrows with its issuer key. `None`: not attached.
+    #[must_use]
+    pub fn standing(&self) -> Option<Standing> {
+        self.standing.clone()
+    }
+
     /// THE DECISION CUSTODY (r3 §4.2 step 1): the durable decision record, only when it is present
     /// and bound to a Store. Without it no decision can be kept, so none is made.
     #[must_use]

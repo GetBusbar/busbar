@@ -1265,7 +1265,9 @@ impl<'h> Resolver<'h> {
                         .mint(TicketMint {
                             subject: p.subject,
                             scope: scope.map_or("", |s| lent.text(s)),
-                            audience: audience.map_or("ticket", |s| lent.text(s)),
+                            // Stated by the plane, else the door every ticket route redeems at.
+                            audience: audience
+                                .map_or(crate::auth::native_ticket::TICKET_DOOR, |s| lent.text(s)),
                             ttl_s: *ttl_s,
                             once: flags & MINT_ONCE != 0,
                             prefix: prefix.map_or("", |s| lent.text(s)),

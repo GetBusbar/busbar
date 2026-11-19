@@ -21,10 +21,12 @@ use busbar_core_connector::need::network::{
     BootstrapConnector, NetworkInputs, ServingConnector, SharedResolver,
 };
 use busbar_core_connector::need::{ConnectorIo, HostNeeds, NeedLimits};
+use busbar_kernel::auth::native_ticket::{IssuerBound, Issuers, Redeem, TicketDesk};
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::config::{PluginsCfg, RootCfg};
 use busbar_kernel::directory::{KernelDirectory, LogEvents};
+use busbar_kernel::host_services::Standing;
 use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
 use busbar_kernel::ingress::signed_ingress::{RouteSecrets, StandardWebhooks};
@@ -95,6 +97,9 @@ struct Shared {
     observations: ObsCustody,
     /// Durable WORK for every seat (rows are scoped by instance name).
     work: Arc<StoreWork>,
+    /// The verified principals being served on each plane instance: who a ticket minted now is for. One book
+    /// for the process, shared by every seat's ticket store and desk.
+    issuers: Arc<Issuers>,
 }
 
 /// The ticket store of a deployment with no usable `auth.signing_key`: nothing is a ticket and nothing mints
@@ -128,13 +133,26 @@ impl Tickets for ClosedTickets {
 /// The ticket store every plane seat is built with (IF §12.11): its host key is derived from core's
 /// `auth.signing_key`, which the walk resolves (the secret instances are open before any plane, step 2a) before
 /// the seat is built. Without a signing key, or when the key cannot be derived, the store is shut.
-fn ticket_store<R: PluginRecords + Clone>(
+///
+/// The sealed store is never handed out bare: it is wrapped in [`IssuerBound`], so every ticket a plane mints
+/// carries its issuer's governed key and no door redeems one around the issuer check. `issuers`: the process's
+/// one book of principals being served. `standing`: a key as it stands now (the serving generation's own
+/// re-check); without it a ticket could outlive its issuer, so the store is shut.
+fn ticket_store<R: PluginRecords + Clone + 'static>(
     records: &R,
     signing: Option<&SecureVec>,
-) -> Arc<dyn Tickets> {
+    issuers: &Arc<Issuers>,
+    standing: Option<Standing>,
+) -> TicketStore {
     let Some(signing) = signing else {
         tracing::info!("no auth.signing_key: plane tickets are not admitted");
-        return Arc::new(ClosedTickets);
+        return TicketStore::shut();
+    };
+    let Some(standing) = standing else {
+        tracing::warn!(
+            "no live standing re-check is attached: plane tickets are not admitted (a ticket must die with its issuer key)"
+        );
+        return TicketStore::shut();
     };
     let mut key = SecureVec::zeroed(32);
     if busbar_contract::crypto::hkdf_sha256(
@@ -146,13 +164,42 @@ fn ticket_store<R: PluginRecords + Clone>(
     .is_err()
     {
         tracing::warn!("the ticket host key could not be derived: plane tickets are not admitted");
-        return Arc::new(ClosedTickets);
+        return TicketStore::shut();
     }
     match SealedTickets::new(records.clone(), &key[..], busbar_kernel::store::now) {
-        Some(sealed) => Arc::new(sealed),
+        Some(sealed) => {
+            let bound = Arc::new(IssuerBound::new(
+                sealed,
+                Arc::clone(issuers),
+                standing,
+                busbar_kernel::store::now,
+            ));
+            TicketStore {
+                tickets: Arc::clone(&bound) as Arc<dyn Tickets>,
+                door: Some(bound as Arc<dyn Redeem>),
+            }
+        }
         None => {
             tracing::warn!("the ticket store refused its host key: plane tickets are not admitted");
-            Arc::new(ClosedTickets)
+            TicketStore::shut()
+        }
+    }
+}
+
+/// What a plane seat is given of core's ticket store: one bound store behind both, or neither.
+struct TicketStore {
+    /// A plane's MINT and the plane driver's own door ([`TicketGate`]).
+    tickets: Arc<dyn Tickets>,
+    /// The door the instance's native ticket routes redeem at ([`TicketDesk`]); `None`: the store is shut, and
+    /// no ticket route of the instance is mounted.
+    door: Option<Arc<dyn Redeem>>,
+}
+
+impl TicketStore {
+    fn shut() -> Self {
+        Self {
+            tickets: Arc::new(ClosedTickets),
+            door: None,
         }
     }
 }
@@ -203,6 +250,7 @@ impl Shared {
                 binder,
                 Arc::new(busbar_kernel::store::now_ms),
             )),
+            issuers: Issuers::new(),
         }
     }
 }
@@ -1041,9 +1089,26 @@ impl Steps<'_> {
             .map_err(|why| OpenError::Unknown(why.into()))?;
         // Tickets: the host key is resolved here (the secret instances are open, step 2a), so the gate and the
         // MINT store are built whole, with the key, before the seat exists.
-        let tickets = ticket_store(&self.shared.records, self.core.signing_key.as_ref());
+        // The store is bound to its issuers (`IssuerBound`) and to the serving generation's standing re-check;
+        // the same bound store is the seat's MINT, its driver's door and its native ticket desk.
+        let TicketStore { tickets, door } = ticket_store(
+            &self.shared.records,
+            self.core.signing_key.as_ref(),
+            &self.shared.issuers,
+            services.standing(),
+        );
         let driver =
             driver.with_tickets(Arc::new(TicketGate::new(Arc::clone(&tickets), who.clone())));
+        // The desk of the instance's ticket routes: the door every one of them redeems at (`TICKET_DOOR`, the
+        // audience a MINT that states none is made for) and the book its served principals are entered in.
+        let driver = match door {
+            Some(door) => driver.with_ticket_desk(TicketDesk::new(
+                door,
+                who.clone(),
+                Arc::clone(&self.shared.issuers),
+            )),
+            None => driver,
+        };
         // K9: the seat's egress walk and carrier over the boot's upstream table, under the instance's core-held
         // `insecure_transport.accept`. Neither holds a runtime handle: a session awaits them on its own task.
         let seat = SeatShared {

@@ -233,6 +233,8 @@ pub struct PortDriver {
     /// The data, upgrade and admin routes by id (`off_path::plane_port`): what a request is served on.
     pub(crate) mounted: BTreeMap<u32, Arc<Mounted>>,
     pub(crate) tickets: Arc<dyn TicketDoor>,
+    /// The native ticket desk ([`PortDriver::ticket_desk`]).
+    pub(crate) ticket_desk: Option<Arc<crate::auth::native_ticket::TicketDesk>>,
     /// The declared usage classes (D_USAGE_CLASS) in the Statement's order: a unit count's class indexes them.
     pub(crate) usage: Arc<[String]>,
     /// The same classes as the port declares them, shared with each hooked request's invocation.
@@ -310,6 +312,57 @@ impl PortDriver {
         self
     }
 
+    /// The instance's native ticket desk (`auth::native_ticket`): where its ticket routes redeem and where its
+    /// served principals are entered for a MINT. Set only where core's ticket store is open.
+    #[must_use]
+    pub fn with_ticket_desk(mut self, desk: Arc<crate::auth::native_ticket::TicketDesk>) -> Self {
+        self.ticket_desk = Some(desk);
+        self
+    }
+
+    /// The instance's native ticket desk; `None`: core's ticket store is shut, so no ticket route of this
+    /// instance is mounted.
+    #[must_use]
+    pub fn ticket_desk(&self) -> Option<&Arc<crate::auth::native_ticket::TicketDesk>> {
+        self.ticket_desk.as_ref()
+    }
+
+    /// This instance serving a request the native path admitted with no unit (`owner`): what the listener's
+    /// unbilled path serves through ([`UnbilledServe::serve`]).
+    #[must_use]
+    pub fn admitted_by<'d>(
+        &'d self,
+        owner: &'d crate::inbound::native::PhysicalUnbilledExecution,
+    ) -> UnbilledServe<'d> {
+        UnbilledServe {
+            driver: self,
+            owner,
+        }
+    }
+
+    /// [`Self::serve`] for a request the native path admitted with no unit (`owner`). Where a core ticket
+    /// admitted it, the plane is handed the ticket's class, identity and record from that admission: the ticket
+    /// was spent at the route's desk, so nothing is redeemed here and no credential is read.
+    async fn serve_unbilled(
+        &self,
+        input: ServeIn<'_>,
+        owner: &crate::inbound::native::PhysicalUnbilledExecution,
+    ) -> Result<Served, ServeError> {
+        let Some((authorization, record)) = owner
+            .authorization()
+            .and_then(|authorization| Some((authorization, authorization.ticket_record()?)))
+        else {
+            return self.serve_inner(input, None).await;
+        };
+        if !authorization.made_on(self, input.route) {
+            return Err(ServeError::Invocation(
+                "the ticket's admission is not this route's",
+            ));
+        }
+        let ticket = Admitted::ticket(authorization.identity().clone(), record);
+        self.serve_as(input, None, Some(ticket)).await
+    }
+
     /// Serves one request of a mounted route: admission (§12.11, the call site of `admit` for HTTP), then the
     /// whole session ([`run_session`]) with its books, on the caller's own task. The plane's calls are direct
     /// entries made between the session's awaits; nothing is handed to another thread.
@@ -372,6 +425,17 @@ impl PortDriver {
         input: ServeIn<'_>,
         data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
     ) -> Result<Served, ServeError> {
+        self.serve_as(input, data, None).await
+    }
+
+    /// `ticket`: the admission of a request a core ticket already admitted with no unit
+    /// ([`Self::serve_unbilled`]); it stands in place of `admit`, which would redeem the spent ticket again.
+    async fn serve_as(
+        &self,
+        input: ServeIn<'_>,
+        data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
+        ticket: Option<Admitted>,
+    ) -> Result<Served, ServeError> {
         if input.admission.is_some() && (input.unit.is_some() || input.invocation.is_none()) {
             return Err(ServeError::Invocation(
                 "pending admission must own one unbilled invocation",
@@ -406,6 +470,14 @@ impl PortDriver {
             .ok_or(ServeError::NoRoute)?;
         let admission = if let Some(data) = data {
             ServingAdmission::Data(data)
+        } else if let Some(ticket) = ticket {
+            // A ticket route's own class must be among the route's: nothing else is served as a ticket.
+            if route.effective & busbar_plugin_abi::plane::AUTH_TICKET == 0 {
+                return Err(ServeError::Invocation(
+                    "a ticket's admission on a route that admits no ticket",
+                ));
+            }
+            ServingAdmission::Credentials(Ok(ticket))
         } else {
             ServingAdmission::Credentials(
                 admit(
@@ -1199,6 +1271,23 @@ pub enum ServeError {
     Cancelled,
 }
 
+/// A plane instance serving one request the native path admitted with no unit ([`PortDriver::admitted_by`]).
+pub struct UnbilledServe<'d> {
+    driver: &'d PortDriver,
+    owner: &'d crate::inbound::native::PhysicalUnbilledExecution,
+}
+
+impl UnbilledServe<'_> {
+    /// [`PortDriver::serve`], with the request's own admission in hand: a request a core ticket admitted is
+    /// handed to its plane as that ticket (its class, identity and record), and nothing is redeemed twice.
+    ///
+    /// # Errors
+    /// [`ServeError`]; a refusal is not an error, it is [`Served::Refused`].
+    pub async fn serve(&self, input: ServeIn<'_>) -> Result<Served, ServeError> {
+        self.driver.serve_unbilled(input, self.owner).await
+    }
+}
+
 /// One request: the admission's refusal, or the session.
 enum ServingAdmission {
     Credentials(Result<Admitted, ClientRefusal>),
@@ -1337,9 +1426,10 @@ async fn serve_session(
     });
     let req = match &admission {
         ServingAdmission::Data(data) => build(
-            busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+            // A principal's class, or a ticket's with the record its plane stored at the mint.
+            data.auth_class(),
             data.identity().identity_records(),
-            &[],
+            data.ticket_record(),
         ),
         ServingAdmission::Credentials(Ok(admitted)) => build(
             admitted.auth,

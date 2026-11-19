@@ -46,6 +46,12 @@ use crate::plugin_records::RecordsDenied;
 /// expiry core answers is the one the plane tells its client).
 pub const TICKET_LIFE_MAX_S: u64 = 600;
 
+/// The door of a native ticket route: the audience a ticket is minted for when its plane states
+/// none (IF §8.6 `MT_AUDIENCE`: "the route class it is good for, `ticket`") and the audience every
+/// ticket route's desk redeems under. One text for both sides: a ticket minted for any other
+/// audience opens no ticket route.
+pub const TICKET_DOOR: &str = "ticket";
+
 /// The largest record a plane may store with a ticket (IF §12.11 `MAX_TICKET_RECORD`), less the
 /// room the issuer binding takes in the same row.
 pub const PLANE_RECORD_MAX: usize = 65_536 - BINDING_ROOM;
@@ -371,7 +377,11 @@ impl<T: Tickets> Tickets for IssuerBound<T> {
                         // Single use, whatever the plane asked: one ticket admits one request.
                         once: true,
                         record: &row[..],
-                        ..m
+                        // Every field named: nothing of the mint passes unread.
+                        subject: m.subject,
+                        scope: m.scope,
+                        audience: m.audience,
+                        prefix: m.prefix,
                     },
                 )
                 .await?;
@@ -423,7 +433,7 @@ impl<T: Tickets> Redeem for IssuerBound<T> {
         credential: &'a str,
         now_s: u64,
     ) -> BoxFut<'a, Result<Redeemed, TicketDenied>> {
-        Box::pin(self.redeem_bound(plane, door, credential, now_s))
+        Box::pin(async move { self.redeem_bound(plane, door, credential, now_s).await })
     }
 }
 
@@ -687,6 +697,41 @@ impl NativeTicketVerifier {
             ),
         }
         TicketJudged::Refused(refused)
+    }
+}
+
+/// One plane instance's ticket desk: the door its ticket routes redeem at, and the book its
+/// served principals are entered in so that a mint made during their request is bound to their
+/// key. Built at boot, once per plane instance, only where core's ticket store is open.
+pub struct TicketDesk {
+    verifier: NativeTicketVerifier,
+    issuers: Arc<Issuers>,
+}
+
+impl TicketDesk {
+    /// `door`: the bound store. `who`: the plane instance. `issuers`: the book the same store
+    /// mints from. The audience is [`TICKET_DOOR`], and no other.
+    pub fn new(door: Arc<dyn Redeem>, who: Namespace, issuers: Arc<Issuers>) -> Arc<Self> {
+        Arc::new(Self {
+            verifier: NativeTicketVerifier::new(door, who, TICKET_DOOR),
+            issuers,
+        })
+    }
+
+    /// The verifier of this instance's ticket routes.
+    pub fn verifier(&self) -> &NativeTicketVerifier {
+        &self.verifier
+    }
+
+    /// The plane instance this desk is of: the instance a MINT is made as.
+    pub fn instance(&self) -> u64 {
+        self.verifier.who.instance
+    }
+
+    /// `subject`, verified by its route's chain and judged as `key`, is being served on this
+    /// instance: until the guard drops, a mint for that subject is bound to that key.
+    pub fn serving(&self, subject: &str, key: &Arc<VirtualKey>) -> Serving {
+        self.issuers.enter(self.verifier.who.instance, subject, key)
     }
 }
 
