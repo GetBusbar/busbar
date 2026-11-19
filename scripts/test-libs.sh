@@ -17,13 +17,13 @@
 # Writes: one exported variable per library and ci-reports/house/<name>.sha256 and a row of source.jsonl.
 
 # name  variable                              repository
+# Only the two the tests still read once the old plugin interface is deleted. The tests that read
+# BUSBAR_TEST_TCP_CDYLIB, _HTTP_, _RANKING_, _WEBREQUEST_ and BUSBAR_GOVERNANCE_TEST_PLANE_PLUGIN, and
+# those that want a statement from the OIDC product, load through the old door and go with it: they
+# get no row here.
 TEST_LIBS_TABLE='
 sqlite      BUSBAR_TEST_SQLITE_CDYLIB            busbar-store-sqlite
 mysql       BUSBAR_TEST_MYSQL_CDYLIB             busbar-store-mysql
-ranking     BUSBAR_TEST_RANKING_CDYLIB           busbar-hook-ranking
-webrequest  BUSBAR_TEST_WEBREQUEST_CDYLIB        busbar-hook-webrequest
-http        BUSBAR_TEST_HTTP_CDYLIB              busbar-transport-http
-plane       BUSBAR_GOVERNANCE_TEST_PLANE_PLUGIN  busbar-plane-llm
 '
 
 test_lib() { # test_lib <name> <variable> <repository>
