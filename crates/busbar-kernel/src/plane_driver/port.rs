@@ -1641,6 +1641,39 @@ async fn drive_session(
                 decision: refusal,
             }))
         }
+        // A request whose own admission has not run (its walk unresolved, no unit opened, nothing
+        // charged) is still the caller's to answer: the failure is said here and the request is
+        // refused as failed, in the plane's dialect, exactly as an admission refusal is. Without
+        // this the native path has neither an execution nor a refusal to settle and closes the
+        // connection with no bytes.
+        Err(error)
+            if effects
+                .admission
+                .as_deref()
+                .is_some_and(|pending| pending.admitted().is_none()) =>
+        {
+            charge(port, &error);
+            tracing::warn!(
+                route = req.route,
+                ?error,
+                "a plane session failed before its request was admitted: answered as failed"
+            );
+            let refusal = refusal_of(
+                req.route,
+                &PortError::Failed {
+                    code: F_INTERNAL,
+                    text: "".into(),
+                    retry_after_s: None,
+                    backend_status: None,
+                    error: None,
+                },
+                refusals,
+            );
+            Ok(Served::Refused(Refused {
+                items: refuse(port, req, &refusal, effects),
+                decision: refusal,
+            }))
+        }
         Err(error) => {
             charge(port, &error);
             Err(ServeError::Session(error))
