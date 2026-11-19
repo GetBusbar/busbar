@@ -2131,3 +2131,7 @@ async fn native_data_record_writes_must_be_caller_scoped() {
 /// A ticket route at its own preparation, end to end.
 #[path = "native_data_ticket_tests.rs"]
 mod ticket;
+
+/// A client credential is never lent to the plane, on any data path, under any chain.
+#[path = "native_data_client_credential_tests.rs"]
+mod client_credentials_never_forwarded;
