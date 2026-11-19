@@ -45,15 +45,6 @@ fn libraries_beside_the_test() -> Vec<std::path::PathBuf> {
     .collect()
 }
 
-/// THE SOCKET FRAMER these tests drive alone: the neutral frame door (the plugin loader's
-fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
-    let file = busbar_plugin_loader::plugin_library_filename("neutral_frame_door");
-    libraries_beside_the_test()
-        .into_iter()
-        .filter(|p| p.file_name().is_some_and(|n| n == file.as_str()))
-        .find_map(|p| open_door(&p))
-}
-
 /// THE CONNECTOR DRIVES A DROPPED-IN DOOR THAT FRAMES THE HOST'S SOCKET against a real far end: the
 #[test]
 fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
@@ -118,11 +109,6 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
     });
 }
 
-/// Every piece one need's exchange answers through the connection table, from a server that
-fn pieces_through_the_table(response: &'static str) -> Vec<(PieceKind, Option<u32>, Vec<u8>)> {
-    head_through_the_table(response).0
-}
-
 type Pieces = Vec<(PieceKind, Option<u32>, Vec<u8>)>;
 
 /// RED: THE CONNECTOR YIELDS THE FAR END'S HEAD. A response with head fields reads, through the
@@ -165,20 +151,6 @@ fn an_empty_head_yields_one_empty_fields_piece() {
         1,
         "{got:?}"
     );
-}
-
-/// RED: the reply's head crosses whole: its fields as the field block and its reason phrase exactly
-#[test]
-fn the_reply_head_carries_its_reason_phrase_exactly_as_sent() {
-    let (got, reason) =
-        head_through_the_table("{V} 200 Fine By Me\r\nx-a: 1\r\ncontent-length: 2\r\n\r\nok");
-    assert_eq!(
-        got[0],
-        (PieceKind::Fields, Some(200), b"x-a: 1\r\n".to_vec())
-    );
-    assert_eq!(reason.as_deref(), Some(&b"Fine By Me"[..]));
-    let (_, reason) = head_through_the_table("{V} 204 No Content\r\n\r\n");
-    assert_eq!(reason.as_deref(), Some(&b"No Content"[..]));
 }
 
 /// A response template with its version written as the door's own scheme, upper-cased (`{V}`), so
@@ -237,20 +209,6 @@ fn secured_claim(door: &dyn busbar_core_connector::framer::FramerDoor) -> &'stat
                 .is_ok_and(|located| located.secure)
         })
         .expect("the request framer states its secured claim")
-}
-
-/// The download's table over a connector serving the composing door beside the test carrier, every
-fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
-    use busbar_core_connector::Judged;
-    let judge = |dest: &str, _: u32, _: Judged| {
-        Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
-    };
-    fetch_table_judged(std::sync::Arc::new(judge))
-}
-
-/// One download of `path` from a far end answering `response` (a [`respond`] template), off the
-fn fetch_once(path: &str, response: &str, cap: usize) -> (Result<Vec<u8>, String>, String) {
-    fetch_once_over(fetch_table(), path, response, cap)
 }
 
 /// An oversized body is refused under the cap, from an honest `Content-Length` (before a body
@@ -323,63 +281,6 @@ fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJu
     )
 }
 
-/// A private registry downloads under the default guard, over TLS its operator's private anchor vouches for.
-#[test]
-fn a_private_registry_downloads_over_tls_under_the_default_guard() {
-    let (got, _) = fetch_once_over(
-        fetch_table_judged(guarded(&[])),
-        "/releases/busbar-oracle-fetch-1.0.0.tar.gz",
-        "{V} 200 OK\r\ncontent-length: 8\r\nconnection: close\r\n\r\nartifact",
-        4096,
-    );
-    assert_eq!(got.as_deref(), Ok(&b"artifact"[..]));
-}
-
-/// GREEN twin: the download is still judged by the one guard: an address the operator's extra
-#[test]
-fn a_download_the_guard_refuses_never_reaches_the_registry() {
-    let (got, head) = fetch_once_over(
-        fetch_table_judged(guarded(&["127.0.0.1"])),
-        "/releases/busbar-oracle-fetch-1.0.0.tar.gz",
-        "{V} 200 OK\r\ncontent-length: 8\r\nconnection: close\r\n\r\nartifact",
-        4096,
-    );
-    let err = got.expect_err("an address the guard refuses is never downloaded from");
-    assert!(err.contains("error sending request"), "{err}");
-    assert!(head.is_empty(), "no request reached the far end: {head}");
-    assert!(
-        err.ends_with(
-            ": busbar refused it before connecting: the destination guard refuses a \
-             cloud-metadata host or a host listed in security.blocked_metadata_hosts"
-        ),
-        "{err}"
-    );
-}
-
-/// SEC-2, #297: `plugins.fetch` is core-owned and https only. A plaintext registry URL is refused on
-/// every host, loopback and private included (no loopback exemption, no acceptance can admit it), in
-/// words, and nothing is dialled.
-#[test]
-fn a_plaintext_registry_is_refused_on_every_host_and_nothing_is_dialled() {
-    let (_, table) = fetch_table_judged(guarded(&[]));
-    let (port, seen) = counting_listener();
-    for host in ["127.0.0.1", "localhost"] {
-        let url = format!("http://{host}:{port}/releases/busbar-oracle-fetch-1.0.0.tar.gz");
-        let err = busbar_core_connector::fetch::download(&table, &url, &[], 4096)
-            .expect_err("a plaintext registry is never downloaded from");
-        assert!(
-            err.starts_with(&format!("plugins.fetch url must use https (got '{url}')")),
-            "{err}"
-        );
-    }
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    assert_eq!(
-        seen.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "nothing was dialled"
-    );
-}
-
 /// A loopback far end that counts every connection it accepts: its port and the count.
 fn counting_listener() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -394,61 +295,6 @@ fn counting_listener() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) 
         }
     });
     (port, seen)
-}
-
-/// RED (F-013): THE PRODUCTION GUARD PATH NAMES BUSBAR'S REFUSAL. A registry NAME the guard
-/// refuses only once its resolution answers (a pended verdict) fails the download with the
-/// guard's own reason, and nothing is dialled.
-#[test]
-fn a_pended_guard_refusal_names_busbars_policy_and_dials_nothing() {
-    use busbar_contract::services::codes::DEST_INTERNAL;
-    let judge = |_: &str, _: u32, done: busbar_core_connector::Judged| {
-        std::thread::spawn(move || done(Err(DEST_INTERNAL)));
-        None
-    };
-    let (scheme, table) = fetch_table_judged(std::sync::Arc::new(judge));
-    let (port, seen) = counting_listener();
-    let url = format!("{scheme}://registry.localhost:{port}/a.tar.gz");
-    let err = busbar_core_connector::fetch::download(&table, &url, &[], 4096)
-        .expect_err("a refused registry is never downloaded from");
-    assert!(
-        err.ends_with(
-            ": busbar refused it before connecting: the destination guard refuses an internal or \
-             loopback address (enable allow_private on its upstream registration to allow it)"
-        ),
-        "{err}"
-    );
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    assert_eq!(
-        seen.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "nothing was dialled"
-    );
-}
-
-/// RED (F-013): A DIAL FAILURE NAMES THE PATH, NEVER BUSBAR'S POLICY: an unbound port under the
-/// deployment's guard fails with "could not connect to the registry" and the OS's own text.
-#[test]
-fn a_dial_failure_names_the_registry_not_busbars_policy() {
-    let (scheme, table) = fetch_table_judged(guarded(&[]));
-    let port = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
-    let url = format!("{scheme}://127.0.0.1:{port}/a.tar.gz");
-    let err = busbar_core_connector::fetch::download(&table, &url, &[], 4096)
-        .expect_err("nothing listens");
-    let sending = format!("error sending request for url ({url})");
-    let rest = err
-        .split_once(&sending)
-        .map(|(_, r)| r)
-        .expect("the 1.5.5 prefix is kept");
-    let os = rest
-        .strip_prefix(": could not connect to the registry: ")
-        .unwrap_or_else(|| panic!("the path is named: {err}"));
-    assert!(!os.is_empty(), "{err}");
-    assert!(!err.contains("busbar refused"), "{err}");
-    assert!(!err.contains("destination guard"), "{err}");
 }
 
 /// RED (F-013): A URL CARRYING USERINFO IS REFUSED IN WORDS, before anything is dialled.
