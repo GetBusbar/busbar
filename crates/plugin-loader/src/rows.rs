@@ -88,3 +88,7 @@ pub fn registry_of(rows: &dyn PluginRows) -> Option<&PluginRegistry> {
 pub fn registry_arc(rows: Arc<dyn PluginRows>) -> Option<Arc<PluginRegistry>> {
     rows.into_any().downcast::<PluginRegistry>().ok()
 }
+
+#[cfg(test)]
+#[path = "tests/rows_tests.rs"]
+mod tests;
