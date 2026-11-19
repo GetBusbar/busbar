@@ -853,6 +853,12 @@ impl<'h> Resolver<'h> {
         let mut committed: Option<Reply> = None;
         let mut channel_pieces: smallvec::SmallVec<[Piece<'i>; 4]> = smallvec::SmallVec::new();
         let mut rendezvous_pieces: smallvec::SmallVec<[Piece<'i>; 4]> = smallvec::SmallVec::new();
+        // HANDLE before everything else: it decides the anonymous caller's scope for every intent here.
+        for intent in intents {
+            if let Intent::Handle { handle } = intent {
+                self.bind_handle(lent.bytes(*handle));
+            }
+        }
         for intent in intents {
             match intent {
                 Intent::Store {
@@ -900,12 +906,12 @@ impl<'h> Resolver<'h> {
                                 &admitted.request,
                                 *flags,
                                 key,
-                                self.subject,
+                                self.subject(),
                             );
                         }
                     } else if flags & LK_CALLER == 0 {
                         self.host.signal(key, None);
-                    } else if let Some(subject) = self.subject {
+                    } else if let Some(subject) = self.subject() {
                         self.host.signal(key, Some(subject));
                     }
                 }
@@ -925,7 +931,7 @@ impl<'h> Resolver<'h> {
                             flags: *flags,
                             framing: *framing,
                             key: lent.text(*key),
-                            subject: self.subject,
+                            subject: self.subject(),
                             head: lent.bytes(*head),
                         },
                     )
