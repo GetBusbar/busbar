@@ -54,8 +54,8 @@ static bb_status open_(const void *inst, const bb_host *h, const bb_call *call, 
     if (flags & BB_OPEN_DRY_RUN) return BB_OK;
     uint8_t *state = malloc(1);
     if (!state) return bb_fail(h, out, BB_FAILED, BB_F_INTERNAL, "out of memory");
-    bb_instance_rec inst = {(uint64_t)(uintptr_t)state};
-    if (!bb_put(h, out, BB_TAG_INSTANCE, &inst, sizeof inst)) {
+    bb_instance_rec rec = {(uint64_t)(uintptr_t)state};
+    if (!bb_put(h, out, BB_TAG_INSTANCE, &rec, sizeof rec)) {
         free(state);
         return bb_fail(h, out, BB_FAILED, BB_F_INTERNAL, "instance does not fit");
     }

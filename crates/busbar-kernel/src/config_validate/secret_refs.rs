@@ -503,24 +503,6 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
-        "ProviderRoute",
-        SecretBearing::NotInResolvedConfig(
-            "the composition root's copy of a `ResolvedProvider` (`root::door_steps::\
-             provider_routes`), made for a door plane's members after the `ResolvedProvider` it \
-             copies was walked; it is never part of `RootCfg`.",
-        ),
-    ),
-    (
-        "Lent",
-        SecretBearing::NotInResolvedConfig(
-            "what the composition root's per-hop binding (`PerHop`) of a registration's own \
-             outbound credential holds (`root::door_steps::upstream_credential_binding`): a \
-             runtime CARRIER built from the reference a door section declares at its \
-             `settings.*.upstream_credential.secret` path, which the door section's walk \
-             (`DoorSection`) already reported; it is never part of `RootCfg`.",
-        ),
-    ),
-    (
         "Authoring",
         SecretBearing::NotInResolvedConfig(
             "`busbar_contract::secret_ref::Authoring`, a BORROWED view (`&SecretRef`) of a \

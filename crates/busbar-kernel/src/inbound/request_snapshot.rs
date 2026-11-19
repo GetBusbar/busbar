@@ -79,6 +79,10 @@ pub struct ChargedRequestSnapshot {
     query_present: bool,
     now_s: u64,
     credit: ByteCredit,
+    /// A restated head ([`Self::restate_headers`]): the original whose method, target, authority,
+    /// peer, certificate and body this view shares, charged once by the original. `bytes` then
+    /// holds only the restated header block, and every other range indexes the original's bytes.
+    original: Option<Arc<ChargedRequestSnapshot>>,
 }
 
 impl std::fmt::Debug for ChargedRequestSnapshot {
@@ -177,19 +181,7 @@ impl ChargedRequestSnapshot {
         ] {
             extent = add(extent, len)?;
         }
-        let mut observed = 0usize;
-        for (name, value) in measure {
-            observed = add(observed, 1)?;
-            if observed > count {
-                return Err(SnapshotError::Invalid);
-            }
-            u64::try_from(name.len()).map_err(|_| SnapshotError::Overflow)?;
-            u64::try_from(value.len()).map_err(|_| SnapshotError::Overflow)?;
-            extent = add(add(extent, name.len())?, value.len())?;
-        }
-        if observed != count {
-            return Err(SnapshotError::Invalid);
-        }
+        extent = add(extent, header_extent(measure, count)?)?;
         // The credit is acquired before either backing or content is allocated.
         let credit = request
             .try_reserve(extent)
@@ -207,22 +199,7 @@ impl ChargedRequestSnapshot {
         let certificate = append(&mut bytes, input.tls_peer_cert, extent)?;
         let body = append(&mut bytes, input.body, extent)?;
         let start = bytes.len();
-        let mut observed = 0usize;
-        for (name, value) in input.headers {
-            observed = add(observed, 1)?;
-            if observed > count {
-                return Err(SnapshotError::Invalid);
-            }
-            let name_len = u64::try_from(name.len()).map_err(|_| SnapshotError::Overflow)?;
-            let value_len = u64::try_from(value.len()).map_err(|_| SnapshotError::Overflow)?;
-            append(&mut bytes, &name_len.to_le_bytes(), extent)?;
-            append(&mut bytes, &value_len.to_le_bytes(), extent)?;
-            append(&mut bytes, name.as_bytes(), extent)?;
-            append(&mut bytes, value, extent)?;
-        }
-        if observed != count || bytes.len() != extent {
-            return Err(SnapshotError::Invalid);
-        }
+        pack_headers(&mut bytes, input.headers, count, extent)?;
         Ok(Arc::new(Self {
             bytes,
             method,
@@ -238,7 +215,63 @@ impl ChargedRequestSnapshot {
             query_present: input.query_present,
             now_s: input.now_s,
             credit,
+            original: None,
         }))
+    }
+
+    /// The same request with its headers restated (`headers`, in order): method, target,
+    /// authority, peer, certificate and body are the original's own bytes, shared and never
+    /// charged again; only the restated header block is a new copy, reserved on the original's
+    /// request before it is allocated. A request that cannot pay for that block is refused.
+    pub fn restate_headers<'a, H>(
+        original: &Arc<Self>,
+        headers: H,
+    ) -> Result<Arc<Self>, SnapshotError>
+    where
+        H: Clone + ExactSizeIterator<Item = (&'a str, &'a [u8])>,
+    {
+        // A view of a view shares the one original: the body is never charged twice.
+        let original = original.original.as_ref().unwrap_or(original);
+        let count = headers.len();
+        let extent = header_extent(headers.clone(), count)?;
+        let credit = original
+            .request()
+            .try_reserve(extent)
+            .map_err(SnapshotError::Capacity)?;
+        let mut bytes = SecureVec::with_capacity(extent).map_err(|_| SnapshotError::Allocation)?;
+        pack_headers(&mut bytes, headers, count, extent)?;
+        Ok(Arc::new(Self {
+            bytes,
+            method: original.method.clone(),
+            target: original.target.clone(),
+            path: original.path.clone(),
+            query: original.query.clone(),
+            authority: original.authority.clone(),
+            peer: original.peer.clone(),
+            certificate: original.certificate.clone(),
+            body: original.body.clone(),
+            headers: 0..extent,
+            header_count: count,
+            query_present: original.query_present,
+            now_s: original.now_s,
+            credit,
+            original: Some(Arc::clone(original)),
+        }))
+    }
+
+    /// The snapshot whose bytes hold this request's method, target, authority, peer,
+    /// certificate and body: the original for a restated head, else this one.
+    fn facts(self: &Arc<Self>) -> &Arc<Self> {
+        self.original.as_ref().unwrap_or(self)
+    }
+    fn fact(&self, range: &Range<usize>) -> &[u8] {
+        match &self.original {
+            Some(original) => original.slice(range),
+            None => self.slice(range),
+        }
+    }
+    fn fact_text(&self, range: &Range<usize>) -> &str {
+        std::str::from_utf8(self.fact(range)).expect("snapshot text was copied from str")
     }
 
     fn slice(&self, range: &Range<usize>) -> &[u8] {

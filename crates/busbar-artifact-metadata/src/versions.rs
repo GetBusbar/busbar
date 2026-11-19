@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! **Every ABI number, once.** The mechanism and the seven kinds each have exactly one version;
-//! every `ABI_VERSION` / `MECHANISM_VERSION` constant elsewhere derives from this file. The seven
-//! kind numbers are not kept here: each is busbar-plugin-abi's `versions::abi_of` (the call-shape
-//! generation the loader admits and a native stamp carries), so the two can never disagree.
+//! every `ABI_VERSION` / `MECHANISM_VERSION` constant elsewhere derives from this file. No number
+//! is kept here: the mechanism is busbar-plugin-abi's `versions::CORE` and each of the seven kinds
+//! is its `versions::abi_of` (the generations the loader admits and a native stamp carries), so the
+//! two can never disagree.
 //!
 //! A number means only "release generation". Development-time layout drift is the layout
-//! fingerprint's job, not a bump here. `ci/abi.pin` holds the kind numbers with their
+//! fingerprint's job, not a bump here. `ci/abi.pin` holds the mechanism and kind numbers with their
 //! fingerprints.
 
 use busbar_plugin_abi::types::KindCode;
@@ -37,7 +38,10 @@ impl core::fmt::Display for AbiVersion {
     }
 }
 
-/// The shared mechanism: v1.5.5 shipped 1 (`plugin-abi/src/lib.rs:71` `TRANSPORT_VERSION`).
+/// The shared mechanism: busbar-plugin-abi's `versions::CORE`, the core contract's first number (the
+/// old mechanism plus one, with the one call shape). It is the number a native stamp carries in
+/// `core_abi`, the loader admits against `CORE_CONTRACT`, and `ci/abi.pin`'s `mechanism` line pins, so
+/// a Statement rendering is stamped and read under the same number. No second copy is kept here.
 pub const MECHANISM: AbiVersion = AbiVersion(2);
 /// Store: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
 pub const STORE: AbiVersion = kind(KindCode::Store);

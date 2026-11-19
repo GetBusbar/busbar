@@ -421,7 +421,8 @@ impl Deployment {
         std::fs::write(
             &config,
             format!(
-                r#"listen: "127.0.0.1:{data}"
+                r#"config_version: 1
+listen: "127.0.0.1:{data}"
 admin_listen: "127.0.0.1:{admin}"
 listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test node" }}
 admin_listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test node" }}

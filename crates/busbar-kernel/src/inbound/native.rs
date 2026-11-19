@@ -327,6 +327,7 @@ impl PhysicalListener {
             },
             facts: Arc::new(facts),
             streams: Arc::new(Mutex::new(HashMap::default())),
+            revocation: Arc::default(),
         }
     }
 }
@@ -469,11 +470,20 @@ pub struct PhysicalConnection {
     listener: PhysicalListener,
     facts: Arc<AcceptedConnection>,
     streams: Streams,
+    /// Fired when a credential or grant a live request of this connection was admitted on is
+    /// revoked ([`RequestBinding::watch_revocation`]).
+    revocation: Arc<RevocationCut>,
 }
 impl PhysicalConnection {
     /// The connection's frozen socket and security facts, lent for as long as the borrow.
     pub fn facts(&self) -> &AcceptedConnection {
         &self.facts
+    }
+
+    /// The connection's revocation cut: its supervisor waits on it and ends the connection with
+    /// `CR_REVOKED` once it fires.
+    pub fn revocation(&self) -> Arc<RevocationCut> {
+        Arc::clone(&self.revocation)
     }
 
     pub fn head(
@@ -510,6 +520,7 @@ impl PhysicalConnection {
             phase: Mutex::new(Phase::Pending),
             preparation: Mutex::new(PreparationState::Unused),
             cancelled: CancellationToken::new(),
+            revocation: Mutex::new(None),
             _request: request.clone(),
         });
         {
@@ -531,6 +542,7 @@ impl PhysicalConnection {
             deadline,
             mono_ns: arrival.map(|arrival| arrival.mono_ns),
             facts: self.facts.clone(),
+            revocation: self.revocation.clone(),
             state: state.clone(),
             stream,
             body: OnceLock::new(),
@@ -603,6 +615,9 @@ struct StreamState {
     phase: Mutex<Phase>,
     preparation: Mutex<PreparationState>,
     cancelled: CancellationToken,
+    /// The watch on the revocation of the subject this request was admitted on, held while the
+    /// request is live: a cancelled or retired request no longer cuts its connection.
+    revocation: Mutex<Option<RevocationWatch>>,
     // The response/feed owner may outlive both the Router call and all input backing.
     _request: RequestLease,
 }
@@ -610,6 +625,12 @@ impl StreamState {
     fn cancel(&self) {
         *self.phase.lock().unwrap_or_else(PoisonError::into_inner) = Phase::Cancelled;
         self.cancelled.cancel();
+        drop(
+            self.revocation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
     }
 }
 
@@ -660,6 +681,8 @@ pub struct RequestBinding {
     /// The arrival's one monotonic reading (`Arrival`), the one `deadline` was derived from.
     mono_ns: Option<u64>,
     facts: Arc<AcceptedConnection>,
+    /// The connection's revocation cut ([`PhysicalConnection::revocation`]).
+    revocation: Arc<RevocationCut>,
     state: Arc<StreamState>,
     stream: u64,
     body: OnceLock<PhysicalBody>,

@@ -1926,6 +1926,7 @@ pub(crate) async fn rollback_config(
     let req: RollbackReq = ok_or_respond!(boxed json_body(&body, "rollback"));
     let resource = format!("config:v{}", req.version);
     let want = req.version;
+    let card_origin = format!("config/rollback by {actor}");
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
@@ -1940,14 +1941,16 @@ pub(crate) async fn rollback_config(
         let snapshot = current.clone();
         let registry = decode_hook_registry(&target.hook_registry)?;
         Ok(txn.store_write_async(async move {
-            let installed = Arc::new(build_with_registry(
+            let (next, gov_rotate, limits) = Box::pin(build_with_registry(
                 &snapshot,
                 registry,
                 target.global_hooks,
-            )?);
+            ))
+            .await?;
+            let installed = Arc::new(next);
 
             let p = installed.clone();
-            Ok(Outcome::commit_async(
+            Ok(Outcome::commit_rates_async_then(
                 installed.clone(),
                 async move {
                     busbar_kernel::config::overlay::persist_async(
@@ -1966,7 +1969,14 @@ pub(crate) async fn rollback_config(
                         )
                     })
                 },
-                installed,
+                limits,
+                card_origin,
+                async move {
+                    if let Some(rotate) = gov_rotate {
+                        rotate.await;
+                    }
+                    Ok(Outcome::Value(installed))
+                },
             ))
         }))
     })
