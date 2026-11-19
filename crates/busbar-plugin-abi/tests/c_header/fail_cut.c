@@ -47,14 +47,16 @@ static bb_deployment_id deployment(const void *ctx) {
     bb_deployment_id d = {{0}};
     return d;
 }
-static bb_status migrate_admit(const void *ctx, uint64_t recoverable) {
+static bb_status service(const void *ctx, uint64_t id, const bb_call *call, bb_raw_out *out) {
     (void)ctx;
-    (void)recoverable;
+    (void)id;
+    (void)call;
+    (void)out;
     return BB_FAULT;
 }
 
 int main(int argc, char **argv) {
-    const bb_host host = {NULL, zero, zero, random_, crypto, log_, log_level, grow, deployment, migrate_admit};
+    const bb_host host = {sizeof(bb_host), 9, NULL, zero, zero, random_, crypto, log_, log_level, grow, deployment, service};
     for (int i = 1; i < argc; i++) {
         bb_raw_out o = {calloc(4096, 1), 0, 4096};
         if (!o.ptr) return 2;

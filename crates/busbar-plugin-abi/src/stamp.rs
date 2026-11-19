@@ -9,22 +9,23 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::types::{KindCode, Str};
-use crate::versions::{ENGINE, EngineVersion, MECHANISM};
+use crate::versions::{CORE, CORE_MINOR, ENGINE_ANY_MAX, ENGINE_ANY_MIN, EngineVersion};
 
 #[repr(C)] // 272 bytes, align 8, little-endian (round 28: was 320)
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct Stamp {
     pub magic: [u8; 16],           //   0  b"BUSBAR\0PLUGSTAMP"
-    pub format: u32,               //  16  2 (scan refuses format 1)
+    pub format: u32,               //  16  3 (scan refuses formats 1 and 2)
     pub size: u32,                 //  20  272
     pub kind: u32,                 //  24  KindCode
-    pub kind_abi: u32,             //  28  versions::<KIND>
-    pub mechanism: u32,            //  32  versions::MECHANISM (2)
+    pub kind_abi: u32,             //  28  the kind contract's first number (versions::<KIND>)
+    pub core_abi: u32,             //  32  the core contract's first number (versions::CORE)
     pub flags: u32,                //  36  STAMP_*
-    pub layout: u64,               //  40  <kind>::FP
-    pub mechanism_layout: u64,     //  48  CORE_FP
-    pub semantic: u64,             //  56  == layout (docs are hashed inside FP)
-    pub mechanism_semantic: u64,   //  64  == mechanism_layout
+    pub layout: u64, //  40  the kind contract's wire fingerprint at kind_abi.kind_minor (<kind>::FP)
+    pub core_layout: u64, //  48  the core contract's wire fingerprint at core_abi.core_minor (CORE_FP)
+    pub kind_minor: u32,  //  56  the kind contract's second number
+    pub core_minor: u32,  //  60  the core contract's second number
+    pub _reserved2: [u8; 8], //  64  0 (format 2's duplicate "semantic" word, returned to reserve)
     pub engine_min: EngineVersion, //  72
     pub engine_max: EngineVersion, //  80
     pub name: [u8; 64], //  88  plugin identity (CARGO_PKG_NAME of the logic crate | name: arm | BUSBAR_PLUGIN_NAME)
@@ -135,10 +136,12 @@ pub const fn target_now() -> [u8; 32] {
 pub struct Spec<'a> {
     pub kind: KindCode,
     pub kind_abi: u32,
+    /// `<kind>::MINOR`: the kind contract's second number this image was built against.
+    pub kind_minor: u32,
     /// `<kind>::FP`: the stamp's `layout` and `semantic`.
     pub layout: u64,
     pub out_of_process: bool,
-    /// The `engine_min:`/`engine_max:` arms; None is the SDK line's `x.y.0` / `x.y.65535`.
+    /// The `engine_min:`/`engine_max:` arms: an optional statement about a known bad engine. None = any.
     pub engine_min: Option<&'a str>,
     pub engine_max: Option<&'a str>,
     pub name: &'a str,
@@ -168,10 +171,10 @@ pub const fn emit(spec: &Spec<'_>) -> busbar_ffi::StampBytes {
         spec.out_of_process || is(spec.crypto, "host"),
         "only an out_of_process plugin names a crypto backend"
     );
-    let engine_min = engine(spec.engine_min, 0);
-    let engine_max = engine(spec.engine_max, u16::MAX);
+    let engine_min = engine(spec.engine_min, ENGINE_ANY_MIN);
+    let engine_max = engine(spec.engine_max, ENGINE_ANY_MAX);
     assert!(
-        engine_min.patch <= engine_max.patch,
+        !engine_above(engine_min, engine_max),
         "engine_min is above engine_max"
     );
     let (build_id, local) = build_id_of(spec.build_id);
@@ -184,16 +187,16 @@ pub const fn emit(spec: &Spec<'_>) -> busbar_ffi::StampBytes {
     let core = crate::fp::CORE_FP;
     let mut b = [0u8; 272];
     put(&mut b, 0, &STAMP_MAGIC);
-    put(&mut b, 16, &2u32.to_le_bytes());
+    put(&mut b, 16, &STAMP_FORMAT.to_le_bytes());
     put(&mut b, 20, &272u32.to_le_bytes());
     put(&mut b, 24, &(spec.kind as u32).to_le_bytes());
     put(&mut b, 28, &spec.kind_abi.to_le_bytes());
-    put(&mut b, 32, &MECHANISM.to_le_bytes());
+    put(&mut b, 32, &CORE.to_le_bytes());
     put(&mut b, 36, &flags.to_le_bytes());
     put(&mut b, 40, &spec.layout.to_le_bytes());
     put(&mut b, 48, &core.to_le_bytes());
-    put(&mut b, 56, &spec.layout.to_le_bytes());
-    put(&mut b, 64, &core.to_le_bytes());
+    put(&mut b, 56, &spec.kind_minor.to_le_bytes());
+    put(&mut b, 60, &CORE_MINOR.to_le_bytes());
     put_engine(&mut b, 72, engine_min);
     put_engine(&mut b, 80, engine_max);
     put(&mut b, 88, spec.name.as_bytes());
@@ -310,16 +313,25 @@ const fn valid_crypto(crypto: &str) -> bool {
     true
 }
 
-/// An engine bound: `text` (`x.y.z`, inside the SDK's own line), or the line's `x.y.<patch>`.
-const fn engine(text: Option<&str>, patch: u16) -> EngineVersion {
-    let line = EngineVersion {
-        major: ENGINE.major,
-        minor: ENGINE.minor,
-        patch,
-        _reserved: 0,
-    };
+/// The stamp format this source writes and its loader accepts (interface revision C.4): per contract a
+/// first number, a second number and the wire fingerprint of exactly that version; no duplicate words.
+pub const STAMP_FORMAT: u32 = 3;
+
+/// Whether `a` is a later engine version than `b`.
+const fn engine_above(a: EngineVersion, b: EngineVersion) -> bool {
+    if a.major != b.major {
+        return a.major > b.major;
+    }
+    if a.minor != b.minor {
+        return a.minor > b.minor;
+    }
+    a.patch > b.patch
+}
+
+/// An engine bound: `text` (`x.y.z`), or `any` when the plugin states none.
+const fn engine(text: Option<&str>, any: EngineVersion) -> EngineVersion {
     let Some(text) = text else {
-        return line;
+        return any;
     };
     let b = text.as_bytes();
     let mut parts = [0u16; 3];
@@ -347,10 +359,6 @@ const fn engine(text: Option<&str>, patch: u16) -> EngineVersion {
         }
     }
     assert!(at == b.len(), "an engine bound is not `x.y.z`");
-    assert!(
-        parts[0] == line.major && parts[1] == line.minor,
-        "an engine bound leaves the SDK's line"
-    );
     EngineVersion {
         major: parts[0],
         minor: parts[1],
@@ -405,7 +413,8 @@ mod tests {
     fn spec<'a>(name: &'a str, out_of_process: bool, crypto: &'a str) -> Spec<'a> {
         Spec {
             kind: KindCode::Secret,
-            kind_abi: 2,
+            kind_abi: 3,
+            kind_minor: 0,
             layout: 0x0123_4567_89ab_cdef,
             out_of_process,
             engine_min: Some("1.6.2"),
@@ -425,11 +434,11 @@ mod tests {
         let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4"));
         let u64_at = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8"));
         assert_eq!(&bytes[..16], b"BUSBAR\0PLUGSTAMP");
-        assert_eq!(u32_at(16), 2, "format 2 (round 28)");
+        assert_eq!(u32_at(16), 3, "format 3 (interface revision C.4)");
         assert_eq!(u32_at(20), 272);
         assert_eq!(u32_at(24), KindCode::Secret as u32);
         assert_eq!(u32_at(28), 2);
-        assert_eq!(u32_at(32), MECHANISM);
+        assert_eq!(u32_at(32), CORE);
         assert_eq!(
             u32_at(36),
             STAMP_LOCAL_BUILD,
@@ -437,12 +446,9 @@ mod tests {
         );
         assert_eq!(u64_at(40), 0x0123_4567_89ab_cdef);
         assert_eq!(u64_at(48), crate::fp::CORE_FP);
-        assert_eq!(u64_at(56), u64_at(40), "semantic == layout");
-        assert_eq!(
-            u64_at(64),
-            u64_at(48),
-            "mechanism_semantic == mechanism_layout"
-        );
+        assert_eq!(u32_at(56), 0, "the kind's second number");
+        assert_eq!(u32_at(60), CORE_MINOR, "the core's second number");
+        assert_eq!(u64_at(64), 0, "returned to reserve");
         assert_eq!(&bytes[88..88 + 17], b"busbar-secret-env");
         assert!(bytes[88 + 17..152].iter().all(|&b| b == 0), "NUL-padded");
         assert_eq!(&bytes[152..152 + 14], b"1.6.0-rc.1+abc");
@@ -454,14 +460,17 @@ mod tests {
         let stamp = Stamp::read_from_bytes(&bytes[..]).expect("272 bytes");
         assert_eq!(stamp.magic, STAMP_MAGIC);
         assert_eq!(stamp.kind, KindCode::Secret as u32);
-        assert_eq!(stamp.engine_min.major, ENGINE.major);
-        assert_eq!(stamp.engine_min.minor, ENGINE.minor);
-        assert_eq!(stamp.engine_min.patch, 2);
         assert_eq!(
-            stamp.engine_max.patch,
-            u16::MAX,
-            "the line's end by default"
+            (
+                stamp.engine_min.major,
+                stamp.engine_min.minor,
+                stamp.engine_min.patch
+            ),
+            (1, 6, 2)
         );
+        assert_eq!(stamp.engine_max, ENGINE_ANY_MAX, "any engine by default");
+        assert_eq!((stamp.kind_abi, stamp.kind_minor), (3, 0));
+        assert_eq!((stamp.core_abi, stamp.core_minor), (CORE, CORE_MINOR));
         assert_eq!(stamp.flags & !STAMP_FLAGS_KNOWN, 0);
     }
 
@@ -524,11 +533,15 @@ mod tests {
     }
 
     #[test]
-    fn an_engine_bound_stays_on_the_line() {
-        let line = format!("{}.{}.7", ENGINE.major, ENGINE.minor);
-        assert_eq!(engine(Some(&line), 0).patch, 7);
-        let other = format!("{}.{}.0", ENGINE.major, ENGINE.minor + 1);
-        assert!(std::panic::catch_unwind(|| engine(Some(&other), 0)).is_err());
-        assert!(std::panic::catch_unwind(|| engine(Some("1.6"), 0)).is_err());
+    fn an_engine_bound_is_any_unless_stated() {
+        assert_eq!(engine(None, ENGINE_ANY_MIN), ENGINE_ANY_MIN);
+        assert_eq!(engine(None, ENGINE_ANY_MAX), ENGINE_ANY_MAX);
+        assert_eq!(engine(Some("1.7.7"), ENGINE_ANY_MIN).patch, 7);
+        assert_eq!(
+            engine(Some("2.0.0"), ENGINE_ANY_MIN).major,
+            2,
+            "any line may be named"
+        );
+        assert!(std::panic::catch_unwind(|| engine(Some("1.6"), ENGINE_ANY_MIN)).is_err());
     }
 }

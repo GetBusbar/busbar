@@ -180,6 +180,7 @@ mod fixture {
             _stream: u32,
             _delivery: u64,
             attempt: u32,
+            _lines: u32,
             batch: ChainBytes,
         ) -> Result<Reply, Fail> {
             let mut fuse = Fuse {

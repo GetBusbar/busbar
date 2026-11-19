@@ -485,7 +485,7 @@ pub(crate) mod fixture {
                 conn: &ConnInfo<'_>,
                 out: &mut Out<'_>,
             ) -> Result<Sess, Fail> {
-                opener(conn.role, out, tag::WRITE, b"hello")
+                opener(conn.role, out, tag::RENDEZVOUS, b"hello")
             }
         }
 

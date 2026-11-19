@@ -54,7 +54,7 @@ fn describe(streams: &[u8], delivery: &[u64], dest_path: bool) -> Reply {
         w.put(tag::D_DELIVERY, &capacity.to_le_bytes()).unwrap();
     }
     if dest_path {
-        w.put_text(generic::D_DEST_PATH, "/dest").unwrap();
+        w.put_text(tag::D_DEST_PATH, "/dest").unwrap();
     }
     w
 }

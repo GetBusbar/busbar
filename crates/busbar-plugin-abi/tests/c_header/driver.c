@@ -49,9 +49,11 @@ static bb_deployment_id deployment(const void *ctx) {
     bb_deployment_id d = {{0}};
     return d;
 }
-static bb_status migrate_admit(const void *ctx, uint64_t recoverable) {
+static bb_status service(const void *ctx, uint64_t id, const bb_call *call, bb_raw_out *out) {
     (void)ctx;
-    (void)recoverable;
+    (void)id;
+    (void)call;
+    (void)out;
     return BB_FAULT; /* a secret's open never calls it */
 }
 
@@ -62,10 +64,11 @@ static bb_raw_out fresh(size_t cap) {
 }
 
 int main(void) {
-    const bb_host host = {NULL, zero, zero, random_, crypto, log_, log_level, grow, deployment, migrate_admit};
+    const bb_host host = {sizeof(bb_host), 9, NULL, zero, zero, random_, crypto, log_, log_level, grow, deployment, service};
     const bb_plugin *p = busbar_plugin();
     bb_raw_out o = fresh(16); /* small, so describe grows */
-    bb_status s = p->describe(&host, &o);
+    const bb_call none = {0, 0, {NULL, 0}, {NULL, 0}, {NULL, 0}};
+    bb_status s = p->describe(NULL, &host, &none, &o);
     printf("describe %u ", (unsigned)s);
     hex(o.ptr, o.len);
     printf("\n");
@@ -73,15 +76,18 @@ int main(void) {
 
     o = fresh(4096);
     bb_bytes config = {(const uint8_t *)"{}", 2};
-    if (p->open(&host, config, 0, &o) != BB_OK || o.len != sizeof(bb_rec_head) + sizeof(bb_instance_rec)) return 3;
+    uint32_t flags = 0;
+    const bb_call opening = {0, 0, {(const uint8_t *)&flags, sizeof flags}, {NULL, 0}, {&config, 1}};
+    if (p->entries != BB_SECRET_ENTRIES || p->size != sizeof(bb_plugin)) return 5;
+    if (p->open(NULL, &host, &opening, &o) != BB_OK || o.len != sizeof(bb_rec_head) + sizeof(bb_instance_rec)) return 3;
     bb_instance_rec inst;
     memcpy(&inst, o.ptr + sizeof(bb_rec_head), sizeof inst);
     free(o.ptr);
 
     o = fresh(4096);
-    const bb_secret_vt *vt = p->kind_vt;
-    bb_bytes reference = {(const uint8_t *)"{\"name\":\"numbered\"}", 19};
-    s = vt->resolve((const void *)(uintptr_t)inst.inst, &host, reference, &o);
+        bb_bytes reference = {(const uint8_t *)"{\"name\":\"numbered\"}", 19};
+    const bb_call resolving = {0, 0, {NULL, 0}, {NULL, 0}, {&reference, 1}};
+    s = p->table[0]((const void *)(uintptr_t)inst.inst, &host, &resolving, &o);
     bool zeroed = true;
     for (size_t i = o.len; i < o.cap; i++) zeroed = zeroed && !o.ptr[i];
     printf("numbered %u %s ", (unsigned)s, zeroed ? "zeroed" : "residue");

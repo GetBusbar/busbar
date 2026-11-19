@@ -1,47 +1,49 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The plugin-side entries (IF §6.4, §7.6; UNSAFE-MIN §2.4) and the safe adapter traits `kind!` and
-//! `plugin!` implement.
+//! The plugin-side entries (IF §6.4; core 3.0, interface revision C.3) and the safe adapter traits `kind!`
+//! and `plugin!` implement.
+//!
+//! Every entry has the one shape `Entry(inst, host, &Call, &mut RawOut)`. There are five kind shims, one per
+//! role a table position can have (a plain call, a session opener, a call on a live session, the consuming
+//! end, an async start), and three header shims of the same shape (`describe`, `open`, `resume`), plus
+//! `cancel` and `close`. None of them knows a kind: what `head`, `texts` and `blobs` mean is the adapter's.
 //!
 //! Every shim is `entry`-shaped: no panic crosses `extern "C"` (I10), a caught panic is FAULT. The one
-//! `unsafe fn enter` turns the host's `inst` into the instance; `describe` and `open` take no instance and
-//! are safe fns. Adapters never see the instance, a slot table or a `RawOut`: sync methods get the plugin,
-//! session methods the plugin and their own session, async starts the plugin for the chain's borrow.
+//! `unsafe fn enter` turns the host's `inst` into the instance. Adapters never see the instance, a slot
+//! table or a `RawOut`: sync methods get the plugin, session methods the plugin and their own session,
+//! async starts the plugin for the chain's borrow.
 //!
-//! `unsafe` here: `enter` (def and body); per shim its def and its `enter` block; plus
-//! the `drop_inst` block of `close`. Slot access uses crate-private primitives under each entry's I6
-//! contract; they do not expose numeric mutation authority to external safe callers.
+//! `unsafe` here: `enter` (def and body); per instance-taking shim its def and its `enter` block; the defs
+//! of `describe` and `open` (they are `Entry`-typed); plus the `drop_inst` block of `close`. Slot access uses
+//! crate-private primitives under each entry's I6 contract.
 //!
 //! # Entry safety contract
 //!
-//! Every instance-taking entry implements the corresponding `vt` alias's safety contract. `M` must
-//! be the image that allocated `inst`, and the allocation must remain live for the complete entry.
-//! `enter` only reconstructs a shared borrow; it does not validate an arbitrary address or lock a slot.
-//! Session entries, resume, end and cancel therefore additionally require exclusive access to their
-//! token (I6), supplied by the host handle's exclusive borrow. Token generation checks reject stale
-//! identities but do not serialize two simultaneous entries for the same live identity.
+//! Every shim implements `vt`'s entry safety contract. `M` must be the image that allocated `inst`, and the
+//! allocation must remain live for the complete entry. `enter` only reconstructs a shared borrow; it does
+//! not validate an arbitrary address or lock a slot. Session entries, resume, end and cancel therefore
+//! additionally require exclusive access to their token (I6), supplied by the host handle's exclusive
+//! borrow. Token generation checks reject stale identities but do not serialize two simultaneous entries
+//! for the same live identity.
 //!
-//! The host keeps borrowed argument/output memory valid for each synchronous call and retains async
-//! argument/result buffers until the chain is retired. Async shims store borrowed futures only in the
-//! entered instance's chain table; completion, cancellation and instance teardown drop those futures
-//! before their plugin or host buffers. No shim other than `close` frees the instance. Each declaration
-//! below states its additional ownership obligation; its body records the individual pointer/slot
-//! operation. These are C ABI caller obligations, not checks performed by `contain`.
+//! The host keeps borrowed call and output memory valid for each synchronous call and retains async blobs
+//! and results until the chain is retired. Async shims store borrowed futures only in the entered
+//! instance's chain table; completion, cancellation and instance teardown drop those futures before their
+//! plugin or host buffers. No shim other than `close` frees the instance.
 
 #![allow(unsafe_code)]
 
+use core::cell::Cell;
 use core::ffi::c_void;
 use core::future::Future;
 use core::panic::AssertUnwindSafe;
 use core::pin::Pin;
 use std::panic::catch_unwind;
 
-use crate::raw::{
-    Arg, AsyncArg, Bytes, ChainBytes, ChainId, Host, Out, RawArg, RawOut, Status, Token,
-    seal::ToChain,
-};
+use crate::raw::{Bytes, ChainBytes, ChainId, Host, Out, RawOut, Status, Token};
 use crate::slots::{ChainBox, ChainRef, Inst, Slots, drop_inst, pack, tie, unpack};
+use crate::vt::{Args, Call, ChainArgs, Entry, Slot};
 
 /// A boxed chain future that may borrow the plugin for `'i`.
 pub type ChainFut<'i, R> = Pin<Box<dyn Future<Output = R> + Send + 'i>>;
@@ -98,136 +100,80 @@ pub trait Image: Sized + 'static {
     fn opened(token: Token, out: &mut Out<'_>) -> Status;
 }
 
-/// Sync method adapters, one per slot `S` (the method's index in its kind's table).
-pub trait Call0<const S: usize>: Image {
-    fn call(p: &Self::Plugin, h: &'static Host, out: &mut Out<'_>) -> Status;
-}
-pub trait Call1<A1: RawArg, const S: usize>: Image {
-    fn call(p: &Self::Plugin, h: &'static Host, a1: Arg<'_, A1>, out: &mut Out<'_>) -> Status;
-}
-pub trait Call2<A1: RawArg, A2: RawArg, const S: usize>: Image {
-    fn call(
-        p: &Self::Plugin,
-        h: &'static Host,
-        a1: Arg<'_, A1>,
-        a2: Arg<'_, A2>,
-        out: &mut Out<'_>,
-    ) -> Status;
-}
-pub trait Call3<A1: RawArg, A2: RawArg, A3: RawArg, const S: usize>: Image {
-    fn call(
-        p: &Self::Plugin,
-        h: &'static Host,
-        a1: Arg<'_, A1>,
-        a2: Arg<'_, A2>,
-        a3: Arg<'_, A3>,
-        out: &mut Out<'_>,
-    ) -> Status;
+/// A plain sync method, one impl per slot `S` (the method's index in its kind's table). A call that does
+/// not follow the method's layout (a short head, a missing text or blob) is the adapter's FAULT.
+pub trait Plain<const S: usize>: Image {
+    fn call(p: &Self::Plugin, h: &'static Host, args: Args<'_>, out: &mut Out<'_>) -> Status;
 }
 
-/// Session openers (`plane::request`, `plane::probe`, `transport::begin`): Ok = the new session, which
-/// the shim inserts before `Image::opened` writes its TOKEN; Err = the status of the FAIL written.
-pub trait Opener1<A1: RawArg, const S: usize>: Image {
+/// A session opener: Ok = the new session, which the shim inserts before `Image::opened` writes its
+/// TOKEN; Err = the status of the FAIL written (or FAULT for a call off its layout).
+pub trait Opens<const S: usize>: Image {
     fn begin(
         p: &Self::Plugin,
         h: &'static Host,
-        a1: Arg<'_, A1>,
-        out: &mut Out<'_>,
-    ) -> Result<Self::Session, Status>;
-}
-pub trait Opener2<A1: RawArg, A2: RawArg, const S: usize>: Image {
-    fn begin(
-        p: &Self::Plugin,
-        h: &'static Host,
-        a1: Arg<'_, A1>,
-        a2: Arg<'_, A2>,
+        args: Args<'_>,
         out: &mut Out<'_>,
     ) -> Result<Self::Session, Status>;
 }
 
-/// Methods on a live session (raw: the token first).
-pub trait Session0<const S: usize>: Image {
-    fn on(p: &Self::Plugin, h: &'static Host, s: &mut Self::Session, out: &mut Out<'_>) -> Status;
-}
-pub trait Session1<A1: RawArg, const S: usize>: Image {
+/// A method on a live session: the shim resolves `Call::session` to `&mut Session`.
+pub trait OnSession<const S: usize>: Image {
     fn on(
         p: &Self::Plugin,
         h: &'static Host,
         s: &mut Self::Session,
-        a1: Arg<'_, A1>,
-        out: &mut Out<'_>,
-    ) -> Status;
-}
-pub trait Session2<A1: RawArg, A2: RawArg, const S: usize>: Image {
-    fn on(
-        p: &Self::Plugin,
-        h: &'static Host,
-        s: &mut Self::Session,
-        a1: Arg<'_, A1>,
-        a2: Arg<'_, A2>,
-        out: &mut Out<'_>,
-    ) -> Status;
-}
-pub trait Session3<A1: RawArg, A2: RawArg, A3: RawArg, const S: usize>: Image {
-    fn on(
-        p: &Self::Plugin,
-        h: &'static Host,
-        s: &mut Self::Session,
-        a1: Arg<'_, A1>,
-        a2: Arg<'_, A2>,
-        a3: Arg<'_, A3>,
-        out: &mut Out<'_>,
-    ) -> Status;
-}
-pub trait Session4<A1: RawArg, A2: RawArg, A3: RawArg, A4: RawArg, const S: usize>: Image {
-    fn on(
-        p: &Self::Plugin,
-        h: &'static Host,
-        s: &mut Self::Session,
-        a1: Arg<'_, A1>,
-        a2: Arg<'_, A2>,
-        a3: Arg<'_, A3>,
-        a4: Arg<'_, A4>,
+        args: Args<'_>,
         out: &mut Out<'_>,
     ) -> Status;
 }
 
-/// A method that consumes its session (`plane::end`): the shim removes it first.
-pub trait End0<const S: usize>: Image {
-    fn end(p: &Self::Plugin, h: &'static Host, s: Self::Session, out: &mut Out<'_>) -> Status;
+/// A method that consumes its session: the shim removes it first.
+pub trait Ends<const S: usize>: Image {
+    fn end(
+        p: &Self::Plugin,
+        h: &'static Host,
+        s: Self::Session,
+        args: Args<'_>,
+        out: &mut Out<'_>,
+    ) -> Status;
 }
 
-/// Async method adapters: start the chain future over the plugin it borrows.
-pub trait Start0<const S: usize>: Image {
-    fn start<'i>(p: &'i Self::Plugin, h: &'static Host)
-    -> (ChainFut<'i, Self::Reply>, Self::Inbox);
-}
-pub trait Start1<A1: AsyncArg, const S: usize>: Image {
+/// An async method: start the chain future over the plugin it borrows. None: the call is off its layout
+/// (FAULT). Nothing borrowed from `args` can enter the future: numbers are copied, bytes are `ChainBytes`.
+pub trait Starts<const S: usize>: Image {
     fn start<'i>(
         p: &'i Self::Plugin,
         h: &'static Host,
-        a1: A1::Chained,
-    ) -> (ChainFut<'i, Self::Reply>, Self::Inbox);
+        args: ChainArgs<'_>,
+    ) -> Option<(ChainFut<'i, Self::Reply>, Self::Inbox)>;
 }
-pub trait Start2<A1: AsyncArg, A2: AsyncArg, const S: usize>: Image {
-    fn start<'i>(
-        p: &'i Self::Plugin,
-        h: &'static Host,
-        a1: A1::Chained,
-        a2: A2::Chained,
-    ) -> (ChainFut<'i, Self::Reply>, Self::Inbox);
+
+std::thread_local! {
+    /// The clock reading the host handed the entry running on this thread (`Call::mono_ns`); 0 outside one.
+    static MONO: Cell<u64> = const { Cell::new(0) };
 }
-pub trait Start4<A1: AsyncArg, A2: AsyncArg, A3: AsyncArg, A4: AsyncArg, const S: usize>:
-    Image
-{
-    fn start<'i>(
-        p: &'i Self::Plugin,
-        h: &'static Host,
-        a1: A1::Chained,
-        a2: A2::Chained,
-        a3: A3::Chained,
-        a4: A4::Chained,
-    ) -> (ChainFut<'i, Self::Reply>, Self::Inbox);
+
+/// The host's one clock reading for the operation whose entry is running on this thread (monotonic
+/// nanoseconds, the WAKE_AT clock), or 0 when the host gave none or no entry is running. A plugin reads the
+/// time here instead of calling back into the host (core 3.0).
+pub fn mono_ns() -> u64 {
+    MONO.try_with(Cell::get).unwrap_or(0)
+}
+
+/// Sets the entry's clock reading and restores the enclosing entry's on return and on unwind.
+struct Clock(u64);
+
+impl Clock {
+    fn enter(mono_ns: u64) -> Clock {
+        Clock(MONO.try_with(|m| m.replace(mono_ns)).unwrap_or(0))
+    }
+}
+
+impl Drop for Clock {
+    fn drop(&mut self) {
+        let _ = MONO.try_with(|m| m.set(self.0));
+    }
 }
 
 /// The entry wrapper (§6.4 step 0): a caught panic is FAULT.
@@ -267,14 +213,15 @@ fn drive_new<M: Image>(
     }
 }
 
-// ---- sync methods ----
+// ---- the five kind shims ----
 
 /// # Safety
-/// Uphold the module entry contract and `vt::EntryFn0`: this is `M`'s live instance, borrowed only for
-/// the call. The adapter receives a shared plugin borrow and cannot free the instance.
-pub(crate) unsafe extern "C" fn sync0<M: Call0<S>, const S: usize>(
+/// Uphold the module entry contract: this is `M`'s live instance, borrowed only for the call; `call` and
+/// `out` stay valid throughout. The adapter receives a shared plugin borrow and cannot free the instance.
+unsafe extern "C" fn plain_entry<M: Plain<S>, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
+    call: &Call<'_>,
     out: &mut RawOut,
 ) -> Status {
     // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
@@ -283,16 +230,17 @@ pub(crate) unsafe extern "C" fn sync0<M: Call0<S>, const S: usize>(
         return Status::FAULT;
     };
     let mut out = Out::new(out, h);
-    contain(|| <M as Call0<S>>::call(i.plugin(), h, &mut out))
+    let _clock = Clock::enter(call.mono_ns());
+    contain(|| <M as Plain<S>>::call(i.plugin(), h, Args::new(call), &mut out))
 }
 
 /// # Safety
-/// Uphold the module entry contract and `vt::EntryFn1`; `a1` and output remain valid throughout the
-/// shared-plugin call. The instance is retained by the host, not consumed here.
-pub(crate) unsafe extern "C" fn sync1<M: Call1<A1, S>, A1: RawArg, const S: usize>(
+/// Uphold the module entry contract. The new session is inserted into this same instance; the host owns
+/// the returned token and must retain the instance until end or cancel.
+unsafe extern "C" fn opens_entry<M: Opens<S>, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
-    a1: Arg<'_, A1>,
+    call: &Call<'_>,
     out: &mut RawOut,
 ) -> Status {
     // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
@@ -301,78 +249,9 @@ pub(crate) unsafe extern "C" fn sync1<M: Call1<A1, S>, A1: RawArg, const S: usiz
         return Status::FAULT;
     };
     let mut out = Out::new(out, h);
-    contain(|| <M as Call1<A1, S>>::call(i.plugin(), h, a1, &mut out))
-}
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn2`; both arguments and output remain valid
-/// throughout the shared-plugin call. The instance is retained by the host.
-pub(crate) unsafe extern "C" fn sync2<
-    M: Call2<A1, A2, S>,
-    A1: RawArg,
-    A2: RawArg,
-    const S: usize,
->(
-    inst: *const c_void,
-    h: &'static Host,
-    a1: Arg<'_, A1>,
-    a2: Arg<'_, A2>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    contain(|| <M as Call2<A1, A2, S>>::call(i.plugin(), h, a1, a2, &mut out))
-}
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn3`; all arguments and output remain valid
-/// throughout the shared-plugin call. The instance is retained by the host.
-pub(crate) unsafe extern "C" fn sync3<
-    M: Call3<A1, A2, A3, S>,
-    A1: RawArg,
-    A2: RawArg,
-    A3: RawArg,
-    const S: usize,
->(
-    inst: *const c_void,
-    h: &'static Host,
-    a1: Arg<'_, A1>,
-    a2: Arg<'_, A2>,
-    a3: Arg<'_, A3>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    contain(|| <M as Call3<A1, A2, A3, S>>::call(i.plugin(), h, a1, a2, a3, &mut out))
-}
-
-// ---- session openers and the consuming end ----
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn1`. The new session is inserted into this same
-/// instance; the host owns the returned token and must retain the instance until end/cancel.
-pub(crate) unsafe extern "C" fn opener1<M: Opener1<A1, S>, A1: RawArg, const S: usize>(
-    inst: *const c_void,
-    h: &'static Host,
-    a1: Arg<'_, A1>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
+    let _clock = Clock::enter(call.mono_ns());
     contain(
-        || match <M as Opener1<A1, S>>::begin(i.plugin(), h, a1, &mut out) {
+        || match <M as Opens<S>>::begin(i.plugin(), h, Args::new(call), &mut out) {
             Ok(session) => match i.sessions().insert_raw(session) {
                 Some((index, generation)) => M::opened(pack(true, index, generation), &mut out),
                 None => Status::FAULT,
@@ -383,18 +262,12 @@ pub(crate) unsafe extern "C" fn opener1<M: Opener1<A1, S>, A1: RawArg, const S: 
 }
 
 /// # Safety
-/// Uphold the module entry contract and `vt::EntryFn2`. The new session is inserted into this same
-/// instance; the host owns the returned token and must retain the instance until end/cancel.
-pub(crate) unsafe extern "C" fn opener2<
-    M: Opener2<A1, A2, S>,
-    A1: RawArg,
-    A2: RawArg,
-    const S: usize,
->(
+/// Uphold the module entry contract. Exclude every other access or removal of the session
+/// `call.session` names until the adapter's mutable session borrow ends; the slot remains instance-owned.
+unsafe extern "C" fn on_session_entry<M: OnSession<S>, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
-    a1: Arg<'_, A1>,
-    a2: Arg<'_, A2>,
+    call: &Call<'_>,
     out: &mut RawOut,
 ) -> Status {
     // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
@@ -403,25 +276,29 @@ pub(crate) unsafe extern "C" fn opener2<
         return Status::FAULT;
     };
     let mut out = Out::new(out, h);
-    contain(
-        || match <M as Opener2<A1, A2, S>>::begin(i.plugin(), h, a1, a2, &mut out) {
-            Ok(session) => match i.sessions().insert_raw(session) {
-                Some((index, generation)) => M::opened(pack(true, index, generation), &mut out),
-                None => Status::FAULT,
-            },
-            Err(status) => status,
-        },
-    )
+    let _clock = Clock::enter(call.mono_ns());
+    contain(|| {
+        let (session, index, generation) = unpack(call.session());
+        if !session {
+            return Status::FAULT;
+        }
+        // I6: only the host's `Session` puts a live session token in a call, while holding `&mut` to
+        // itself, so no other entry reaches this slot's value now, and adapters cannot reach the table.
+        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
+            return Status::FAULT;
+        };
+        <M as OnSession<S>>::on(i.plugin(), h, s, Args::new(call), &mut out)
+    })
 }
 
 /// # Safety
-/// Uphold the module entry contract and `vt::EntryFn1`, with exclusive ownership of the session
-/// token through removal and the adapter call. The removed session is consumed here; the host must
-/// retire its handle before allowing another use, while retaining the instance through this call.
-pub(crate) unsafe extern "C" fn end0<M: End0<S>, const S: usize>(
+/// Uphold the module entry contract, with exclusive ownership of the session token through removal and
+/// the adapter call. The removed session is consumed here; the host must retire its handle before
+/// allowing another use, while retaining the instance through this call.
+unsafe extern "C" fn ends_entry<M: Ends<S>, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
-    tok: Arg<'_, u64>,
+    call: &Call<'_>,
     out: &mut RawOut,
 ) -> Status {
     // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
@@ -429,26 +306,26 @@ pub(crate) unsafe extern "C" fn end0<M: End0<S>, const S: usize>(
     let Some(i) = (unsafe { enter::<M>(inst) }) else {
         return Status::FAULT;
     };
-    let (session, index, generation) = unpack(tok.get());
+    let (session, index, generation) = unpack(call.session());
     if !session {
         return Status::FAULT;
     }
     let mut out = Out::new(out, h);
+    let _clock = Clock::enter(call.mono_ns());
     contain(|| match i.sessions().remove_raw(index, generation) {
-        Some(s) => <M as End0<S>>::end(i.plugin(), h, s, &mut out),
+        Some(s) => <M as Ends<S>>::end(i.plugin(), h, s, Args::new(call), &mut out),
         None => Status::FAULT,
     })
 }
 
-// ---- methods on a live session: the token resolves to `&mut Session` ----
-
 /// # Safety
-/// Uphold the module entry contract and `vt::EntryFn1`. Exclude every other access/removal of this
-/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
-pub(crate) unsafe extern "C" fn session0<M: Session0<S>, const S: usize>(
+/// Uphold the module entry contract. Retain the instance and every blob of `call` (immutable) until any
+/// returned chain retires: `tie` erases the plugin borrow, and `drive_new` parks the future only in this
+/// instance; its `ChainBytes` point at the blobs.
+unsafe extern "C" fn starts_entry<M: Starts<S>, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
-    tok: Arg<'_, u64>,
+    call: &Call<'_>,
     out: &mut RawOut,
 ) -> Status {
     // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
@@ -457,302 +334,88 @@ pub(crate) unsafe extern "C" fn session0<M: Session0<S>, const S: usize>(
         return Status::FAULT;
     };
     let mut out = Out::new(out, h);
+    let _clock = Clock::enter(call.mono_ns());
     contain(|| {
-        let (session, index, generation) = unpack(tok.get());
-        if !session {
-            return Status::FAULT;
-        }
-        // I6: the host makes this entry for the token while holding `&mut` to its session
-        // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
+        let Some(id) = ChainId::mint(i.serial()) else {
             return Status::FAULT;
         };
-        <M as Session0<S>>::on(i.plugin(), h, s, &mut out)
+        let Some((fut, extra)) = <M as Starts<S>>::start(i.plugin(), h, ChainArgs::new(call, &id))
+        else {
+            return Status::FAULT;
+        };
+        drive_new::<M>(i.chains(), ChainBox::new(tie(fut), id, extra), &mut out)
     })
 }
 
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn2`. Exclude every other access/removal of this
-/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
-pub(crate) unsafe extern "C" fn session1<M: Session1<A1, S>, A1: RawArg, const S: usize>(
-    inst: *const c_void,
-    h: &'static Host,
-    tok: Arg<'_, u64>,
-    a1: Arg<'_, A1>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    contain(|| {
-        let (session, index, generation) = unpack(tok.get());
-        if !session {
-            return Status::FAULT;
-        }
-        // I6: the host makes this entry for the token while holding `&mut` to its session
-        // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
-            return Status::FAULT;
-        };
-        <M as Session1<A1, S>>::on(i.plugin(), h, s, a1, &mut out)
-    })
+/// The table position of a plain sync method of image `M` at slot `S`.
+pub const fn plain<M: Plain<S>, const S: usize>() -> Slot<M> {
+    let entry: Entry = plain_entry::<M, S>;
+    Slot::new(entry)
 }
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn3`. Exclude every other access/removal of this
-/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
-pub(crate) unsafe extern "C" fn session2<
-    M: Session2<A1, A2, S>,
-    A1: RawArg,
-    A2: RawArg,
-    const S: usize,
->(
-    inst: *const c_void,
-    h: &'static Host,
-    tok: Arg<'_, u64>,
-    a1: Arg<'_, A1>,
-    a2: Arg<'_, A2>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    contain(|| {
-        let (session, index, generation) = unpack(tok.get());
-        if !session {
-            return Status::FAULT;
-        }
-        // I6: the host makes this entry for the token while holding `&mut` to its session
-        // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
-            return Status::FAULT;
-        };
-        <M as Session2<A1, A2, S>>::on(i.plugin(), h, s, a1, a2, &mut out)
-    })
+/// The table position of a session opener.
+pub const fn opens<M: Opens<S>, const S: usize>() -> Slot<M> {
+    let entry: Entry = opens_entry::<M, S>;
+    Slot::new(entry)
 }
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn4`. Exclude every other access/removal of this
-/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
-pub(crate) unsafe extern "C" fn session3<
-    M: Session3<A1, A2, A3, S>,
-    A1: RawArg,
-    A2: RawArg,
-    A3: RawArg,
-    const S: usize,
->(
-    inst: *const c_void,
-    h: &'static Host,
-    tok: Arg<'_, u64>,
-    a1: Arg<'_, A1>,
-    a2: Arg<'_, A2>,
-    a3: Arg<'_, A3>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    contain(|| {
-        let (session, index, generation) = unpack(tok.get());
-        if !session {
-            return Status::FAULT;
-        }
-        // I6: the host makes this entry for the token while holding `&mut` to its session
-        // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
-            return Status::FAULT;
-        };
-        <M as Session3<A1, A2, A3, S>>::on(i.plugin(), h, s, a1, a2, a3, &mut out)
-    })
+/// The table position of a method on a live session.
+pub const fn on_session<M: OnSession<S>, const S: usize>() -> Slot<M> {
+    let entry: Entry = on_session_entry::<M, S>;
+    Slot::new(entry)
 }
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn5`. Exclude every other access/removal of this
-/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
-pub(crate) unsafe extern "C" fn session4<
-    M: Session4<A1, A2, A3, A4, S>,
-    A1: RawArg,
-    A2: RawArg,
-    A3: RawArg,
-    A4: RawArg,
-    const S: usize,
->(
-    inst: *const c_void,
-    h: &'static Host,
-    tok: Arg<'_, u64>,
-    a1: Arg<'_, A1>,
-    a2: Arg<'_, A2>,
-    a3: Arg<'_, A3>,
-    a4: Arg<'_, A4>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    contain(|| {
-        let (session, index, generation) = unpack(tok.get());
-        if !session {
-            return Status::FAULT;
-        }
-        // I6: the host makes this entry for the token while holding `&mut` to its session
-        // handle, so no other entry reaches this slot's value now, and adapters cannot reach the table.
-        let Some(s) = i.sessions().get_mut_raw(index, generation) else {
-            return Status::FAULT;
-        };
-        <M as Session4<A1, A2, A3, A4, S>>::on(i.plugin(), h, s, a1, a2, a3, a4, &mut out)
-    })
+/// The table position of the method that consumes its session.
+pub const fn ends<M: Ends<S>, const S: usize>() -> Slot<M> {
+    let entry: Entry = ends_entry::<M, S>;
+    Slot::new(entry)
 }
-
-// ---- async methods: a chain over the instance ----
-
-/// Start a chain of instance `i` from the adapter's future.
-macro_rules! start_chain {
-    ($m:ty, $i:ident, $out:ident, |$id:ident| $start:expr) => {
-        contain(|| {
-            let Some($id) = ChainId::mint($i.serial()) else {
-                return Status::FAULT;
-            };
-            let (fut, extra) = $start;
-            drive_new::<$m>($i.chains(), ChainBox::new(tie(fut), $id, extra), &mut $out)
-        })
-    };
-}
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn0`. Keep this instance alive until any returned
-/// chain retires: `tie` erases the plugin borrow, and `drive_new` parks it only in this instance.
-pub(crate) unsafe extern "C" fn start0<M: Start0<S>, const S: usize>(
-    inst: *const c_void,
-    h: &'static Host,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    start_chain!(M, i, out, |id| <M as Start0<S>>::start(i.plugin(), h))
-}
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn1`. Retain the instance and immutable argument
-/// storage until any returned chain retires; its future borrows the plugin and its chained argument.
-pub(crate) unsafe extern "C" fn start1<M: Start1<A1, S>, A1: AsyncArg, const S: usize>(
-    inst: *const c_void,
-    h: &'static Host,
-    a1: Arg<'_, A1>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    start_chain!(M, i, out, |id| <M as Start1<A1, S>>::start(
-        i.plugin(),
-        h,
-        A1::chain(a1, &id)
-    ))
-}
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn2`. Retain the instance and both immutable
-/// argument buffers until any returned chain retires; the future is parked only in this instance.
-pub(crate) unsafe extern "C" fn start2<
-    M: Start2<A1, A2, S>,
-    A1: AsyncArg,
-    A2: AsyncArg,
-    const S: usize,
->(
-    inst: *const c_void,
-    h: &'static Host,
-    a1: Arg<'_, A1>,
-    a2: Arg<'_, A2>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    start_chain!(M, i, out, |id| <M as Start2<A1, A2, S>>::start(
-        i.plugin(),
-        h,
-        A1::chain(a1, &id),
-        A2::chain(a2, &id)
-    ))
-}
-
-/// # Safety
-/// Uphold the module entry contract and `vt::EntryFn4`. Retain the instance and all immutable
-/// argument buffers until any returned chain retires; the future is parked only in this instance.
-pub(crate) unsafe extern "C" fn start4<
-    M: Start4<A1, A2, A3, A4, S>,
-    A1: AsyncArg,
-    A2: AsyncArg,
-    A3: AsyncArg,
-    A4: AsyncArg,
-    const S: usize,
->(
-    inst: *const c_void,
-    h: &'static Host,
-    a1: Arg<'_, A1>,
-    a2: Arg<'_, A2>,
-    a3: Arg<'_, A3>,
-    a4: Arg<'_, A4>,
-    out: &mut RawOut,
-) -> Status {
-    // SAFETY: the host passes `inst` from this image's INSTANCE answer and calls only while its
-    // `Instance` is alive, before `close` (I13, §10.4).
-    let Some(i) = (unsafe { enter::<M>(inst) }) else {
-        return Status::FAULT;
-    };
-    let mut out = Out::new(out, h);
-    start_chain!(M, i, out, |id| <M as Start4<A1, A2, A3, A4, S>>::start(
-        i.plugin(),
-        h,
-        A1::chain(a1, &id),
-        A2::chain(a2, &id),
-        A3::chain(a3, &id),
-        A4::chain(a4, &id)
-    ))
+/// The table position of an async method.
+pub const fn starts<M: Starts<S>, const S: usize>() -> Slot<M> {
+    let entry: Entry = starts_entry::<M, S>;
+    Slot::new(entry)
 }
 
 // ---- the header entries ----
 
-pub(crate) extern "C" fn describe<M: Image>(h: &'static Host, out: &mut RawOut) -> Status {
-    let mut out = Out::new(out, h);
-    contain(|| M::describe(h, &mut out))
+/// The first `u32` of a head (little-endian), or None when it is shorter.
+fn head_u32(head: &[u8]) -> Option<u32> {
+    Some(u32::from_le_bytes(head.get(..4)?.try_into().ok()?))
 }
 
-pub(crate) extern "C" fn open<M: Image>(
+/// Cold: describe items. `inst` and the call's fields are not read.
+/// # Safety
+/// Uphold the module entry contract for `call` and `out`; `inst` is ignored (the host passes null).
+pub(crate) unsafe extern "C" fn describe<M: Image>(
+    _inst: *const c_void,
     h: &'static Host,
-    config: Arg<'_, Bytes<'static>>,
-    flags: u32,
+    call: &Call<'_>,
     out: &mut RawOut,
 ) -> Status {
     let mut out = Out::new(out, h);
+    let _clock = Clock::enter(call.mono_ns());
+    contain(|| M::describe(h, &mut out))
+}
+
+/// `open`: head = `flags: u32` (DRY_RUN); blob 0 = the bound config, which the open chain keeps.
+/// # Safety
+/// Uphold the module entry contract for `call` and `out`, and keep blob 0 immutable and allocated until
+/// any returned open chain retires; `inst` is ignored (the host passes null).
+pub(crate) unsafe extern "C" fn open<M: Image>(
+    _inst: *const c_void,
+    h: &'static Host,
+    call: &Call<'_>,
+    out: &mut RawOut,
+) -> Status {
+    let mut out = Out::new(out, h);
+    let _clock = Clock::enter(call.mono_ns());
     contain(|| {
+        let (Some(flags), Some(config)) = (head_u32(call.head()), call.blobs().first().copied())
+        else {
+            return Status::FAULT;
+        };
         let Some(id) = ChainId::mint(0) else {
             return Status::FAULT;
         };
-        let chained = <Bytes<'static> as ToChain>::chain(config, &id);
-        match M::open(h, config.get(), chained, flags, &mut out) {
+        let chained = ChainBytes::of(config, &id);
+        match M::open(h, config, chained, flags, &mut out) {
             Opening::Done(status) => status,
             Opening::Chain(fut, extra) => {
                 drive_new::<M>(M::global(), ChainBox::new(fut, id, extra), &mut out)
@@ -761,16 +424,16 @@ pub(crate) extern "C" fn open<M: Image>(
     })
 }
 
-/// Continue a chain (§6.4 step 4). `inst` null = the image's open slab.
+/// Continue a chain (§6.4 step 4): `call.session` = its token, blob 0 = the results of its NEEDs. `inst`
+/// null = the image's open slab.
 /// # Safety
-/// Uphold the module entry contract and `vt::ResumeFn`. The caller exclusively owns `tok` for this
-/// poll and retains all argument/results storage through chain retirement. A non-null instance is
-/// `M`'s live allocation; null selects `M::global`. Completion/fault removes and drops the chain here.
+/// Uphold the module entry contract. The caller exclusively owns the chain token for this poll and
+/// retains all argument and results storage through chain retirement. A non-null instance is `M`'s live
+/// allocation; null selects `M::global`. Completion or fault removes and drops the chain here.
 pub(crate) unsafe extern "C" fn resume<M: Image>(
     inst: *const c_void,
     h: &'static Host,
-    tok: Arg<'_, u64>,
-    results: Arg<'_, Bytes<'static>>,
+    call: &Call<'_>,
     out: &mut RawOut,
 ) -> Status {
     // SAFETY: the host passes null (an open chain) or this image's live INSTANCE address (§6.4 step 6).
@@ -778,23 +441,28 @@ pub(crate) unsafe extern "C" fn resume<M: Image>(
         Some(i) => i.chains(),
         None => M::global(),
     };
-    let (session, index, generation) = unpack(tok.get());
+    let tok = call.session();
+    let (session, index, generation) = unpack(tok);
     if session {
         return Status::FAULT;
     }
+    let Some(results) = call.blobs().first().copied() else {
+        return Status::FAULT;
+    };
     let mut out = Out::new(out, h);
+    let _clock = Clock::enter(call.mono_ns());
     contain(|| {
         // I6: the host resumes a chain token only from the one `Chain` that owns it, holding
         // `&mut` to it, so no other entry reaches this slot's value now.
         let Some(cb) = chains.get_mut_raw(index, generation) else {
             return Status::FAULT;
         };
-        let results = <Bytes<'static> as ToChain>::chain(results, cb.id());
+        let results = ChainBytes::of(results, cb.id());
         let step = catch_unwind(AssertUnwindSafe(|| {
             M::poll(ChainRef::new(cb), Some(results), &mut out)
         }));
         match step {
-            Ok(Step::Need) => M::parked(tok.get(), &mut out),
+            Ok(Step::Need) => M::parked(tok, &mut out),
             Ok(Step::Ready(status)) => {
                 drop(chains.remove_raw(index, generation));
                 status

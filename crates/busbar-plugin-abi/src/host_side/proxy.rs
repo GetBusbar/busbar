@@ -124,3 +124,13 @@ pub(crate) fn staged(req: &mut PooledOut) -> (busbar_ffi::host::ChainBufs, usize
     };
     (bufs, at)
 }
+
+/// The clock reading a proxy hands in with a call (`Call::mono_ns`): the engine's monotonic clock, read
+/// once here per crossing, in place of the call back every time-aware plugin made (core 3.0). 0 inside a
+/// pure selection (no host service authority), which a plugin reads as "not given".
+pub(crate) fn now() -> u64 {
+    if crate::host_side::entry::pure() {
+        return 0;
+    }
+    crate::host_side::host_vt::vt::mono()
+}

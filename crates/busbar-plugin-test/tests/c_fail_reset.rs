@@ -14,7 +14,7 @@
 
 use busbar_ffi::host::{OpenAnswer, OutLease};
 use busbar_ffi::image::Admitted;
-use busbar_ffi::{Arg, Bytes, Status};
+use busbar_ffi::{Bytes, Status};
 use busbar_plugin_abi::fail::failed::F_LIMIT;
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::host_side::answer::Answer;
@@ -111,12 +111,9 @@ fn raw_render(
 ) -> Rendered {
     let mut lease =
         OutLease::new(vec![0; 4096], max_out).unwrap_or_else(|| panic!("the ACTIVE stack is full"));
-    let status = instance.call2(
-        |vt| &vt.render,
-        Arg::u32(scope),
-        Arg::bytes(Bytes::new(&[])),
-        &mut lease,
-    );
+    let status = busbar_plugin_abi::export::pack::render(0, scope, Bytes::new(&[]), |call| {
+        instance.call(busbar_plugin_abi::export::slot::render, call, &mut lease)
+    });
     lease.with_answer(|bytes| {
         let recs: Vec<(u16, Vec<u8>)> = Records::new(bytes)
             .map(|rec| match rec {

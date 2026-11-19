@@ -2,8 +2,7 @@
 //! Bounded serializer metadata and lifecycle; never carrier delivery receipts.
 use super::*;
 use crate::kinds::transport::transport::{
-    COMPLETE_FLUSH, COMPLETE_SHUTDOWN, ResponseAbort, StreamFlow, WIRE_CONTROL, WIRE_PAYLOAD,
-    WireEnd, WirePart,
+    END_FAILED, END_FLUSH, END_SHUTDOWN, WIRE_CONTROL, WIRE_PAYLOAD, WireEnd, WirePart,
 };
 use hyper::serialization::{CompletionRequirement, SerializedClass, SerializedEvent};
 
@@ -83,20 +82,21 @@ impl Plan {
         }
         for r in &mut self.responses {
             if r.abort_pending {
+                // INTERIM (transport 2.0): RESPONSE_ABORT is gone; a producer failure is the stream's one
+                // WIRE_END with END_FAILED. This lifecycle (abort, quiescent, release) is deleted with the
+                // labelled helper; until then a later End for the same stream would breach rule L4.
                 out.put_pod(
-                    tag::RESPONSE_ABORT,
-                    &ResponseAbort {
+                    tag::WIRE_END,
+                    &WireEnd {
                         stream: r.id,
-                        code: 1,
-                        _r: 0,
+                        how: END_FAILED,
+                        arg: 1,
                     },
                 )?;
                 r.abort_pending = false;
             }
-            if r.quiet_pending {
-                out.put_pod(tag::RESPONSE_QUIESCENT, &StreamFlow { stream: r.id })?;
-                r.quiet_pending = false;
-            }
+            // RESPONSE_QUIESCENT is gone and has no successor: nothing is written for it.
+            r.quiet_pending = false;
         }
         while let Some(event) = self.queue.front().copied() {
             match event {
@@ -150,11 +150,11 @@ impl Plan {
                         tag::WIRE_END,
                         &WireEnd {
                             stream,
-                            requirement: match requirement {
-                                CompletionRequirement::Flush => COMPLETE_FLUSH,
-                                CompletionRequirement::Shutdown => COMPLETE_SHUTDOWN,
+                            how: match requirement {
+                                CompletionRequirement::Flush => END_FLUSH,
+                                CompletionRequirement::Shutdown => END_SHUTDOWN,
                             },
-                            _r: 0,
+                            arg: 0,
                         },
                     )?;
                     self.queue.pop_front();

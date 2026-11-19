@@ -62,7 +62,7 @@ fn fixture_library() -> &'static [u8] {
 fn resolve(name: &str) -> (Status, Vec<(u16, Vec<u8>)>) {
     use busbar_plugin_abi::host_side::HOST;
     use busbar_plugin_abi::plugin::__rt::host::{ChainBufs, OpenAnswer, OutLease, Started};
-    use busbar_plugin_abi::plugin::__rt::{kind as marker, Arg};
+    use busbar_plugin_abi::plugin::__rt::kind as marker;
     use busbar_plugin_abi::records::Records;
     use busbar_plugin_loader::test_native::{admit_bytes, test_manifest};
 
@@ -84,10 +84,10 @@ fn resolve(name: &str) -> (Status, Vec<(u16, Vec<u8>)>) {
     let mut out = lease();
     let mut bufs = ChainBufs::new();
     let at = bufs.push(format!("{{\"name\":\"{name}\"}}").into_bytes());
-    let status = match inst.start1(
-        |vt| &vt.resolve,
+    let status = match inst.start(
+        busbar_plugin_abi::secret::slot::resolve,
         bufs,
-        move |bufs| Arg::bytes(bufs.get(at)),
+        |bufs, cross| busbar_plugin_abi::secret::pack::resolve(0, bufs.get(at), cross),
         &mut out,
     ) {
         Started::Done(status) => status,

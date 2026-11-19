@@ -7,7 +7,7 @@ crate::kind! {
     /// A transport is a framer. Core owns listeners, sockets (TCP and UDP), child stdio pipes, TLS, DTLS,
     /// ALPN/SNI, accept and dial. The transport turns bytes or datagrams into streams and streams into bytes.
     /// Upgrades name a protocol, never a plugin. Per-connection state is `Session` (shim slots, §6.5).
-    pub trait Transport: kind = 7, abi = 1, session {
+    pub trait Transport: kind = 7, abi = 2, session {
         views {
         /// role SERVER (accepted), CLIENT (core dialled upstream) or DATAGRAM (core bound a UDP port for
         /// this session; local = the bound address, peer empty). flags (DATAGRAM): CONN_ACCEPT = core will
@@ -60,9 +60,25 @@ crate::kind! {
             pub flags: u32,
             pub _r: u32,
         }
+        /// STREAM_RESET. `flags` = RESET_NOT_PROCESSED when the far end guarantees it did not act on the
+        /// stream (an HTTP/2 REFUSED_STREAM, a GOAWAY whose last-stream id is below it): the engine may then
+        /// send an unsent or part-sent request once more on another connection, recorded, never silently.
         pub struct StreamReset {
             pub stream: u64,
             pub code: u32,
+            pub flags: u32,
+        }
+        /// SESSION: `begin`'s statement of what the session is (client-role statement 1; both roles).
+        /// `flags` = S_MULTIPLEX when the session carries several streams at once. `stream_window` and
+        /// `conn_window` (bytes; stated only with S_MULTIPLEX, else 0) bound what the engine can be made to
+        /// hold of inbound body for one stream and for the connection: the session reopens a stream's far-end
+        /// window only by the credit the engine gives with `emit(E_CONSUMED)`, never on its own when it hands
+        /// the engine a body piece. Exactly one per `begin` answer, first after the token. The engine never
+        /// compares a protocol name to learn any of this.
+        pub struct SessionRec {
+            pub flags: u32,
+            pub stream_window: u32,
+            pub conn_window: u32,
             pub _r: u32,
         }
         /// Round 16, STREAM_FULL / STREAM_WRITABLE (per-stream outbound backpressure; today's
@@ -70,26 +86,73 @@ crate::kind! {
         pub struct StreamFlow {
             pub stream: u64,
         }
-        /// Ordered protocol output. Tail is nonempty serialized bytes; stream 0 is connection
-        /// CONTROL only. The serializer supplies identity, never the call that drained its output.
+        /// **The one output model (transport 2.0).** Everything a session writes to its connection is an
+        /// ordered sequence of parts, in any answer, in wire order: WIRE_PART (these bytes), WIRE_SEALED (the
+        /// engine's bytes for a sealed value, here) and WIRE_END (nothing more will name this stream). Both
+        /// roles: on an accepted connection the stream is a response; on a dialled one a request, whose head is
+        /// control (with its sealed parts) and whose body is payload, on the stream STREAM_OPENED announced.
+        ///
+        /// WIRE_PART. Tail = the bytes, not empty. They belong to `stream`. `class` is WIRE_PAYLOAD (a body
+        /// byte the engine gave for that stream, one for one) or WIRE_CONTROL (everything else: heads, framing,
+        /// trailers, settings, pings). Stream 0 is the connection.
+        ///
+        /// The rules. A breach of any is FAULT BadRecords: nothing of that answer is written, the session
+        /// ends, the plugin is charged and audited, and every answer still open on the connection is recorded
+        /// `part` or `none` with reason `transport_fault`. L1 to L7 and L9 are checked by the engine on every
+        /// answer (the one validator, `crate::wire::Wire`); L8 is proven per transport by its conformance suite.
+        ///
+        /// - **L1** Every byte a session writes to its connection is a WIRE_PART or the engine's bytes for a
+        ///   WIRE_SEALED. No other record carries connection bytes.
+        /// - **L2** A part's stream is 0 or a stream that is open: announced by STREAM_HEAD (accepted
+        ///   connection) or STREAM_OPENED (dialled connection; within one answer STREAM_OPENED comes before
+        ///   the first part naming it), and not yet ended.
+        /// - **L3** Stream 0 is WIRE_CONTROL only.
         pub struct WirePart {
             pub stream: u64,
             pub class: u32,
             pub _r: u32,
         }
-        /// A response's serialization fence. No tail. It is not a delivery receipt: the host joins
-        /// actual carrier progress, checked flush/shutdown and producer/input retirement separately.
-        pub struct WireEnd {
+        /// WIRE_SEALED. No tail. The engine writes bytes `offset..offset+len` of sealed value `slot` here,
+        /// in order with the parts around it. Always control. `slot` = the position, from 0, of the
+        /// H_SEALED_PAIR or H_SEALED_QUERY record in the head the engine gave for `stream`. The transport
+        /// never holds the value: it knows the name and the length, and marks where the bytes go.
+        ///
+        /// - **L9** Every sealed slot the engine declared for a stream is covered, in order and exactly
+        ///   (each byte of each slot once, slots ascending, offsets ascending and contiguous), before that
+        ///   stream's first PAYLOAD part and before its WIRE_END. A head may spill into a later answer: the
+        ///   engine keeps the value until its slots are covered or the stream ends, then wipes it.
+        pub struct WireSealed {
             pub stream: u64,
-            pub requirement: u32,
+            pub slot: u32,
+            pub offset: u32,
+            pub len: u32,
             pub _r: u32,
         }
-        /// Outbound response failure, distinct from inbound STREAM_RESET. Code is an opaque
-        /// protocol diagnostic, never a host stop reason or billing disposition. No tail.
-        pub struct ResponseAbort {
+        /// WIRE_END. No tail. Nothing more will name `stream`. `how` = END_FLUSH (its output is whole
+        /// through the protocol's end mark: flush it), END_SHUTDOWN (the same, and the connection ends with
+        /// it: flush, then shut down the write side) or END_FAILED (the transport cannot complete it; `arg` =
+        /// an opaque protocol diagnostic). `arg` on a successful end = END_NO_BODY or 0.
+        ///
+        /// - **L4** A stream's output ends with exactly one WIRE_END, or with the session. After its
+        ///   WIRE_END no record names it.
+        /// - **L5** END_FLUSH or END_SHUTDOWN only after the engine's `emit(E_END)` or `emit(E_REFUSE)` on
+        ///   that stream. A transport cannot declare an end the engine did not ask for.
+        /// - **L6** At END_FLUSH or END_SHUTDOWN after E_END, the PAYLOAD bytes of the stream equal the
+        ///   bytes of the E_BODY pieces the engine emitted on it; or are zero with the argument END_NO_BODY
+        ///   (the protocol carries no body for this answer: a HEAD request, a 204, a 304). A refusal
+        ///   (E_REFUSE) is not counted.
+        /// - **L7** After END_SHUTDOWN no part follows in the session.
+        /// - **L8** Until `emit(E_END)` for a stream, the transport's output does not contain the unit that
+        ///   lets the far end treat that stream's message as complete. This is the transport's one duty in
+        ///   the hold: **the hold is the engine's**. When an answer must wait for its record the engine
+        ///   withholds the piece that completes it (E_END; E_TRAILERS with E_END; the body piece that reaches
+        ///   a stated length with E_END; a head-only answer's head with E_END); nothing is paid when nothing
+        ///   waits. An answer whose status or method forbids a body (204, 304, HEAD) is complete at its head:
+        ///   the transport writes nothing for such a head until E_END.
+        pub struct WireEnd {
             pub stream: u64,
-            pub code: u32,
-            pub _r: u32,
+            pub how: u32,
+            pub arg: u32,
         }
         /// Datagram out. Tail = payload. flags = DG_SECURED (core's DTLS layer for that path seals it).
         pub struct SendTo {
@@ -137,7 +200,7 @@ crate::kind! {
         }
         }
         tags {
-            WRITE = 0x0100;
+            /// 0x0100 was WRITE (a plain write with no owner): retired with transport 2.0, see `retired`.
             CLOSE = 0x0101;
             WAKE_AT = 0x0102;
             /// UPGRADE (protocol text, e.g. "websocket") then LEFTOVER bytes; core hands the conn to that protocol's transport.
@@ -151,9 +214,8 @@ crate::kind! {
             STREAM_RESET = 0x0108;
             STREAM_TRAILERS = 0x0109;
             STREAM_OPENED = 0x010A;
-            /// flow control: stop / restart reading the conn.
-            PAUSE = 0x010B;
-            RESUME = 0x010C;
+            /// 0x010B and 0x010C were PAUSE and RESUME: retired. The engine stops reading the socket itself,
+            /// which is exact for one stream; a multiplexing session is given credit with `emit(E_CONSUMED)`.
             /// datagram answers: SEND_TO (SendTo + payload), SECURE (SecureRec), RENDEZVOUS (text: the local
             /// session description; core alone decides where it goes — to the plane session whose RENDEZVOUS or
             /// UP_NEW(CARRIER_RTC) intent created this session, §12.13. The transport never learns who that is).
@@ -191,19 +253,31 @@ crate::kind! {
             EVENT_PATH = 0x0117;
             /// R6b: an EV_KEYING `event` argument is exactly one record of this tag, body = KeyingRec + material.
             EVENT_KEYING = 0x0118;
-            /// WirePart + nonempty bytes, with exact serializer-owned stream/class attribution.
+            /// WirePart + the bytes, not empty (rules L1 to L3).
             WIRE_PART = 0x0119;
-            /// WireEnd: no later response bytes may name this stream; audited release precedes its ending.
+            /// WireEnd, no tail (rules L4 to L8). The layout changed with transport 2.0.
             WIRE_END = 0x011A;
-            /// ResponseAbort: a protocol producer failed the outbound response, even after its input ended.
-            RESPONSE_ABORT = 0x011B;
-            /// StreamFlow: no serializer source can produce future bytes for this response. Distinct
-            /// from actual delivery; retain its binding until E_DELIVERY_SETTLED and input retirement.
-            RESPONSE_QUIESCENT = 0x011C;
+            /// WireSealed, no tail (rule L9). The number is the one RESPONSE_ABORT held: that record was
+            /// never specified and never shipped, so no image in the field can hold it.
+            WIRE_SEALED = 0x011B;
+            /// SessionRec: `begin`'s one statement of what the session is (client-role statement 1).
+            SESSION = 0x011C;
+            /// No fixed part, no tail. The answer of `emit` whose pieces include E_HEAD on stream 0, and
+            /// nothing else in that answer: no stream was opened, nothing was written, nothing of the head
+            /// was kept. Not a fault. The engine opens the request on another connection; any sealed values
+            /// stay with the engine (client-role statement 2).
+            STREAM_BUSY = 0x011D;
+            /// No fixed part, no tail. The far end is closing: this session takes no new stream; open
+            /// streams finish. Distinct from CLOSE (HTTP/2 GOAWAY, HTTP/1.1 `connection: close`;
+            /// client-role statement 3). Reusable (statement 5, text only): after an exchange, a session
+            /// that answered neither CLOSE nor NO_NEW_STREAMS may carry the next.
+            NO_NEW_STREAMS = 0x011E;
             /// describe: D_PROTOCOL (text protocol name for UPGRADE targets, e.g. "websocket", "grpc").
             /// Round 9: 0x0180 (round 8's D_ALPN) is retired; the ALPN offer is per instance and per side (`offer`).
             D_PROTOCOL = 0x0181;
             /// An existing core configuration slot this instance can serve as an initial stream listener.
+            /// (Specified as it is with transport 2.0. Its two limits, 64 names and 128 bytes, are stated
+            /// here and derived from nothing: an open finding of the interface revision, H item 5.)
             /// Repeatable text: at most 64 distinct, case-sensitive 1..=128-byte ASCII alphanumeric, `_` or
             /// `-` names. Requires FB_SERVER and forbids FB_DATAGRAM. Unknown slots remain inert; declaring a
             /// slot creates no listener or network permission. Core requires exactly one supplier per needed
@@ -249,7 +323,7 @@ crate::kind! {
         /// the code its reason maps to (today's transport.rs:376-386: CR_DRAIN → 1012, CR_REVOKED → 1008,
         /// CR_TIMEOUT and CR_CAPACITY_EXHAUSTED → 1013, else 1000/1011 as today), transport-http/-grpc an h2
         /// GOAWAY (HTTP/1.1: nothing), transport-webrtc its final close datagrams (today's framing.rs:999-1007:
-        /// `rtc.close()` then drain). Answer: WRITE* (or SEND_TO* for datagram sessions), then CLOSE? (absent =
+        /// `rtc.close()` then drain). Answer: WIRE_PART* (or SEND_TO* for datagram sessions), then CLOSE? (absent =
         /// CLOSE_GRACEFUL); any other record is FAULT BadRecords. Core flushes the answer's bytes, bounded by the
         /// conn's write timeout (and, for CR_DRAIN, the shutdown grace), then closes the conn or path and drops
         /// the session; nothing else is called on it after E_CLOSE. Sent exactly once, only when core ends a
@@ -260,44 +334,64 @@ crate::kind! {
         /// answered CLOSE, after EOF/PATH_GONE (CR_PEER_CLOSED is never sent: the framer already saw it), after a
         /// socket failure (CR_TRANSPORT_FAILED is never sent: nothing can be written), or to a quarantined
         /// instance (its sessions are dropped with no call, §11.2).
+        /// Transport 2.0: `emit`'s `pieces` is a **set**. Either a non-empty subset of E_HEAD, E_BODY,
+        /// E_TRAILERS, E_END, which the transport takes in exactly that order, with one entry of `parts` per
+        /// piece present, in that order (E_END's entry is empty); or exactly one of E_RESET (no entry),
+        /// E_REFUSE (one entry: the text), E_CLOSE (no entry), E_CONSUMED (no entry). Anything else is
+        /// REFUSED R_INVALID. The engine sends pieces together only when nothing is withheld (L8), so a small
+        /// answer is one call where it was three. `arg` is E_BODY's MSG_* flags when E_BODY is in the set,
+        /// else E_HEAD's SH_* flags; E_END in a set that has E_HEAD is what SH_END_STREAM said. For E_RESET
+        /// `arg` is the code, for E_REFUSE the status and E_REFUSE_HEAD_SENT, for E_CLOSE the CR_* reason.
+        /// The E_CLOSE answer grammar: WIRE_PART* (or SEND_TO* for a datagram session), then CLOSE?.
             E_HEAD: u32 = 1;
             E_BODY: u32 = 2;
-            E_END: u32 = 3;
             E_TRAILERS: u32 = 4;
-            E_RESET: u32 = 5;
-            E_REFUSE: u32 = 6;
-            E_CLOSE: u32 = 7;
-        /// Host-only reserved control; arg zero, bytes empty. May bypass a held normal feed to release
-        /// an existing terminal serialization barrier after exact host audit authorization. It does
-        /// not supply new response content, skip ordered bytes, or relax the E_END hold rule.
-            E_RELEASE: u32 = 8;
-        /// Host-only reserved control; arg zero, bytes empty. The host has already frozen delivery
-        /// terminality after settling actual carrier writes. This acknowledgement creates no receipt.
-            E_DELIVERY_SETTLED: u32 = 9;
+            E_END: u32 = 8;
+            E_RESET: u32 = 16;
+            E_REFUSE: u32 = 32;
+            E_CLOSE: u32 = 64;
+        /// Credit (client-role statement 6; both roles; only to a session that stated S_MULTIPLEX): the
+        /// engine's reader has taken `credit` inbound body bytes of `stream`. The session may reopen the
+        /// far end's window for that stream (and the connection) by that much and no more.
+        /// E.9: keep, implemented by transport-http (several requests on one connection). S_MULTIPLEX and
+        /// E_CONSUMED exist together or not at all.
+            E_CONSUMED: u32 = 128;
+        /// The pieces that may be sent together, in their fixed order.
+            E_TOGETHER: u32 = 1 | 2 | 4 | 8;
             E_REFUSE_HEAD_SENT: u32 = 1 << 16;
+        /// SessionRec.flags: the session carries several streams at once.
+        /// E.9: keep, implemented by transport-http (HTTP/2).
+            S_MULTIPLEX: u32 = 1;
+        /// StreamReset.flags: the far end guarantees it did not act on the stream (client-role statement 4).
+            RESET_NOT_PROCESSED: u32 = 1;
         /// Round 16: E_CLOSE reasons (today's CLOSE_*, busbar-contract abi/transport/mod.rs:488-503, same
         /// numbers; CR_ because CLOSE_* names CloseRec.how here), and E_RESET's core code for a stall cut
         /// (outside every wire's code space; each framer maps it: h2/gRPC RST_STREAM(CANCEL) or, head not yet
         /// sent, gRPC `grpc-status` 8 RESOURCE_EXHAUSTED as stream.rs:17-21 does today; a data channel closed).
+        /// Transport 2.0: the reasons the engine sends are these two. 1 (CR_PEER_CLOSED) and 6
+        /// (CR_TRANSPORT_FAILED) were never sent by their own text; 3, 4, 5 and 7 (CR_POISONED, CR_REVOKED,
+        /// CR_TIMEOUT, CR_CAPACITY_EXHAUSTED) were sent by no engine file (E.9). The six numbers are retired.
             CR_NORMAL: u32 = 0;
-            CR_PEER_CLOSED: u32 = 1;
             CR_DRAIN: u32 = 2;
-            CR_POISONED: u32 = 3;
-            CR_REVOKED: u32 = 4;
-            CR_TIMEOUT: u32 = 5;
-            CR_TRANSPORT_FAILED: u32 = 6;
-            CR_CAPACITY_EXHAUSTED: u32 = 7;
             RESET_STALLED: u32 = 0xFFFF_0001;
             FB_SERVER: u64 = 1;
             FB_CLIENT: u64 = 2;
             FB_DATAGRAM: u64 = 4;
-        /// This framer supplies complete ordered output attribution and the reserved response lifecycle.
-        /// Without it a host cannot activate a path promising actual response delivery evidence.
-            FB_WIRE_PROVENANCE: u64 = 8;
+        /// The head vocabulary this version of the transport contract uses (in the transport fingerprint).
+            USES_HEAD: u64 = crate::vocab::head1::FP;
+        /// Fact bit 8 was FB_WIRE_PROVENANCE: retired. Labelling every byte is what transport 2.0 is, not a
+        /// role an image may or may not have; an image built for anything earlier is refused by its version.
+        /// There is no bit for sealing either: a transport that declares FB_CLIENT accepts the sealed head
+        /// records and covers every slot (L9).
+            FB_RETIRED: u64 = 8;
             WIRE_CONTROL: u32 = 1;
             WIRE_PAYLOAD: u32 = 2;
-            COMPLETE_FLUSH: u32 = 1;
-            COMPLETE_SHUTDOWN: u32 = 2;
+        /// WireEnd.how.
+            END_FLUSH: u32 = 1;
+            END_SHUTDOWN: u32 = 2;
+            END_FAILED: u32 = 3;
+        /// WireEnd.arg on a successful end: the protocol carries no body for this answer (L6).
+            END_NO_BODY: u32 = 1;
             DG_SECURED: u32 = 1;
             EV_PATH: u32 = 1;
             EV_KEYING: u32 = 2;
@@ -327,11 +421,12 @@ crate::kind! {
             M_EVENT: u64 = 1 << 5;
             M_OFFER: u64 = 1 << 6;
         }
-        /// A new conn or datagram session. Answer (after the shim's TOKEN): WRITE* (preface), WAKE_AT?; with
+        retired { 0x0100, 0x010B, 0x010C, 0x0180 }
+        /// A new conn or datagram session. Answer (after the shim's TOKEN): WIRE_PART* (preface), WAKE_AT?; with
         /// ROLE_DATAGRAM: ICE_TERMS (required: core cannot route a check to the session without its local
         /// ufrag), and with CONN_DIAL also RENDEZVOUS (the local offer, built from `conn.head`'s opening), SEND_TO*, SECURE?.
         sync open fn begin(&self, h: &Host, conn: &ConnInfo<'_>, out: &mut Out<'_>) -> Result<Session, Fail>;
-        /// Bytes read from the conn (empty = EOF). Answer: STREAM_*, WRITE*, CLOSE?, WAKE_AT?, UPGRADE+LEFTOVER?, PAUSE/RESUME?,
+        /// Bytes read from the conn (empty = EOF). Answer: STREAM_*, WIRE_PART*, CLOSE?, WAKE_AT?, UPGRADE+LEFTOVER?,
         /// STREAM_WRITABLE* (round 16). PAUSE/RESUME stop and restart core's **reading** of the conn; they say nothing
         /// about a stream's outbound room, which is STREAM_FULL/STREAM_WRITABLE's.
         sync fn ingest(&self, h: &Host, s: &mut Session, bytes: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, s, bytes, out); Err(crate::fail::Fail::unsupported()) }
@@ -352,9 +447,12 @@ crate::kind! {
         /// F_PROTOCOL). Core never sends these names in a ROLE_CLIENT E_HEAD: it drops them from the plane's head
         /// and from `offer` defaults before auth `outbound` (§13 head order), so they are outside every signed set
         /// (C-STYLE-VOCAB (r22)). A plane-stated `sec-websocket-protocol` is an ordinary line, written as handed.
-        /// Answer: WRITE* (or SEND_TO* for datagram sessions), STREAM_OPENED?, WAKE_AT?, PAUSE/RESUME?, STREAM_FULL?
-        /// (round 16, for this piece's stream). E_CLOSE (round 16): WRITE* or SEND_TO*, then CLOSE? only.
-        sync fn emit(&self, h: &Host, s: &mut Session, stream: u64, piece: u32, arg: u32, bytes: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, s, stream, piece, arg, bytes, out); Err(crate::fail::Fail::unsupported()) }
+        /// Answer: WIRE_PART* (or SEND_TO* for datagram sessions), STREAM_OPENED?, WAKE_AT?, STREAM_FULL?
+        /// (round 16, for this piece's stream). E_CLOSE (round 16): WIRE_PART* or SEND_TO*, then CLOSE? only.
+        /// Transport 2.0: `pieces` is the set described at E_HEAD; `parts` holds one entry per piece present;
+        /// `credit` is E_CONSUMED's byte count (0 otherwise). Statement 7 (text only): a WAKE_AT on a session
+        /// with no open stream is not honoured; the engine closes idle sessions by its own bound.
+        sync fn emit(&self, h: &Host, s: &mut Session, stream: u64, pieces: u32, arg: u32, credit: u64, parts: Slice<'_, Bytes<'_>>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, s, stream, pieces, arg, credit, parts, out); Err(crate::fail::Fail::unsupported()) }
         /// The WAKE_AT time passed. Answer: as ingest (datagram sessions: as datagram), STREAM_WRITABLE* included.
         sync fn timer(&self, h: &Host, s: &mut Session, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, s, out); Err(crate::fail::Fail::unsupported()) }
         /// One datagram on `path` (flags = DG_SECURED if core's DTLS layer opened it). Answer: SEND_TO*,
@@ -412,13 +510,14 @@ crate::kind! {
                     (Option<SessionHandle>, crate::host_side::answer::Answer<'o>),
                     crate::fail::CallError,
                 > {
-                    use crate::plugin::__rt::Arg;
                     let (session, answer) = crate::host_side::proxy::opener::<Marker>(
                         &self.inst,
                         crate::host_side::proxy::entry(M_BEGIN),
                         buf,
                         |lease| {
-                            self.live.open_session1(|vt| &vt.begin, Arg::view(conn), lease)
+                            pack::begin(crate::host_side::proxy::now(), conn, |call| {
+                                self.live.open_session(slot::begin, call, lease)
+                            })
                         },
                     )?;
                     Ok((
@@ -435,9 +534,8 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     role: u32,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_OFFER), buf, |lease| {
-                        self.live.call1(|vt| &vt.offer, Arg::u32(role), lease)
+                        pack::offer(crate::host_side::proxy::now(), role, |call| self.live.call(slot::offer, call, lease))
                     })
                 }
 
@@ -463,10 +561,11 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     bytes: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_INGEST), buf, |lease| {
-                        self.session.call1(|vt| &vt.ingest, Arg::bytes(Bytes::new(bytes)), lease)
+                        pack::ingest(crate::host_side::proxy::now(), Bytes::new(bytes), |call| {
+                            self.session.call(slot::ingest, call, lease)
+                        })
                     })
                 }
 
@@ -474,22 +573,21 @@ crate::kind! {
                     &mut self,
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     stream: u64,
-                    piece: u32,
+                    pieces: u32,
                     arg: u32,
-                    bytes: &[u8],
+                    credit: u64,
+                    parts: &[crate::types::Bytes<'_>],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_EMIT), buf, |lease| {
-                        self.session.call4(
-                            |vt| &vt.emit,
-                            (
-                                Arg::u64(stream),
-                                Arg::u32(piece),
-                                Arg::u32(arg),
-                                Arg::bytes(Bytes::new(bytes)),
-                            ),
-                            lease,
+                        pack::emit(
+                            crate::host_side::proxy::now(),
+                            stream,
+                            pieces,
+                            arg,
+                            credit,
+                            crate::types::Slice::new(parts),
+                            |call| self.session.call(slot::emit, call, lease),
                         )
                     })
                 }
@@ -499,7 +597,7 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_TIMER), buf, |lease| {
-                        self.session.call0(|vt| &vt.timer, lease)
+                        pack::timer(crate::host_side::proxy::now(), |call| self.session.call(slot::timer, call, lease))
                     })
                 }
 
@@ -510,14 +608,11 @@ crate::kind! {
                     flags: u32,
                     bytes: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_DATAGRAM), buf, |lease| {
-                        self.session.call3(
-                            |vt| &vt.datagram,
-                            (Arg::u32(path), Arg::u32(flags), Arg::bytes(Bytes::new(bytes))),
-                            lease,
-                        )
+                        pack::datagram(crate::host_side::proxy::now(), path, flags, Bytes::new(bytes), |call| {
+                            self.session.call(slot::datagram, call, lease)
+                        })
                     })
                 }
 
@@ -527,14 +622,11 @@ crate::kind! {
                     ev: u32,
                     arg: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_EVENT), buf, |lease| {
-                        self.session.call2(
-                            |vt| &vt.event,
-                            (Arg::u32(ev), Arg::bytes(Bytes::new(arg))),
-                            lease,
-                        )
+                        pack::event(crate::host_side::proxy::now(), ev, Bytes::new(arg), |call| {
+                            self.session.call(slot::event, call, lease)
+                        })
                     })
                 }
 
@@ -549,49 +641,57 @@ mod tests {
     use crate::records::{Pod, Records, Reply, Writer};
     use crate::types::{Bytes, KindCode, Str};
 
-    /// Every transport tag, in table order.
-    const TAGS: [u16; 31] = [
-        tag::WRITE,
-        tag::CLOSE,
-        tag::WAKE_AT,
-        tag::UPGRADE,
-        tag::LEFTOVER,
-        tag::STREAM_HEAD,
-        tag::STREAM_BODY,
-        tag::STREAM_END,
-        tag::STREAM_RESET,
-        tag::STREAM_TRAILERS,
-        tag::STREAM_OPENED,
-        tag::PAUSE,
-        tag::RESUME,
-        tag::SEND_TO,
-        tag::SECURE,
-        tag::RENDEZVOUS,
-        tag::ICE_TERMS,
-        tag::ICE_CANDIDATE,
-        tag::PATH_BIND,
-        tag::PATH_REBIND,
-        tag::ALPN,
-        tag::STREAM_FULL,
-        tag::STREAM_WRITABLE,
-        tag::EVENT_PATH,
-        tag::EVENT_KEYING,
-        tag::WIRE_PART,
-        tag::WIRE_END,
-        tag::RESPONSE_ABORT,
-        tag::RESPONSE_QUIESCENT,
-        tag::D_PROTOCOL,
-        tag::D_LISTENER_SLOT,
-    ];
-
-    /// The call records are 0x0100..=0x011C in table order; describe items keep their allocated numbers, and
-    /// round 8's D_ALPN (0x0180) stays retired.
+    /// Transport 2.0: the three output records keep the numbers the design gives, the new statements sit
+    /// after them, and every retired number is refused by `kind!` and absent from the list.
     #[test]
-    fn the_tags_keep_their_numbers_and_d_alpn_stays_retired() {
-        assert!(TAGS[..29].iter().copied().eq(0x0100..=0x011C));
+    fn the_output_model_has_its_numbers_and_retired_tags_stay_retired() {
+        assert_eq!(
+            (tag::WIRE_PART, tag::WIRE_END, tag::WIRE_SEALED),
+            (0x0119, 0x011A, 0x011B)
+        );
+        assert_eq!(
+            (tag::SESSION, tag::STREAM_BUSY, tag::NO_NEW_STREAMS),
+            (0x011C, 0x011D, 0x011E)
+        );
         assert_eq!(tag::D_PROTOCOL, 0x0181);
         assert_eq!(tag::D_LISTENER_SLOT, 0x0182);
-        assert!(!TAGS.contains(&0x0180));
+        assert_eq!(t::RETIRED_TAGS, [0x0100, 0x010B, 0x010C, 0x0180]);
+        for retired in t::RETIRED_TAGS {
+            assert!(!tag::LIST.contains(retired));
+        }
+        assert_eq!(core::mem::size_of::<t::WirePart>(), 16);
+        assert_eq!(core::mem::size_of::<t::WireSealed>(), 24);
+        assert_eq!(core::mem::size_of::<t::WireEnd>(), 16);
+        assert_eq!(core::mem::size_of::<t::SessionRec>(), 16);
+        assert_eq!(
+            t::E_TOGETHER,
+            t::E_HEAD | t::E_BODY | t::E_TRAILERS | t::E_END
+        );
+    }
+
+    /// `emit` crosses as the layout states: stream, pieces, arg and credit in `head`, one blob per piece.
+    #[test]
+    fn emit_packs_its_pieces_in_order() {
+        let parts = [Bytes::new(b"head"), Bytes::new(b"body"), Bytes::EMPTY];
+        t::pack::emit(
+            11,
+            7,
+            t::E_HEAD | t::E_BODY | t::E_END,
+            0,
+            0,
+            crate::types::Slice::new(&parts),
+            |call| {
+                assert_eq!(call.mono_ns(), 11);
+                assert_eq!(call.head().len(), 24);
+                assert_eq!(&call.head()[..8], &7u64.to_le_bytes());
+                assert_eq!(
+                    &call.head()[8..12],
+                    &(t::E_HEAD | t::E_BODY | t::E_END).to_le_bytes()
+                );
+                assert_eq!(call.blobs().len(), 3);
+                assert_eq!(call.blobs()[1].get(), b"body");
+            },
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 crate::kind! {
     /// A hook gives an opinion at a decision point. Core owns the decision and applies, clamps or ignores it.
-    pub trait Hook: kind = 4, abi = 2 {
+    pub trait Hook: kind = 4, abi = 3 {
         views {
         }
         pods {
@@ -61,7 +61,8 @@ crate::kind! {
         tags {
             /// view (core-built): FACT/FACT_TEXT signals (generic PJ_* request projection copied from the plane,
             /// plus the S_* keys below), CANDIDATE*, generic CONVERSATION (only if FB_WANTS_PROMPT),
-            /// BODY (raw client body, only if FB_WANTS_BODY), generic ID_* (only if FB_WANTS_IDENTITY).
+            /// Hook 3.0: the raw client body and the verified identity are not part of the view. FB_WANTS_BODY
+            /// and FB_WANTS_IDENTITY were read by no engine file and set by no image; they are removed.
             CANDIDATE = 0x0100;
             C_MODEL = 0x0101;
             C_PROVIDER = 0x0102;
@@ -110,7 +111,7 @@ crate::kind! {
             S_USER_SUBJECT: u32 = 0x108;
             S_ATTEMPT: u32 = 0x109;
             S_PREVIOUS_FAILURE: u32 = 0x10A;
-            S_RESPONSE_TOKENS_OUT: u32 = 0x10B;
+        /// 0x10B (S_RESPONSE_TOKENS_OUT) is retired with hook 3.0 (E.9: named by no image).
         /// S_ROUTING_POLICY (FACT_TEXT, round 12): the strategy word the pool named, when core resolved the
         /// pool's strategy to this instance by D_WORD (§12.25); absent otherwise.
             S_OUTCOME: u32 = 0x10C;
@@ -134,7 +135,7 @@ crate::kind! {
             S_STAGE_MODEL: u32 = 0x115;
             STAGE_CANDIDATE: u64 = 1;
             STAGE_ROUTING: u64 = 2;
-            STAGE_RESPONSE: u64 = 3;
+        /// Stage 3 (STAGE_RESPONSE) is retired with hook 3.0 (E.9: named by no image).
         /// CandidateRec.flags presence bits (today's CANDIDATE_HAS_* in busbar-contract abi/hook/mod.rs:446-450,
         /// plus the three optional fields the projection already omits when unknown).
             C_HAS_LATENCY: u32 = 1;
@@ -142,12 +143,14 @@ crate::kind! {
             C_HAS_RATE_HEADROOM: u32 = 4;
             C_HAS_CONTEXT_MAX: u32 = 8;
             C_HAS_COST: u32 = 16;
-            C_HAS_ERROR_RATE: u32 = 32;
+        /// Presence bit 32 (C_HAS_ERROR_RATE) is retired with hook 3.0 (E.9: named by no image).
         /// BudgetRec.flags.
             B_HAS_SPEND: u32 = 1;
             FB_WANTS_PROMPT: u64 = 1;
-            FB_WANTS_BODY: u64 = 2;
-            FB_WANTS_IDENTITY: u64 = 4;
+        /// Fact bits 2 (FB_WANTS_BODY) and 4 (FB_WANTS_IDENTITY) are retired with hook 3.0.
+            FB_RETIRED: u64 = 2 | 4;
+        /// The conversation vocabulary this version of the hook contract uses (in the hook fingerprint).
+            USES_CONVERSATION: u64 = crate::vocab::conversation1::FP;
         /// CostTermRec.flags.
             COST_UNPRICED: u32 = 1;
             M_ON: u64 = 1 << 0;
@@ -190,15 +193,11 @@ crate::kind! {
                     point: u32,
                     view: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_ON), buf, |lease| {
-                        self.live.call2(
-                            |vt| &vt.on,
-                            Arg::u32(point),
-                            Arg::bytes(Bytes::new(view)),
-                            lease,
-                        )
+                        pack::on(crate::host_side::proxy::now(), point, Bytes::new(view), |call| {
+                            self.live.call(slot::on, call, lease)
+                        })
                     })
                 }
 
@@ -215,15 +214,10 @@ crate::kind! {
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_ON_IO), req, move |req, lease| {
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start2(
-                                |vt| &vt.on_io,
+                            .start(
+                                slot::on_io,
                                 bufs,
-                                |b| {
-                                    (
-                                        crate::plugin::__rt::Arg::u32(point),
-                                        crate::plugin::__rt::Arg::bytes(b.get(at)),
-                                    )
-                                },
+                                |b, cross| pack::on_io(crate::host_side::proxy::now(), point, b.get(at), cross),
                                 lease,
                             )
                             .into()
