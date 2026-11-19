@@ -2177,6 +2177,10 @@ mod worker_threads_tests;
 mod usage_flush_tests;
 
 #[cfg(test)]
+#[path = "tests/schema_snapshot_tests.rs"]
+mod schema_snapshot_tests;
+
+#[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
 
