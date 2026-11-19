@@ -592,3 +592,12 @@ fn row_size_checks_do_not_require_constructing_oversized_slices() {
         assert!(matches!(row_shape(too_long, 0), Err(RowErr::Size)));
     }
 }
+
+#[test]
+fn candidate_capacity_checks_exact_parts_without_allocation_or_saturation() {
+    use super::plumbing::capacity_exceeded;
+    assert!(!capacity_exceeded([], 0));
+    assert!(!capacity_exceeded([1, 8, 7], 16));
+    assert!(capacity_exceeded([1, 8, 8], 16));
+    assert!(capacity_exceeded([usize::MAX, 1], usize::MAX));
+}

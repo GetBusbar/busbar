@@ -168,7 +168,13 @@ impl<N: Needs> PersistenceBackend for StoreAdapter<N> {
                 CommitVerdict::Decided(decision) => decision,
                 // Rolled back at capacity: nothing committed; surfaced as a refusal, never as success
                 // and never as a stale slot.
-                CommitVerdict::CapacityRefused => return Err(Failure::Refused),
+                CommitVerdict::CapacityRefused { authority }
+                    if authority == info.clock_authority =>
+                {
+                    return Err(Failure::Refused)
+                }
+                // A refusal naming another authority is not this store's verdict.
+                CommitVerdict::CapacityRefused { .. } => return Err(Failure::Unknown),
             };
             if let Decision::TimeGuardFailed { observed_at } = &decision {
                 authority(info, observed_at, true)?;
