@@ -38,7 +38,7 @@ use busbar_plugin_abi::transport as abi;
 use futures::task::AtomicWaker;
 
 use crate::outbound::delivery::{Delivery as Verdict, Reason, Role, State as Sent};
-use crate::outbound::records::{Out, WIRE_PAYLOAD};
+use crate::outbound::records::Out;
 use crate::outbound::tunnel::Dialling;
 use crate::outbound::wire::{Fault, Outcome, Wire};
 
@@ -270,8 +270,6 @@ struct Answer {
     cut: Option<Sent>,
     /// `emit(E_RESET)` went at this time: the transport owes the stream's end mark.
     reset_at: Option<Instant>,
-    /// The queue position before the answer's first body byte, once the transport made one.
-    first_body_at: Option<u64>,
     /// The owner was told a body byte of the answer is out.
     body_told: bool,
 }
@@ -296,13 +294,15 @@ pub struct DeliveryLedger {
     /// A write failed: what was queued and not taken was wiped, and nothing more is queued.
     lost: bool,
     answers: Vec<Answer>,
-    /// Credit owed to the transport for streams that are over: (stream, bytes).
+    /// CREDIT OWED to the transport, one entry a stream: (stream, bytes). Two things put a credit
+    /// here and nothing else does: a stream that is over still held or owed bytes ([`Wire::over`]),
+    /// and the transport handed up body of a stream the engine has left ([`Outcome::left`], every
+    /// byte owed at once). The session gives each as `emit(stream, E_CONSUMED)` and it is taken
+    /// from here as it is given: no credit is given twice.
     owed: Vec<(u64, u64)>,
     wake: Option<Arc<AtomicWaker>>,
     last_stream: u64,
     identity: Option<(u64, u64, u64)>,
-    /// How far the connection's carrier last reported whole records accepted (queue position).
-    carried: u64,
     retired: bool,
 }
 
@@ -332,7 +332,6 @@ impl Default for DeliveryLedger {
             wake: None,
             last_stream: 0,
             identity: None,
-            carried: 0,
             retired: false,
         }
     }
@@ -365,10 +364,20 @@ impl DeliveryLedger {
             ended: false,
             cut: None,
             reset_at: None,
-            first_body_at: None,
             body_told: false,
         });
         Ok(())
+    }
+
+    /// `count` bytes of credit are owed to the transport for `stream`: one entry a stream.
+    fn owe(&mut self, stream: u64, count: u64) {
+        if count == 0 {
+            return;
+        }
+        match self.owed.iter_mut().find(|(owed, _)| *owed == stream) {
+            Some((_, owed)) => *owed = owed.saturating_add(count),
+            None => self.owed.push((stream, count)),
+        }
     }
 
     /// Make the answer's cell before its request is exposed. Ids are never reused. For a ledger no
@@ -590,10 +599,7 @@ impl DeliveryLedger {
         if self.retired || self.lost {
             return Err(Fault::Queue);
         }
-        // Where each part of this run will stand in the queue. An answer carries no sealed value (a
-        // mark here is the driver's breach), so a part's place is the sum of the parts before it.
-        let run_start = self.written + self.queue.len() as u64;
-        let outcome = self.wire.answer(
+        let mut outcome = self.wire.answer(
             items,
             tail,
             None,
@@ -602,24 +608,22 @@ impl DeliveryLedger {
             self.written,
         )?;
         self.queued = self.written + self.queue.len() as u64;
-        let mut place = run_start;
         for item in items {
-            match *item {
-                Out::Part { part, len } => {
-                    if part.class == WIRE_PAYLOAD {
-                        if let Some(at) = self.at(part.stream) {
-                            self.answers[at].first_body_at.get_or_insert(place);
-                        }
-                    }
-                    place += u64::from(len);
+            if let Out::End(end) = *item {
+                if let Some(at) = self.at(end.stream) {
+                    self.answers[at].ended = true;
                 }
-                Out::End(end) => {
-                    if let Some(at) = self.at(end.stream) {
-                        self.answers[at].ended = true;
-                    }
-                }
-                _ => {}
             }
+        }
+        // ONE MECHANISM, BOTH ROLES: the answer carried body of streams the engine has left (the
+        // caller's upload for an answer that was reset, refused or already complete). Nobody will
+        // hold those bytes against a window, and a session that multiplexes reopens a window by
+        // the engine's credit alone: every such byte is owed now, exactly as the dial gives it
+        // (`native_dial` `credit_left`). The entries are TAKEN from the outcome into the one list
+        // the session gives credit from, so the outcome's reader finds none and cannot give them a
+        // second time.
+        for (stream, count) in outcome.left.drain(..) {
+            self.owe(stream, count);
         }
         if let Some(stream) = outcome.opened {
             self.answers.push(Answer {
@@ -629,7 +633,6 @@ impl DeliveryLedger {
                 ended: false,
                 cut: None,
                 reset_at: None,
-                first_body_at: None,
                 body_told: false,
             });
         }
@@ -678,10 +681,12 @@ impl DeliveryLedger {
         {
             return Err(ResponseStop::Integrity);
         }
-        self.carried = self.carried.max(progress.complete_records_plaintext);
-        // A body byte of an answer is out: its owner may read that fact before the verdict.
+        self.wire.accepted(progress.complete_records_plaintext);
+        // A body byte of an answer is out (the delivery ledger knows where each answer's first one
+        // stands): its owner may read that fact before the verdict. `whole` is told by the verdict
+        // itself, which knows whether the answer had a body.
         for answer in &mut self.answers {
-            if answer.body_told || !answer.first_body_at.is_some_and(|at| self.carried > at) {
+            if answer.body_told || self.wire.state_of(answer.on) != Sent::Part {
                 continue;
             }
             answer.body_told = true;
@@ -689,7 +694,6 @@ impl DeliveryLedger {
                 lock(&cell.state).snapshot.first_payload_written = true;
             }
         }
-        self.wire.accepted(progress.complete_records_plaintext);
         self.settle();
         Ok(())
     }
@@ -741,8 +745,10 @@ impl DeliveryLedger {
         // A write that failed may have put bytes on the carrier that the writer never reported back.
         let sound = last.accepted_plaintext <= self.queued
             && last.complete_records_plaintext <= last.accepted_plaintext;
-        if sound {
-            self.carried = self.carried.max(last.complete_records_plaintext);
+        if sound && !self.retired {
+            // The delivery ledger's own second count: it tells `part` from `none` per answer, by
+            // where each answer's first body byte stands, and makes nothing `whole`.
+            self.wire.reached(last.complete_records_plaintext);
         }
         self.gone(reason);
     }
@@ -782,20 +788,17 @@ impl DeliveryLedger {
             let answer = self.answers.swap_remove(at);
             let (_, credit) = self.wire.over(on, false);
             if let Some(count) = credit {
-                self.owed.push((on, count));
+                self.owe(on, count);
             }
             if let Some(cell) = answer.cell {
-                let body_out = answer
-                    .first_body_at
-                    .is_some_and(|first| self.carried > first);
-                freeze(&cell, verdict, answer.cut, body_out);
+                freeze(&cell, verdict, answer.cut);
             }
         }
     }
 }
 
 /// The verdict is final: the owner's cell is frozen with it, once.
-fn freeze(cell: &Cell, verdict: Verdict, cut: Option<Sent>, body_out: bool) {
+fn freeze(cell: &Cell, verdict: Verdict, cut: Option<Sent>) {
     let mut state = lock(&cell.state);
     if state.snapshot.terminal.is_some() {
         return;
@@ -807,16 +810,6 @@ fn freeze(cell: &Cell, verdict: Verdict, cut: Option<Sent>, body_out: bool) {
             body_bytes: verdict.body_bytes,
         },
         _ => verdict,
-    };
-    // The driver counts a run as out when all of it is; a run cut by a failed write may still have
-    // put the answer's first body byte on the connection.
-    let verdict = if verdict.state == Sent::None && body_out {
-        Verdict {
-            state: Sent::Part,
-            ..verdict
-        }
-    } else {
-        verdict
     };
     let mut snapshot = verdict.snapshot();
     // What the owner was already told stays told.

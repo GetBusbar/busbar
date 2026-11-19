@@ -26,9 +26,18 @@
 //! ([`Ledger::accepted`]). Every part of a run starts at the run's start and ends at the run's end:
 //! under TLS a run is whole records, so "the socket took everything up to a part's end" is exactly
 //! "accepted as whole encrypted records", and "the socket took nothing past the run's start" is
-//! exactly "no byte of it left".
+//! exactly "no byte of it left". ONE EXCEPTION, the answering role's `part`: where a run went into
+//! the queue byte for byte (the queue grew by exactly the bytes of its parts: an accepted
+//! connection, whose TLS is beneath the queue), the first payload part's own place in the run is
+//! its place in the queue, and `part` is judged by that byte itself. Where a layer between the
+//! parts and the queue changed the count, no place inside the run is known and the run's end
+//! stands.
 //!
-//! Held per connection: the entries. Held per message in flight: one entry (five counts and a few
+//! Two counts of what the socket took: [`Ledger::accepted`] (after a flush that succeeded: the only
+//! count that can make a message `whole`) and [`Ledger::reached`] (the carrier's last reading with
+//! no flush after it: it tells `part` from `none` and nothing else).
+//!
+//! Held per connection: the entries. Held per message in flight: one entry (six counts and a few
 //! flags). No heap call per part; the entry of the last part is remembered, so consecutive parts of
 //! one stream cost no search.
 
@@ -203,7 +212,10 @@ struct Entry {
     role: Role,
     /// The queue position before the stream's first byte.
     first_start: u64,
-    /// The queue position after the stream's first payload part.
+    /// The queue position before the stream's first payload byte, where the run that carried it
+    /// went into the queue byte for byte; `NEVER` where it did not (`first_body_end` judges then).
+    first_body_start: u64,
+    /// The queue position after the run that carried the stream's first payload part.
     first_body_end: u64,
     /// The queue position after the stream's last byte so far; at an end mark, the mark's position.
     last_end: u64,
@@ -224,7 +236,11 @@ impl Entry {
     /// The state as the socket's progress stands, before any end is judged.
     fn progress(&self, accepted: u64) -> State {
         let reached = match self.role {
-            Role::Answer => self.first_body_end != NEVER && accepted >= self.first_body_end,
+            // The first body byte itself where its place is known, else the whole run it came in.
+            Role::Answer => {
+                (self.first_body_start != NEVER && accepted > self.first_body_start)
+                    || (self.first_body_end != NEVER && accepted >= self.first_body_end)
+            }
             Role::Attempt => self.first_start != NEVER && accepted > self.first_start,
         };
         if reached {
@@ -255,6 +271,13 @@ pub(crate) struct Ledger {
     queued: u64,
     /// Bytes the socket has taken.
     accepted: u64,
+    /// Bytes the carrier last reported taken with no flush after it ([`Ledger::reached`]); never
+    /// above what was queued.
+    reached: u64,
+    /// Where the run being recorded starts in the queue.
+    run_start: u64,
+    /// Bytes of the parts recorded in the run so far.
+    run_len: u64,
     /// Control bytes on stream 0 (the connection's own, and answers the transport made by itself).
     connection_bytes: u64,
     /// `END_SHUTDOWN` was sent: no part may follow.
@@ -273,6 +296,9 @@ impl Ledger {
             last: 0,
             queued: 0,
             accepted: 0,
+            reached: 0,
+            run_start: 0,
+            run_len: 0,
             connection_bytes: 0,
             shutting: false,
             shut: false,
@@ -294,6 +320,7 @@ impl Ledger {
             stream,
             role,
             first_start: NEVER,
+            first_body_start: NEVER,
             first_body_end: NEVER,
             last_end: self.queued,
             payload: 0,
@@ -345,15 +372,22 @@ impl Ledger {
     /// queued. Called once per run, after the one write that queued it.
     pub(crate) fn queued(&mut self, queue_end: u64) {
         if self.run_open {
+            // Byte for byte: the queue grew by exactly the bytes of the run's parts, so a part's
+            // place in the run is its place in the queue.
+            let exact = queue_end.checked_sub(self.run_start) == Some(self.run_len);
             for entry in &mut self.entries {
                 if entry.first_body_end == IN_RUN {
                     entry.first_body_end = queue_end;
+                    if !exact {
+                        entry.first_body_start = NEVER;
+                    }
                 }
                 if entry.last_end == IN_RUN {
                     entry.last_end = queue_end;
                 }
             }
             self.run_open = false;
+            self.run_len = 0;
         }
         self.queued = queue_end;
         self.settle();
@@ -391,14 +425,15 @@ impl Ledger {
                 return Err(Breach::L3);
             }
             self.connection_bytes = self.connection_bytes.saturating_add(u64::from(len));
-            self.run_open = true;
+            self.placed(len);
             return Ok(());
         }
         let at = self.find(part.stream).ok_or(Breach::L2)?;
-        let entry = &mut self.entries[at];
-        if entry.ended.is_some() {
+        if self.entries[at].ended.is_some() {
             return Err(Breach::L4);
         }
+        let place = self.placed(len);
+        let entry = &mut self.entries[at];
         if entry.first_start == NEVER {
             entry.first_start = start;
         }
@@ -406,11 +441,25 @@ impl Ledger {
             entry.payload = entry.payload.saturating_add(u64::from(len));
             if entry.first_body_end == NEVER {
                 entry.first_body_end = IN_RUN;
+                // Kept only if the run goes into the queue byte for byte ([`Self::queued`]).
+                entry.first_body_start = place;
             }
         }
         entry.last_end = IN_RUN;
-        self.run_open = true;
         Ok(())
+    }
+
+    /// A part of `len` bytes that broke no rule joins the run being recorded. Returns where it
+    /// stands in the queue if the run goes in byte for byte.
+    fn placed(&mut self, len: u32) -> u64 {
+        if !self.run_open {
+            self.run_open = true;
+            self.run_start = self.queued;
+            self.run_len = 0;
+        }
+        let place = self.run_start.saturating_add(self.run_len);
+        self.run_len = self.run_len.saturating_add(u64::from(len));
+        place
     }
 
     /// The engine wrote `len` bytes of a sealed value for `stream` (a `WIRE_SEALED` it covered) into
@@ -480,6 +529,21 @@ impl Ledger {
         }
     }
 
+    /// The connection's carrier last reported `total` bytes taken, and NO flush succeeded after it
+    /// (a write failed part-way and the connection is being retired). A byte the carrier took may
+    /// be on the connection, so it counts for telling `part` from `none` (and an attempt of which
+    /// it took a byte is never `none`: no second spend). It is not a flush: nothing becomes `whole`
+    /// by it and no ended message is settled by it. Only what was queued can have been taken: a
+    /// reading above it counts as what was queued.
+    pub(crate) fn reached(&mut self, total: u64) {
+        self.reached = self.reached.max(total.min(self.queued));
+    }
+
+    /// The most the socket can have taken: what a flush confirmed, or the carrier's last reading.
+    fn reach(&self) -> u64 {
+        self.accepted.max(self.reached)
+    }
+
     /// The shutdown an `END_SHUTDOWN` asked for succeeded.
     pub(crate) fn shut_down(&mut self) {
         self.shut = true;
@@ -490,9 +554,9 @@ impl Ledger {
     /// its verdict frozen as the socket's progress stands. A message the engine had stopped keeps
     /// the reason it was stopped for.
     pub(crate) fn gone(&mut self, reason: Reason) {
-        let accepted = self.accepted;
+        let reach = self.reach();
         for entry in &mut self.entries {
-            let state = entry.progress(accepted);
+            let state = entry.progress(reach);
             entry.freeze(state, Some(entry.stopped.unwrap_or(reason)));
         }
     }
@@ -500,9 +564,9 @@ impl Ledger {
     /// The transport broke a rule: the session ends, and every message still open is `part` or
     /// `none` with reason `transport_fault`.
     pub(crate) fn faulted(&mut self) {
-        let accepted = self.accepted;
+        let reach = self.reach();
         for entry in &mut self.entries {
-            let state = entry.progress(accepted);
+            let state = entry.progress(reach);
             entry.freeze(state, Some(Reason::TransportFault));
         }
     }
@@ -532,7 +596,7 @@ impl Ledger {
             .find(|entry| entry.stream == stream)
             .map_or(State::None, |entry| match entry.verdict {
                 Some(verdict) => verdict.state,
-                None => entry.progress(self.accepted),
+                None => entry.progress(self.reach()),
             })
     }
 
@@ -585,7 +649,7 @@ impl Ledger {
 
     /// Freeze every ended message whose bytes are all out.
     fn settle(&mut self) {
-        let (accepted, shut) = (self.accepted, self.shut);
+        let (accepted, shut, reach) = (self.accepted, self.shut, self.reach());
         for entry in &mut self.entries {
             let Some(how) = entry.ended else {
                 continue;
@@ -598,7 +662,7 @@ impl Ledger {
                 END_SHUTDOWN if shut => entry.freeze(State::Whole, None),
                 END_SHUTDOWN => {}
                 _ => {
-                    let state = entry.progress(accepted);
+                    let state = entry.progress(reach);
                     entry.freeze(state, Some(entry.stopped.unwrap_or(Reason::Protocol)));
                 }
             }
@@ -1139,6 +1203,107 @@ mod tests {
             Some(DeliveryTerminal::Failed(ResponseStop::Integrity))
         );
         assert!(!none.first_payload_written);
+    }
+
+    /// ENGINE-OPEN-2 row 18, note 3. Two answers carried by one run that went into the queue byte
+    /// for byte: each is `part` from its OWN first body byte, not from the end of the run.
+    #[test]
+    fn an_answer_is_part_from_its_own_first_body_byte_not_from_the_end_of_its_run() {
+        let mut ledger = Ledger::new();
+        ledger.open(1, Role::Answer).unwrap();
+        ledger.open(3, Role::Answer).unwrap();
+        ledger.part(control(1), 10).unwrap();
+        ledger.part(payload(1), 100).unwrap();
+        ledger.part(control(3), 10).unwrap();
+        ledger.part(payload(3), 100).unwrap();
+        assert_eq!(
+            ledger.state_of(1),
+            State::None,
+            "an open run is not in the socket queue yet"
+        );
+        ledger.queued(220);
+        ledger.accepted(10);
+        assert_eq!(ledger.state_of(1), State::None, "its head alone");
+        ledger.accepted(11);
+        assert_eq!(
+            ledger.state_of(1),
+            State::Part,
+            "one body byte of it is out"
+        );
+        assert_eq!(ledger.state_of(3), State::None);
+        ledger.accepted(120);
+        assert_eq!(
+            ledger.state_of(3),
+            State::None,
+            "the other answer's body and its own head are no body byte of it"
+        );
+        ledger.accepted(121);
+        assert_eq!(ledger.state_of(3), State::Part);
+        ledger.gone(Reason::CallerGone);
+        assert_eq!(ledger.take(1).map(|d| d.body_bytes), Some(100));
+        assert_eq!(ledger.take(3).map(|d| d.body_bytes), Some(100));
+    }
+
+    #[test]
+    fn where_a_layer_changed_the_count_the_end_of_the_run_stands() {
+        let mut ledger = Ledger::new();
+        ledger.open(1, Role::Answer).unwrap();
+        ledger.part(control(1), 10).unwrap();
+        ledger.part(payload(1), 100).unwrap();
+        // 110 bytes of parts became 150 in the queue: no place inside the run is known.
+        ledger.queued(150);
+        ledger.accepted(149);
+        assert_eq!(ledger.state_of(1), State::None);
+        ledger.accepted(150);
+        assert_eq!(ledger.state_of(1), State::Part);
+    }
+
+    #[test]
+    fn the_carriers_last_reading_tells_part_from_none_and_makes_nothing_whole() {
+        let mut ledger = answer();
+        ledger.asked_end(1);
+        ledger.part_at(control(1), 5, 115).unwrap();
+        ledger.end(end(1, END_FLUSH, 0)).unwrap();
+        // Every byte through the end mark is on the carrier; the flush after it did not succeed.
+        ledger.reached(115);
+        assert_eq!(ledger.verdict(1), None, "a reading is not a flush");
+        assert_eq!(ledger.state_of(1), State::Part);
+        ledger.gone(Reason::CallerGone);
+        assert_eq!(
+            ledger.take(1),
+            Some(Delivery {
+                state: State::Part,
+                reason: Some(Reason::CallerGone),
+                body_bytes: 100
+            })
+        );
+    }
+
+    #[test]
+    fn a_reading_counts_for_no_more_than_was_queued() {
+        let mut ledger = Ledger::new();
+        ledger.open(1, Role::Answer).unwrap();
+        ledger.part_at(control(1), 10, 10).unwrap();
+        // The body is recorded and its run never reached the queue (the queue refused it).
+        ledger.part(payload(1), 100).unwrap();
+        ledger.reached(u64::MAX);
+        assert_eq!(ledger.state_of(1), State::None);
+        ledger.gone(Reason::CallerGone);
+        assert_eq!(ledger.take(1).map(|d| d.state), Some(State::None));
+    }
+
+    #[test]
+    fn an_attempt_of_which_the_carrier_took_a_byte_is_never_none() {
+        let mut ledger = Ledger::new();
+        ledger.open(1, Role::Attempt).unwrap();
+        ledger.part_at(control(1), 40, 40).unwrap();
+        ledger.reached(1);
+        ledger.gone(Reason::CallerGone);
+        assert_eq!(
+            ledger.take(1).map(|d| d.state),
+            Some(State::Part),
+            "the provider may have seen it: no second spend"
+        );
     }
 
     #[test]

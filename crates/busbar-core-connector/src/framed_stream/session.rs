@@ -823,13 +823,24 @@ impl TransportConn {
         now: Instant,
         multiplex: bool,
     ) -> Self {
-        let mut answers = Answers::new(stall_ms, now);
-        answers.stated = true;
         let session = if multiplex {
             records::Session::stated(true, 1 << 20, 4 << 20)
         } else {
             records::Session::stated(false, 0, 0)
         };
+        Self::scripted_stating(script, stall_ms, now, session)
+    }
+
+    /// As [`Self::scripted_as`], stating exactly `session` (a test of the windows states small ones).
+    #[cfg(test)]
+    pub(crate) fn scripted_stating(
+        script: tests::Script,
+        stall_ms: Option<u32>,
+        now: Instant,
+        session: records::Session,
+    ) -> Self {
+        let mut answers = Answers::new(stall_ms, now);
+        answers.stated = true;
         answers
             .acts
             .push(Act::Session(session))
@@ -1532,8 +1543,13 @@ impl Task {
     }
 }
 
-/// The session's last answer applied, and then every credit the driver says is owed for a stream that
-/// is over (`emit(E_CONSUMED)`, whose own answer is applied in turn).
+/// The session's last answer applied, and then every credit the driver says is owed
+/// (`emit(E_CONSUMED)`, whose own answer is applied in turn): for a stream that is over, what it
+/// still held or owed; and for body the answer carried of a stream the engine has left
+/// (`wire::Outcome::left`), every byte at once. ONE MECHANISM, BOTH ROLES: the dial gives the same
+/// credits from the same driver (`native_dial`, `credit_left`); here the ledger keeps them in one
+/// list ([`DeliveryLedger::take_owed`]) and each is taken from it as it is given, so none is given
+/// twice. A credit's own answer can owe more (it is applied before the next is taken).
 async fn applied<S: AsyncWrite + Unpin>(
     task: &mut Task,
     conn: &mut TransportConn,

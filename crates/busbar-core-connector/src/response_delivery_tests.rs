@@ -9,6 +9,7 @@ use super::*;
 use crate::outbound::delivery::Breach;
 use crate::outbound::records::{
     Session, WireEnd, WirePart, END_FAILED, END_FLUSH, END_NO_BODY, END_SHUTDOWN, WIRE_CONTROL,
+    WIRE_PAYLOAD,
 };
 use busbar_contract::response_delivery::CarrierFault;
 use busbar_contract::storage::StorageSource;
@@ -579,5 +580,203 @@ fn the_queue_wipes_each_byte_as_the_connection_takes_it() {
     assert_eq!(
         answer(&mut ledger, &[part(0, WIRE_CONTROL, b"x")]).unwrap_err(),
         Fault::Queue
+    );
+}
+
+// ---- credit for a stream the engine has left (ENGINE-OPEN-2 row 2) ----------------------------
+
+/// Inbound body of `stream` the transport handed up (`STREAM_BODY`), as the driver's item.
+fn body(stream: u64, len: u32) -> Item {
+    (Out::Body { stream, len }, &[])
+}
+
+/// A ledger whose session stated small windows: 64 bytes a stream, 256 the connection.
+fn windowed(multiplex: bool) -> DeliveryLedger {
+    let session = if multiplex {
+        Session::stated(true, 64, 256)
+    } else {
+        Session::stated(false, 0, 0)
+    };
+    let mut ledger = DeliveryLedger::default();
+    answer(&mut ledger, &[(Out::Session(session), &[])]).unwrap();
+    ledger
+}
+
+/// The engine resets `stream` and the transport ends it: the engine has left the stream.
+fn leave(ledger: &mut DeliveryLedger, stream: u64) {
+    assert!(ledger.stop(stream, ResponseStop::Cancelled, Instant::now()));
+    answer(ledger, &[end(stream, END_FAILED, 0)]).unwrap();
+}
+
+#[test]
+fn late_body_of_a_stream_the_engine_left_is_owed_as_credit_at_once_and_only_once() {
+    let mut ledger = windowed(true);
+    let one = ledger.admit(key(1)).unwrap();
+    let _three = ledger.admit(key(3)).unwrap();
+    // Forty bytes of the request's body arrived and core's reader took none of them.
+    answer(&mut ledger, &[body(1, 40)]).unwrap();
+    leave(&mut ledger, 1);
+    assert_eq!(
+        one.watch.record(),
+        Some(DeliveryRecord {
+            state: "none",
+            reason: Some("cancelled"),
+            body_bytes: 0
+        })
+    );
+    // What the stream held when it went is credited as it goes.
+    assert_eq!(ledger.take_owed(), Some((1, 40)));
+    assert_eq!(ledger.take_owed(), None);
+    // The caller's body was already on its way and keeps arriving: ten answers of 64 bytes, two and
+    // a half times the connection window. Nobody will read them: all of each is owed at once.
+    let mut credited = 40;
+    for _ in 0..10 {
+        let outcome = answer(&mut ledger, &[body(1, 32), body(1, 32)]).unwrap();
+        assert!(
+            outcome.left.is_empty(),
+            "the ledger took what the driver says is owed: nobody else can give it again"
+        );
+        assert_eq!(
+            ledger.take_owed(),
+            Some((1, 64)),
+            "one credit a stream for one answer"
+        );
+        assert_eq!(ledger.take_owed(), None, "and it is owed once");
+        // The pieces still go up to core; its taking them credits nothing more.
+        assert_eq!(ledger.taken(1, 64), None);
+        assert_eq!(ledger.take_owed(), None);
+        credited += 64;
+    }
+    assert_eq!(credited, 40 + 640, "every byte of the stream, each once");
+    // The connection's other stream receives within the windows the session stated, and its
+    // reader's taking is credited as ever.
+    assert!(ledger.reads_socket());
+    answer(&mut ledger, &[body(3, 64)]).unwrap();
+    assert_eq!(ledger.taken(3, 64), Some(64));
+}
+
+#[test]
+fn credit_owed_for_one_left_stream_is_one_credit_however_it_came_to_be_owed() {
+    let mut ledger = windowed(true);
+    let _one = ledger.admit(key(1)).unwrap();
+    answer(&mut ledger, &[body(1, 40)]).unwrap();
+    leave(&mut ledger, 1);
+    // The credit for what the stream held is not given yet when its late bytes arrive.
+    answer(&mut ledger, &[body(1, 24)]).unwrap();
+    assert_eq!(ledger.take_owed(), Some((1, 64)));
+    assert_eq!(ledger.take_owed(), None);
+}
+
+#[test]
+fn a_session_with_one_stream_is_owed_no_credit_for_late_body() {
+    let mut ledger = windowed(false);
+    let _one = ledger.admit(key(1)).unwrap();
+    leave(&mut ledger, 1);
+    let outcome = answer(&mut ledger, &[body(1, 64)]).unwrap();
+    assert!(outcome.left.is_empty());
+    assert_eq!(
+        ledger.take_owed(),
+        None,
+        "the engine stops reading its connection instead"
+    );
+}
+
+#[test]
+fn credit_owed_dies_with_the_connection() {
+    let mut ledger = windowed(true);
+    let _one = ledger.admit(key(1)).unwrap();
+    leave(&mut ledger, 1);
+    answer(&mut ledger, &[body(1, 64)]).unwrap();
+    ledger.gone(Reason::CallerGone);
+    assert_eq!(ledger.take_owed(), None, "nobody is left to give it to");
+}
+
+// ---- `part` is each answer's own (ENGINE-OPEN-2 row 18, note 3) --------------------------------
+
+/// Two answers carried by ONE answer of the transport (one run): a four-byte head and a four-byte
+/// body each. The write fails with `carried` bytes of the run on the carrier as whole records.
+/// The states of the two records.
+fn cut_at(carried: u64) -> (&'static str, &'static str) {
+    let mut ledger = ledger();
+    let one = ledger.admit(key(1)).unwrap();
+    let three = ledger.admit(key(3)).unwrap();
+    ledger.emitting(1, E_BODY, 4);
+    ledger.emitting(3, E_BODY, 4);
+    answer(
+        &mut ledger,
+        &[
+            part(1, WIRE_CONTROL, b"head"),
+            part(1, WIRE_PAYLOAD, b"body"),
+            part(3, WIRE_CONTROL, b"head"),
+            part(3, WIRE_PAYLOAD, b"body"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(ledger.unwritten().len(), 16);
+    ledger.took(carried as usize);
+    ledger.discard();
+    ledger.retire(
+        CarrierProgress {
+            fault: Some(CarrierFault::Io),
+            ..progress(carried, carried, carried)
+        },
+        Reason::CallerGone,
+    );
+    let state = |handles: &ResponseHandles| {
+        let record = handles
+            .watch
+            .record()
+            .expect("a retired answer has its record");
+        assert_eq!(record.reason, Some("caller_gone"));
+        assert_eq!(
+            record.body_bytes, 4,
+            "what the transport made for THIS answer"
+        );
+        record.state
+    };
+    (state(&one), state(&three))
+}
+
+#[test]
+fn a_run_cut_by_a_failed_write_is_part_only_for_the_answers_whose_own_body_byte_left() {
+    assert_eq!(cut_at(0), ("none", "none"));
+    assert_eq!(cut_at(4), ("none", "none"), "the first answer's head alone");
+    assert_eq!(cut_at(5), ("part", "none"), "one body byte of the first");
+    assert_eq!(cut_at(8), ("part", "none"));
+    assert_eq!(
+        cut_at(12),
+        ("part", "none"),
+        "the second answer's head alone is no body byte of it"
+    );
+    assert_eq!(cut_at(13), ("part", "part"));
+    assert_eq!(
+        cut_at(16),
+        ("part", "part"),
+        "all of it on the carrier and no flush: nothing is whole"
+    );
+}
+
+#[test]
+fn a_failed_write_s_last_reading_never_makes_an_ended_answer_whole() {
+    let mut ledger = ledger();
+    let one = ledger.admit(key(1)).unwrap();
+    serve(&mut ledger, 1);
+    // Every byte through the end mark is on the carrier, and the flush after it did not succeed.
+    ledger.took(8);
+    ledger.discard();
+    ledger.retire(
+        CarrierProgress {
+            fault: Some(CarrierFault::Io),
+            ..progress(8, 8, 8)
+        },
+        Reason::CallerGone,
+    );
+    assert_eq!(
+        one.watch.record(),
+        Some(DeliveryRecord {
+            state: "part",
+            reason: Some("caller_gone"),
+            body_bytes: 4
+        })
     );
 }
