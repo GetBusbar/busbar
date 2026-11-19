@@ -65,8 +65,9 @@ fn count(answers: &[SettleAnswer], answer: SettleAnswer) -> usize {
 
 /// 8.15 (a) and (b), for any W: `settle()` beside a driving `retire_after`, first while its
 /// submit is held, then while the driver is held after the CoreStore dropped the decided attempt
-/// and before `take_decided`. Returns once both have returned.
-async fn settle_races_a_driving_retire(rig: &Rig) {
+/// and before `take_decided`. `before_decision` runs, with no await, just before the driver is
+/// released to `take_decided`. Returns once both have returned.
+async fn settle_races_a_driving_retire(rig: &Rig, before_decision: impl FnOnce()) {
     let submit = Arc::new(TestHold::default());
     rig.store.hold_next_fence(submit.clone());
     let driver = {
@@ -125,6 +126,7 @@ async fn settle_races_a_driving_retire(rig: &Rig) {
     assert_eq!(rig.fence.retained(), 1, "the entry is left to its driver");
     assert!(!settle.is_finished());
     assert!(rig.fence.retirements.gate.try_lock().is_err());
+    before_decision();
     decision.release.notify_one();
     assert!(
         driver.await.unwrap().unwrap(),
@@ -147,7 +149,7 @@ async fn settle_races_a_driving_retire(rig: &Rig) {
 async fn settle_leaves_a_driven_decision_to_its_driver_which_records_it_once() {
     let _guard = ledger_test_guard().await;
     let rig = rig(false).await;
-    settle_races_a_driving_retire(&rig).await;
+    settle_races_a_driving_retire(&rig, || {}).await;
     let offered = placement(rig.writer);
     assert!(
         offered.recorded.is_some()
@@ -336,7 +338,7 @@ async fn take_decided_offers_one_record_whoever_reaches_it() {
 async fn a_gracefully_retired_writer_races_the_same_way_with_no_record() {
     let _guard = ledger_test_guard().await;
     let rig = rig(true).await;
-    settle_races_a_driving_retire(&rig).await;
+    settle_races_a_driving_retire(&rig, || {}).await;
     assert_eq!(placement(rig.writer), Placement::default(), "no record");
     assert!(!rig.fence.retirements.take_closed_open(EPOCH, rig.writer));
 
@@ -377,7 +379,7 @@ async fn a_record_the_full_queue_refuses_is_recorded_once_the_queue_drains() {
         assert!(filled <= 4096, "the admin audit queue is bounded");
     }
     let rig = rig(false).await;
-    settle_races_a_driving_retire(&rig).await;
+    settle_races_a_driving_retire(&rig, || {}).await;
     assert_eq!(
         placement(rig.writer),
         Placement {

@@ -825,7 +825,7 @@ async fn a_lease_expired_8_s_is_live_and_one_expired_9_s_is_closed() {
     assert_eq!(store.control(at_30s), Some(CLOSED));
     assert_eq!(store.lease_deletes(at_30s), 1);
     assert!(store.lease(at_30s).is_none());
-    assert_offered_once(at_30s);
+    assert_offered_once(at_30s, &durable_records().await);
 
     store.now.store(109, Ordering::SeqCst);
     let second = fence.run(stop).await;
@@ -834,7 +834,7 @@ async fn a_lease_expired_8_s_is_live_and_one_expired_9_s_is_closed() {
     assert_eq!(store.fence_applies(at_8s), 1);
     assert_eq!(store.lease_deletes(at_8s), 1);
     assert!(store.lease(at_8s).is_none());
-    assert_offered_once(at_8s);
+    assert_offered_once(at_8s, &durable_records().await);
     assert_eq!(store.fence_applies(at_30s), 1, "closed once, never again");
 }
 
@@ -1037,11 +1037,12 @@ async fn three_hundred_expired_writers_close_over_two_starts() {
         (300 - EXPIRED_PASS_MAX, 0),
         "{second:?}"
     );
+    let records = durable_records().await;
     for writer in &writers {
         assert_eq!(store.fence_applies(*writer), 1);
         assert_eq!(store.lease_deletes(*writer), 1);
         assert!(store.lease(*writer).is_none());
-        assert_offered_once(*writer);
+        assert_offered_once(*writer, &records);
     }
 }
 
@@ -1288,5 +1289,5 @@ async fn a_writer_that_rolled_its_epoch_and_died_is_recorded_as_never_retired() 
         !fence.retirements.take_closed_open(EPOCH, writer),
         "the pass already took the open writer's close"
     );
-    assert_offered_once(writer);
+    assert_offered_once(writer, &durable_records().await);
 }
