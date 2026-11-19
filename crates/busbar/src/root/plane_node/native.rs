@@ -797,6 +797,19 @@ pub(crate) mod retained_fixture {
             );
         }
 
+        /// An entry not yet staged, as a live unit is before its audit stages: a candidate the
+        /// scans count and skip.
+        pub(crate) fn unstaged(&self, key: u64) {
+            self.insert(
+                key,
+                RetainedState::Original {
+                    staged: None,
+                    receipt: None,
+                    credit: None,
+                },
+            );
+        }
+
         /// The receipt the notary delivered to the original at `key`.
         pub(crate) fn receipt(&self, key: u64) -> Option<OriginalLineReceipt> {
             let guard = self.book.lock().unwrap();

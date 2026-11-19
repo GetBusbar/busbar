@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use busbar_contract::json::{self, JsonValueTrait};
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait};
 
 fn root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")

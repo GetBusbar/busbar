@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::export_stream::ExportStream;
 use busbar_plugin_loader::{
-    dispatch::{
-        kinds::export::{Export, ExportFacts},
-        kinds::transport::{Transport, TransportFacts},
-        load_dropped, load_linked, rendering_of_library, Bind, DispatchConfig, Dispatcher,
-        LinkedRow, NoSink, Plugin,
-    },
     list_plugin_files, plugin_library_filename, scan_and_validate,
     sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy},
     supported_abi, tarball, PluginRegistry,
@@ -424,27 +417,6 @@ pub fn pack(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
     seal(manifest(kind, name, publisher), lib)
 }
 
-pub(crate) fn pack_stated(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
-    let mut m = manifest(kind, name, publisher);
-    state(&mut m, lib);
-    seal(m, lib)
-}
-
-pub fn state(m: &mut Manifest, lib: &[u8]) {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "busbar-stated-{}-{n}-{}{}",
-        std::process::id(),
-        m.name,
-        std::env::consts::DLL_SUFFIX
-    ));
-    std::fs::write(&path, lib).expect("stage the library");
-    let rendering = rendering_of_library(&path).expect("the library states itself");
-    let _ = std::fs::remove_file(&path);
-    m.statement = rendering.map(hex::encode);
-}
-
 pub fn seal(mut m: Manifest, lib: &[u8]) -> Vec<u8> {
     m.sha256 = sha256(lib);
     package(&m, lib)
@@ -586,64 +558,6 @@ fn libraries() -> Vec<PathBuf> {
     found.into_iter().map(|(_, p)| p).collect()
 }
 
-fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
-    static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
-    let d = ONE.get_or_init(|| {
-        Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        )
-    });
-
-    let stated = rendering_of_library(path).ok()??;
-    let bind = Bind {
-        accept: Default::default(),
-        instance: std::sync::Arc::from("the-instance"),
-        max_inflight_cap: 64,
-        sink: std::sync::Arc::new(NoSink),
-        dispatcher: d.adopter(),
-
-        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
-    };
-    let plugin = load_dropped::<Transport>(path, &stated, bind).ok()?;
-    let key = *plugin.context::<TransportFacts>()?.claims.first()?;
-    Some((plugin, key))
-}
-
-pub fn linked_transport(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-    bind: Bind,
-) -> Plugin<Transport> {
-    let row = LinkedRow::of(door).expect("the linked door states itself");
-    load_linked::<Transport>(&row, bind).expect("the linked door loads")
-}
-
-pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
-    transport_cdylib_under(&[])
-}
-
-pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> {
-    let neutral = plugin_library_filename("neutral_frame_door");
-    libraries().into_iter().find_map(|p| {
-        if p.file_name().is_some_and(|n| n == neutral.as_str()) {
-            return None;
-        }
-        let (plugin, key) = transport_door(&p)?;
-        let facts = plugin.context::<TransportFacts>()?;
-
-        if !facts.composes_over.is_empty()
-            || facts.role != busbar_contract::transport::codes::ROLE_CARRIER
-            || !facts.ported
-        {
-            return None;
-        }
-        if !keys.is_empty() && !keys.contains(&key) {
-            return None;
-        }
-        Some((std::fs::read(&p).ok()?, key))
-    })
-}
-
 /// The loader's `native_schema_bomb` example: a MIN-3 store whose describe answers a recursion-bomb D_SCHEMA.
 pub fn native_schema_bomb_path() -> Option<PathBuf> {
     let file = plugin_library_filename("native_schema_bomb");
@@ -659,44 +573,6 @@ pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
         .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
         .and_then(|p| std::fs::read(p).ok())
 }
-
-pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
-    static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
-    let d = ONE.get_or_init(|| {
-        Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        )
-    });
-    libraries().into_iter().find_map(|p| {
-        let stated = rendering_of_library(&p).ok()??;
-        let bind = Bind {
-            accept: Default::default(),
-            instance: std::sync::Arc::from("probe"),
-            max_inflight_cap: 64,
-            sink: std::sync::Arc::new(NoSink),
-            dispatcher: d.adopter(),
-
-            conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
-        };
-        let plugin = load_dropped::<Export>(&p, &stated, bind).ok()?;
-        let metrics = [ExportStream::Metrics as u8];
-        (plugin.context::<ExportFacts>()?.streams == metrics)
-            .then(|| std::fs::read(&p).ok())
-            .flatten()
-    })
-}
-
-pub fn neutral_frame_door() -> Option<(Plugin<Transport>, &'static str)> {
-    let file = plugin_library_filename("neutral_frame_door");
-    libraries()
-        .into_iter()
-        .filter(|p| p.file_name().is_some_and(|n| n == file.as_str()))
-        .find_map(|p| transport_door(&p))
-}
-
-#[path = "../../../../plugin-loader/tests/fixtures/neutral_export_routes_plugin.rs"]
-pub(crate) mod neutral_export_routes;
 
 /// The operator admin token an admin test presents, as `Authorization: Bearer`. 1.6 has no open
 /// admin posture (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1), so an

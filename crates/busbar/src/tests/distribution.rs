@@ -14,9 +14,6 @@ mod auth_plugin_chain_trust;
 #[path = "../../../../dist/default/tests/product/plugin_preflight_scan.rs"]
 mod plugin_preflight_scan;
 
-#[path = "../../../../dist/default/tests/product/admin_cross_plane/main.rs"]
-mod admin_cross_plane;
-
 #[path = "oauth2_application/mod.rs"]
 mod oauth2_application;
 
@@ -398,9 +395,6 @@ mod kernel_application_auth_governance_routes;
 
 #[path = "kernel_application/auth_linked_contracts.rs"]
 mod kernel_application_auth_linked_contracts;
-
-#[path = "kernel_application/plugin_routes_actual.rs"]
-mod kernel_application_plugin_routes_actual;
 
 #[path = "kernel_application/central2_inbound_tickets.rs"]
 mod kernel_application_central2_inbound_tickets;
