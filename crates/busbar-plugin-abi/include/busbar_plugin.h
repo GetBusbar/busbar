@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2026 Busbar Inc and contributors */
-/* busbar_plugin.h: the plugin surface for C (core contract 3, secret kind 3: one call shape). Little-endian, LP64/LLP64-safe
+/* busbar_plugin.h: MIN-3 plugin surface for C (mechanism 2, secret kind abi 2). Little-endian, LP64/LLP64-safe
  * (every field is fixed-width or a pointer/size_t, as the Rust #[repr(C)] side). Frozen: ABI-MIN3-INTERFACE §7.8.
  * Hand-written (§16.103); C-HEADER (§14, tests/c_header) asserts every size, offset and constant below against
  * the Rust items, so a change on either side fails CI until both move in one MR (owner W1-A13). */
@@ -21,12 +21,6 @@
 typedef struct { const uint8_t *ptr; size_t len; } bb_bytes;  /* ptr may be NULL only when len == 0; {NULL,0} is empty everywhere (round 17, C-NULL-EMPTY) */
 typedef bb_bytes bb_str;                                       /* UTF-8 */
 typedef struct { uint8_t *ptr; size_t len; size_t cap; } bb_raw_out;
-/* The least answer storage a host hands an entry: out->cap >= BB_OUT_MIN on every call, before any grow. A
- * plugin may write BB_OUT_MIN bytes without calling h->grow; one byte more goes through h->grow. It is what
- * makes bb_fail total (a FAIL record with BB_FAIL_TEXT_WIRE_MAX of text, and the ERROR record after it, fit
- * with room to spare: 8 + 8 + 3072 + 8 + 8 <= 4096). The host's first buffer and every test host's are sized
- * from this name, never from a number of their own. C-HEADER asserts it == the Rust side's OUT_MIN. */
-#define BB_OUT_MIN 4096u
 typedef uint32_t bb_status;
 enum { BB_OK = 0, BB_REFUSED = 1, BB_FAILED = 2, BB_NEED = 3, BB_FAULT = 4 };
 typedef uint64_t bb_token;
@@ -48,50 +42,6 @@ typedef struct bb_host {
     bb_status (*migrate_admit)(const void *ctx, uint64_t recoverable); /* round 31: store open only (§5) */
 } bb_host;
 enum { BB_LOG_ERROR = 1, BB_LOG_WARN = 2, BB_LOG_INFO = 3, BB_LOG_DEBUG = 4, BB_LOG_TRACE = 5 };
-
-/* THE ONE CALL SHAPE (core 3.0). Every method of every kind, and describe, open and resume, crosses as
- *     bb_status entry(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out);
- * The call record is the host's, built on its stack and passed by address; it and everything it points at
- * are borrowed for the call (for an async start: until the chain retires). A method reads what its kind's
- * layout names: numbers from `head` (little-endian, each at its natural alignment from the start of head), then
- * texts and blobs by position. Reading is by prefix: a head longer than the fields a plugin knows, or more
- * texts or blobs than it knows, are fields added by a later second number and are never looked at; a head
- * shorter, or a missing text or blob, is a host defect and the entry answers BB_FAULT, writing nothing.
- * session = the session or chain token (0 for a plain call). mono_ns = the host's one clock reading for the
- * operation (0 = not given: h->mono is the fallback). 64 bytes on LP64; C-HEADER asserts every offset. */
-typedef struct { const bb_str *ptr; size_t len; } bb_strs;
-typedef struct { const bb_bytes *ptr; size_t len; } bb_blobs;
-typedef struct {
-    uint64_t session, mono_ns;
-    bb_bytes head;
-    bb_strs texts;
-    bb_blobs blobs;
-} bb_call;
-typedef bb_status (*bb_entry)(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out);
-/* Blob `i` of a call, or false when the call does not carry it (answer BB_FAULT). */
-static inline bool bb_call_blob(const bb_call *c, size_t i, bb_bytes *out) {
-    if (c == NULL || c->blobs.ptr == NULL || i >= c->blobs.len) return false;
-    *out = c->blobs.ptr[i];
-    return true;
-}
-/* Text `i` of a call, or false when the call does not carry it (answer BB_FAULT). */
-static inline bool bb_call_text(const bb_call *c, size_t i, bb_str *out) {
-    if (c == NULL || c->texts.ptr == NULL || i >= c->texts.len) return false;
-    *out = c->texts.ptr[i];
-    return true;
-}
-/* The u32 at byte `at` of the head (at % 4 == 0), or false when the head is shorter (answer BB_FAULT). */
-static inline bool bb_call_u32(const bb_call *c, size_t at, uint32_t *out) {
-    if (c == NULL || c->head.ptr == NULL || c->head.len < at + sizeof *out) return false;
-    memcpy(out, c->head.ptr + at, sizeof *out);
-    return true;
-}
-/* The u64 at byte `at` of the head (at % 8 == 0), or false when the head is shorter (answer BB_FAULT). */
-static inline bool bb_call_u64(const bb_call *c, size_t at, uint64_t *out) {
-    if (c == NULL || c->head.ptr == NULL || c->head.len < at + sizeof *out) return false;
-    memcpy(out, c->head.ptr + at, sizeof *out);
-    return true;
-}
 
 /* #408: native plane resource facts. These records grant no execution authority. */
 #define BB_PLANE_FB_RESOURCE_ADMISSION (1ull << 3)
@@ -176,28 +126,18 @@ typedef struct {
     uint8_t name[64], version[32], target[32], build_id[32], crypto[8], _reserved[16];
 } bb_stamp;                                    /* 272 bytes, format 2 (round 28); crypto = "external" */
 
-/* The secret table: an array of bb_entry, one entry (secret 3.0). resolve: head none, texts none,
- * blobs[0] = the reference's settings. The C plugin answers synchronously and never NEEDs. The struct names
- * the array's one position; its layout is bb_entry[BB_SECRET_ENTRIES]. */
-enum { BB_SECRET_RESOLVE = 0, BB_SECRET_ENTRIES = 1 };
+/* §8.2: the secret Vt (one entry). The C plugin answers synchronously and never NEEDs. */
 typedef struct {
-    bb_entry resolve;
+    bb_status (*resolve)(const void *inst, const bb_host *h, bb_bytes reference, bb_raw_out *out);
 } bb_secret_vt;
 
-/* The header `busbar_plugin` returns (core 3.0). It begins with its own size and the number of entries its
- * table holds, so the host reads both by prefix: a header field or a method added by a later second number
- * is one the host does not look for in an older image. describe, open and resume are entries of the one
- * shape, called with inst NULL (resume: NULL for an open chain):
- *   describe  no head, no texts, no blobs
- *   open      head: flags u32 (BB_OPEN_DRY_RUN); blobs[0] = the bound settings
- *   resume    call->session = the chain token; blobs[0] = the results */
+/* §7.1 */
 typedef struct {
-    uint32_t size, entries;                    /* sizeof(bb_plugin); BB_SECRET_ENTRIES */
     const bb_stamp *stamp;
-    const bb_entry *table;                     /* (const bb_entry *)&the bb_secret_vt */
-    bb_entry describe;
-    bb_entry open;
-    bb_entry resume;
+    const void *kind_vt;                       /* const bb_secret_vt * */
+    bb_status (*describe)(const bb_host *h, bb_raw_out *out);
+    bb_status (*open)(const bb_host *h, bb_bytes config, uint32_t flags, bb_raw_out *out);
+    bb_status (*resume)(const void *inst, const bb_host *h, bb_token tok, bb_bytes results, bb_raw_out *out);
     bb_status (*cancel)(const void *inst, bb_token tok);
     bb_status (*close)(const void *inst);
     bb_str former_names;                       /* "secret-c" for busbar-secret-c (§12.10 item 2) */

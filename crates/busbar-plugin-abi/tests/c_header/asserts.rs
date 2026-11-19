@@ -137,63 +137,13 @@ pub fn generate() -> String {
         engine_max = engine_max, name = name, version = version, target = target, build_id = build_id,
         crypto = crypto, _reserved = _reserved
     });
-    // The one call record and the one entry type (core 3.0): every offset of `bb_call` is the Rust `Call`'s.
-    eq(
-        "sizeof(bb_call)",
-        size_of::<busbar_ffi::vt::Call<'static>>() as u64,
-    );
-    eq(
-        "_Alignof(bb_call)",
-        align_of::<busbar_ffi::vt::Call<'static>>() as u64,
-    );
-    eq(
-        "offsetof(bb_call, session)",
-        busbar_ffi::vt::CALL_SESSION_AT as u64,
-    );
-    eq(
-        "offsetof(bb_call, mono_ns)",
-        busbar_ffi::vt::CALL_MONO_NS_AT as u64,
-    );
-    eq(
-        "offsetof(bb_call, head)",
-        busbar_ffi::vt::CALL_HEAD_AT as u64,
-    );
-    eq(
-        "offsetof(bb_call, texts)",
-        busbar_ffi::vt::CALL_TEXTS_AT as u64,
-    );
-    eq(
-        "offsetof(bb_call, blobs)",
-        busbar_ffi::vt::CALL_BLOBS_AT as u64,
-    );
-    // A table is an array of entries: one pointer each, and `bb_secret_vt` is exactly its one entry.
-    eq(
-        "sizeof(bb_entry)",
-        size_of::<Option<busbar_ffi::vt::Entry>>() as u64,
-    );
-    eq(
-        "sizeof(bb_secret_vt)",
-        size_of::<Option<busbar_ffi::vt::Entry>>() as u64,
-    );
-    eq("BB_SECRET_ENTRIES", abi::secret::ALL.count_ones() as u64);
-    // The least answer storage a host hands an entry, named once on each side.
-    eq("BB_OUT_MIN", busbar_ffi::raw::OUT_MIN as u64);
-    // The header: its own size and entry count first, then the stamp and the table.
-    eq(
-        "offsetof(bb_plugin, size)",
-        abi::plugin::PLUGIN_SIZE_AT as u64,
-    );
-    eq(
-        "offsetof(bb_plugin, entries)",
-        abi::plugin::PLUGIN_ENTRIES_AT as u64,
-    );
     eq(
         "offsetof(bb_plugin, stamp)",
         abi::plugin::PLUGIN_STAMP_AT as u64,
     );
     eq(
-        "offsetof(bb_plugin, table)",
-        abi::plugin::PLUGIN_TABLE_AT as u64,
+        "offsetof(bb_plugin, kind_vt)",
+        abi::plugin::PLUGIN_KIND_VT_AT as u64,
     );
     eq(
         "offsetof(bb_plugin, describe)",

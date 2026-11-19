@@ -56,7 +56,7 @@ static bb_status migrate_admit(const void *ctx, uint64_t recoverable) {
 int main(int argc, char **argv) {
     const bb_host host = {NULL, zero, zero, random_, crypto, log_, log_level, grow, deployment, migrate_admit};
     for (int i = 1; i < argc; i++) {
-        bb_raw_out o = {calloc(BB_OUT_MIN, 1), 0, BB_OUT_MIN};
+        bb_raw_out o = {calloc(4096, 1), 0, 4096};
         if (!o.ptr) return 2;
         /* Something written before the Fail, which bb_fail wipes. */
         memset(o.ptr, 0xAB, 64);

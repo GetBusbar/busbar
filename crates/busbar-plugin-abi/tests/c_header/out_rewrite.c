@@ -36,9 +36,7 @@ static uint8_t decoy[4096];
 
 static bool is(bb_bytes b, const char *s) { return b.len == strlen(s) && (!b.len || !memcmp(b.ptr, s, b.len)); }
 
-static bb_status describe(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out) {
-    (void)inst;
-    (void)call;
+static bb_status describe(const bb_host *h, bb_raw_out *out) {
     bb_mask_rec m = {BB_SECRET_REQUIRED};
     if (!bb_put(h, out, BB_TAG_D_METHODS, &m, sizeof m) || !bb_put(h, out, BB_TAG_D_SCHEMA, SCHEMA, sizeof SCHEMA - 1)
         || !bb_put(h, out, BB_TAG_SECRET_D_REF_SCHEMA, REF_SCHEMA, sizeof REF_SCHEMA - 1))
@@ -46,12 +44,7 @@ static bb_status describe(const void *inst, const bb_host *h, const bb_call *cal
     return BB_OK;
 }
 
-/* open: head = flags u32; blobs[0] = the bound settings; a call without either is FAULT. */
-static bb_status open_(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out) {
-    bb_bytes config;
-    uint32_t flags;
-    (void)inst;
-    if (!bb_call_u32(call, 0, &flags) || !bb_call_blob(call, 0, &config)) return BB_FAULT;
+static bb_status open_(const bb_host *h, bb_bytes config, uint32_t flags, bb_raw_out *out) {
     if (!config.len || config.ptr[0] != '{') return bb_fail(h, out, BB_REFUSED, BB_R_CONFIG, "config is not an object");
     if (flags & BB_OPEN_DRY_RUN) return BB_OK;
     uint8_t *state = malloc(1);
@@ -101,11 +94,8 @@ static bb_status regrow(const bb_host *h, bb_raw_out *out) {
     return BB_OK;
 }
 
-/* resolve: no numbers; blobs[0] = the reference; a call without it is FAULT. */
-static bb_status resolve(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out) {
-    bb_bytes reference;
+static bb_status resolve(const void *inst, const bb_host *h, bb_bytes reference, bb_raw_out *out) {
     (void)inst;
-    if (!bb_call_blob(call, 0, &reference)) return BB_FAULT;
     if (!reference.len || reference.ptr[0] != '{') return bb_fail(h, out, BB_REFUSED, BB_R_INVALID, "not an object");
     if (is(reference, "{\"name\":\"ptr\"}")) return rewrite_ptr(h, out);
     if (is(reference, "{\"name\":\"cap\"}")) return rewrite_cap(h, out);
@@ -113,10 +103,11 @@ static bb_status resolve(const void *inst, const bb_host *h, const bb_call *call
     return bb_fail(h, out, BB_REFUSED, BB_R_NOT_FOUND, "no such name");
 }
 
-static bb_status resume(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out) {
+static bb_status resume(const void *inst, const bb_host *h, bb_token tok, bb_bytes results, bb_raw_out *out) {
     (void)inst;
     (void)h;
-    (void)call;
+    (void)tok;
+    (void)results;
     (void)out;
     return BB_FAULT; /* it never answers NEED */
 }
@@ -132,8 +123,7 @@ static bb_status close_(const void *inst) {
 
 static const bb_secret_vt VT = {resolve};
 static const bb_plugin PLUGIN = {
-    (uint32_t)sizeof(bb_plugin), BB_SECRET_ENTRIES, &STAMP, (const bb_entry *)&VT,
-    describe, open_, resume, cancel, close_, {(const uint8_t *)"out-rewrite-c", 13},
+    &STAMP, &VT, describe, open_, resume, cancel, close_, {(const uint8_t *)"out-rewrite-c", 13},
 };
 const bb_plugin *busbar_plugin(void);
 const bb_plugin *busbar_plugin(void) { return &PLUGIN; }
