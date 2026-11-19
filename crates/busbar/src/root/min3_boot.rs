@@ -1063,6 +1063,7 @@ impl Steps<'_> {
             &who,
             driver.caller().clone(),
             driver.port(),
+            driver.routes(),
         )
         .map_err(|why| OpenError::Unknown(format!("plane `{}`: {why}", spec.name)))?;
         // This cap bounds each validated configuration output, not aggregate process memory.

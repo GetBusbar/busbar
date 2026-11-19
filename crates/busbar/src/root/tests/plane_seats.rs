@@ -491,6 +491,7 @@ async fn catalog_composition_keeps_model_definitions_out_of_channel_registration
         &who(7),
         caller(),
         Arc::new(Quiet),
+        &PortRoutes::default(),
     )
     .unwrap();
     let registrations: Arc<dyn Upstreams> = shared.upstreams["mcp"].clone();
@@ -529,6 +530,7 @@ async fn seat_request_inventory_retains_the_actual_candidate_catalog() {
         &who(7),
         caller(),
         Arc::new(Quiet),
+        &PortRoutes::default(),
     )
     .unwrap();
     drop(shared);
@@ -558,7 +560,8 @@ async fn catalog_selector_cannot_alias_the_registration_request_domain() {
         Accept::default(),
         &who(7),
         caller(),
-        Arc::new(Quiet)
+        Arc::new(Quiet),
+        &PortRoutes::default()
     )
     .is_err());
     assert!(
@@ -642,6 +645,7 @@ async fn a_seat_with_configured_upstreams_is_composed_with_its_walk_and_its_carr
         &who(7),
         caller(),
         Arc::new(Quiet),
+        &PortRoutes::default(),
     )
     .expect("the seat composes");
     assert!(wiring.upstream.is_some(), "a FORWARD has a walk to run");
@@ -708,6 +712,7 @@ async fn a_seat_with_no_connection_table_still_gets_its_carrier_and_walks_nothin
         &who(3),
         caller(),
         Arc::new(Quiet),
+        &PortRoutes::default(),
     )
     .expect("the seat composes");
     assert!(wiring.upstream.is_none());
@@ -883,7 +888,8 @@ async fn a_seat_without_its_retained_channel_account_refuses_before_declaring_ro
         Accept::default(),
         &who(7),
         caller(),
-        Arc::new(Quiet)
+        Arc::new(Quiet),
+        &PortRoutes::default()
     )
     .is_err());
     assert!(table.declared.lock().unwrap().is_empty());
@@ -899,6 +905,7 @@ async fn the_seat_exposes_the_same_instance_account_to_original_unit_admission()
         &who(7),
         caller(),
         Arc::new(Quiet),
+        &PortRoutes::default(),
     )
     .unwrap();
     let budget = &shared.channel_budgets["mcp"];
@@ -954,6 +961,7 @@ async fn channel_drivers_across_generations_share_the_retained_instance_account(
         &namespace,
         first_admission.caller.clone(),
         Arc::new(Quiet),
+        &PortRoutes::default(),
         None,
     );
     let second = channels_of(
@@ -962,6 +970,7 @@ async fn channel_drivers_across_generations_share_the_retained_instance_account(
         &namespace,
         second_admission.caller.clone(),
         Arc::new(Quiet),
+        &PortRoutes::default(),
         None,
     );
     // This is capacity from the same actual instance, held across both generation drivers.

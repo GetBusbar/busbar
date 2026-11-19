@@ -56,6 +56,7 @@ use busbar_kernel::plane_driver::port_egress::{
 };
 use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_probes::PortProbes;
+use busbar_kernel::plane_driver::port_routes::PortRoutes;
 use busbar_kernel::plane_driver::port_session::Effects;
 use busbar_kernel::plane_driver::provider_catalog::{CatalogPlan, CatalogPool, RouteKind};
 use busbar_kernel::plane_driver::request_admission::{RequestRoutes, SectionPool};
@@ -1008,6 +1009,7 @@ pub(crate) fn compose(
     who: &Namespace,
     caller: Caller,
     port: Arc<dyn PlanePort>,
+    routes: &PortRoutes,
 ) -> Result<SeatWiring, String> {
     let channel_budget = shared
         .channel_budgets
@@ -1034,10 +1036,24 @@ pub(crate) fn compose(
             .get(instance)
             .map_or(&BTreeMap::new(), |pools| pools.as_ref()),
     )?);
-    // No kind is inferred from instance/image vocabulary. The seat that walks core's own model
-    // catalog walks the operator's `pools:`, and a key's `allowed_pools` is judged against them as
-    // 1.5.5 judged it (`key.scope_allowed("pool", pool)`): a restricted key reaches its pools only.
-    let scope_kind = catalog.map(|_| Arc::<str>::from("pool"));
+    // No kind is inferred, from the instance, the image or the seat carrying a catalog: the plane
+    // states it. The kind this seat's walk judges a key under is the walk kind its routes' records
+    // state (llm `pool`: a key's `allowed_pools` is judged as 1.5.5 judged it, a restricted key
+    // reaches its pools only; MCP `mcp_server`; A2A `agent`). A seat none of whose routes walks
+    // states no kind, and only an unrestricted key passes a walk it should never start.
+    let stated = routes
+        .data
+        .iter()
+        .chain(&routes.upgrade)
+        .map(|mounted| &mounted.record);
+    let scope_kind = match busbar_kernel::auth::route_record::seat_walk_kind(stated) {
+        Ok(kind) => kind.map(Arc::<str>::from),
+        Err((first, second)) => {
+            return Err(format!(
+                "plane {instance}: its routes walk two scope kinds, `{first}` and `{second}`"
+            ))
+        }
+    };
     let request_routes = Arc::new(
         RequestRoutes::new(
             instance,

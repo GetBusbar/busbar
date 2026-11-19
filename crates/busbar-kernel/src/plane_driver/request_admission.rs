@@ -132,11 +132,6 @@ pub struct RequestRoutes {
     section_lanes: Vec<WalkLanes>,
 }
 impl RequestRoutes {
-    /// The kind this seat's walk judges a key under, as stated (`None`: none stated).
-    pub fn scope_kind(&self) -> Option<&str> {
-        self.scope_kind.as_deref()
-    }
-
     pub fn new(
         instance: &str,
         scope_kind: Option<Arc<str>>,
