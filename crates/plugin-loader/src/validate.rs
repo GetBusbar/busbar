@@ -245,9 +245,9 @@ mod tests {
     #[test]
     fn a_foreign_record_in_a_secret_answer_is_named_by_its_tag() {
         let mut reply = Reply::new();
-        reply.put(0x01F0, b"x").unwrap();
+        reply.put(0x0155, b"x").unwrap();
         let a = ok(&reply);
-        assert_eq!(secret::resolve(&a), Err(FaultReason::UnknownTag(0x01F0)));
+        assert_eq!(secret::resolve(&a), Err(FaultReason::UnknownTag(0x0155)));
     }
 
     #[test]
