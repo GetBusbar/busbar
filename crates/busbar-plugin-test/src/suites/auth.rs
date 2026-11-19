@@ -259,4 +259,127 @@ mod tests {
             "the loader never refreshes a raw answer"
         );
     }
+
+    /// An auth plugin that answers ISSUED_WANTED and judges the credential core looked up for it.
+    mod issued {
+        use super::*;
+        use busbar_plugin_abi::auth::{IssuedShapeRec, BAD_CREDENTIAL, REQ_ISSUED_LOOKED_UP};
+        use busbar_plugin_abi::records::{tag as rec, Full, Nested};
+
+        pub(super) const KIND: &str = "fixture-key";
+        pub(super) const ID: &str = "AKIAFIXTURE000000001";
+        pub(super) const KEY: &[u8] = b"fixture/secret+KEY0000000000000000000000";
+        pub(super) const SUBJECT: &str = "issued-subject";
+
+        pub(super) static VERIFIES: AtomicUsize = AtomicUsize::new(0);
+
+        fn shape_texts(w: &mut Nested<'_>) -> Result<(), Full> {
+            for text in [
+                "AKIA",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+            ] {
+                w.put_text(rec::TEXT, text)?;
+            }
+            Ok(())
+        }
+
+        pub struct IssuedAuth;
+        impl Open for IssuedAuth {
+            async fn open(_: &'static Host, _: ChainBytes) -> Result<Self, Fail> {
+                Ok(Self)
+            }
+            fn check(_: &Host, _: &[u8], _: &mut Endpoints<'_>) -> Result<(), Fail> {
+                Ok(())
+            }
+            fn describe(d: &mut Describe<'_>) {
+                d.schema(r#"{"type":"object"}"#);
+                d.methods(abi::M_VERIFY);
+                d.item_text(tag::D_CRED_HEADER, "authorization");
+                d.item_text(tag::D_ISSUED_KIND, KIND);
+                d.item_pod_nested(
+                    tag::D_ISSUED_SHAPE,
+                    &IssuedShapeRec {
+                        id_len: 20,
+                        secret_len: 40,
+                    },
+                    shape_texts,
+                );
+            }
+        }
+        impl busbar_plugin_abi::Auth for IssuedAuth {
+            /// `/known` and `/unknown` ask for an id, then judge what core looked up; `/again` asks a second
+            /// time, which core rejects.
+            fn verify(&self, _: &Host, req: &AuthReq<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
+                VERIFIES.fetch_add(1, Ordering::SeqCst);
+                let looked_up = req.flags & REQ_ISSUED_LOOKED_UP != 0;
+                let wanted = match req.path.get() {
+                    "/known" => ID,
+                    "/unknown" => "AKIAUNKNOWN000000001",
+                    "/again" => ID,
+                    _ => return Err(Fail::refused(abi::NOT_MINE)),
+                };
+                if !looked_up || req.path.get() == "/again" {
+                    return out
+                        .put_text(tag::ISSUED_WANTED, wanted)
+                        .map_err(|_| Fail::refused(R_CONFIG));
+                }
+                if req.issued.get() == KEY {
+                    out.put_text(rec::ID_SUBJECT, SUBJECT)
+                        .map_err(|_| Fail::refused(R_CONFIG))
+                } else {
+                    Err(Fail::refused(BAD_CREDENTIAL))
+                }
+            }
+        }
+        busbar_plugin_abi::plugin!(Auth, IssuedAuth, name: "fixture-issued-auth");
+    }
+
+    fn request(path: &str) -> busbar_ports::auth::AuthIn<'_> {
+        busbar_ports::auth::AuthIn {
+            method: "GET",
+            path,
+            query: "",
+            authority: "example",
+            headers: &[],
+            peer: "",
+            tls_peer_cert: &[],
+            body: &[],
+            now_s: 1000,
+        }
+    }
+
+    /// A case that expects a final verdict from a plugin that first answers ISSUED_WANTED gets core's second
+    /// call: the id looked up under D_ISSUED_KIND in `FakeNeeds::issued` (empty when none is scripted), and a
+    /// second ISSUED_WANTED rejected BAD_CREDENTIAL. A case that expects ISSUED_WANTED stays one raw call.
+    #[test]
+    fn the_second_verify_after_issued_wanted_is_driven_with_the_scripted_credential() {
+        use busbar_plugin_abi::auth::BAD_CREDENTIAL;
+        let cases = [
+            AuthCase {
+                req: request("/known"),
+                expect: Expect::Subject(issued::SUBJECT),
+            },
+            AuthCase {
+                req: request("/unknown"),
+                expect: Expect::Rejected(BAD_CREDENTIAL),
+            },
+            AuthCase {
+                req: request("/again"),
+                expect: Expect::Rejected(BAD_CREDENTIAL),
+            },
+            AuthCase {
+                req: request("/known"),
+                expect: Expect::IssuedWanted(issued::ID),
+            },
+        ];
+        let mut needs = FakeNeeds::new();
+        needs.issued(issued::KIND, issued::ID, issued::KEY);
+        run(&issued::PLUGIN, b"{}", needs, &cases);
+        assert_eq!(
+            issued::VERIFIES.load(Ordering::SeqCst),
+            7,
+            "two calls for each final verdict after ISSUED_WANTED, one for the raw ISSUED_WANTED case"
+        );
+    }
 }
