@@ -549,9 +549,9 @@ impl Node {
                     pulled.kept.push(prepared);
                     continue;
                 }
-                if let Err((_, back)) = held.stage_kept(prepared, &pass, &self.durability_token) {
+                if let Err(back) = held.stage_kept(prepared, &pass, &self.durability_token) {
                     refused = true;
-                    pulled.kept.push(back);
+                    pulled.kept.push(*back);
                 }
             }
             for (core, inputs) in std::mem::take(&mut pulled.lines) {
@@ -560,9 +560,9 @@ impl Node {
                     continue;
                 }
                 let prepared = held.prepare_line(inputs);
-                if let Err((_, back)) = held.stage_kept(prepared, &pass, &self.durability_token) {
+                if let Err(back) = held.stage_kept(prepared, &pass, &self.durability_token) {
                     refused = true;
-                    pulled.kept.push(back);
+                    pulled.kept.push(*back);
                 }
             }
             for count in refusals {
