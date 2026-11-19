@@ -172,7 +172,6 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 #[tokio::test]
 async fn metadata_stays_refused_across_reload() {
     crate::dist_root_install::install();
-    crate::root::test_plane_registry::register();
     let boot = deployment(
         &[],
         "security:\n  blocked_metadata_hosts: [169.254.169.254]\n",
@@ -232,7 +231,6 @@ async fn metadata_stays_refused_across_reload() {
 async fn provider_configuration_never_grants_global_hostname_authority_across_reload() {
     use busbar_contract::services::codes::DEST_INTERNAL;
     crate::dist_root_install::install();
-    crate::root::test_plane_registry::register();
     let private_a = vec!["\x310.0.0.5".parse().unwrap()];
     let private_b = vec!["\x310.0.0.9".parse().unwrap()];
     let verdict = |judge: &dyn DestJudge, host: &str, answer: &[std::net::IpAddr]| {
