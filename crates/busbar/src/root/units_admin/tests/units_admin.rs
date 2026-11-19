@@ -2273,7 +2273,12 @@ async fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
     let calls = Arc::new(AtomicUsize::new(0));
     let admin = crate::root::kernel::new_kernel().admin_token();
 
-    for verb in LEDGER_VERBS {
+    // The rate-history read answers from the stored card history, not from the ledger view this
+    // test seeds; its own tests are `busbar-core-admin`'s `rate_history_tests`.
+    for verb in LEDGER_VERBS
+        .iter()
+        .filter(|verb| **verb != KernelVerb::GetLedgerRateHistory)
+    {
         let verbs = busbar_core_admin::Verbs::new(
             CoreGovernance::new(
                 Arc::new(CountingDispatch(Arc::clone(&calls))),

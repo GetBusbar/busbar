@@ -272,12 +272,12 @@ The live endpoint requires a booted, authenticated instance. So that tooling can
 There is one administrative OpenAPI document. It is generated from the code and describes every
 operation the build can serve — the 1.6.0 additions included. A node serves it at
 `GET /api/v1/admin/openapi.json`, unfiltered; the release asset is the same document. The
-shipped document lists 81 operations (43 `read-only`, 38 `full`). Each plane that declares admin
+shipped document lists 81 operations (44 `read-only`, 37 `full`). Each plane that declares admin
 operations adds its own at runtime on top of that, so the total a given build serves depends on the
 planes it carries. One mark says what a reader cannot tell from the path alone (the document
 explains it itself, under `info.x-busbar-marks`):
 
-- **`x-busbar-since: 1.6.0`** — one of the 29 operations in the shipped document that 1.6.0 adds. They
+- **`x-busbar-since: 1.6.0`** — one of the 30 operations in the shipped document that 1.6.0 adds. They
   are answered by the node's administrative loop or by the reads added alongside it: the kernel
   verbs and trust verbs below, the ledger views, the audit-chain reads, the `kinds` reads, `GET /whoami`,
   `GET /records` and `plane-record-write`.
@@ -342,6 +342,7 @@ The ledger views and audit-chain reads:
 | `GetLedgerCheckpoints` | `GET /api/v1/admin/ledger/checkpoints` | `read-only` |
 | `GetLedgerReconciliation` | `GET /api/v1/admin/ledger/reconciliation` | `read-only` |
 | `GetLedgerMigration` | `GET /api/v1/admin/ledger/migration` | `read-only` |
+| `GetLedgerRateHistory` | `GET /api/v1/admin/ledger/rate-history` | `read-only` |
 | `GetAuditHead` | `GET /api/v1/admin/audit/head` | `read-only` |
 | `GetAuditRange` | `GET /api/v1/admin/audit/range?from=&to=` | `read-only` |
 | `GetAuditKeys` | `GET /api/v1/admin/audit/keys` | `read-only` |
@@ -378,6 +379,73 @@ correction names a fee. A lane spelt `<plane>\u001f<lane>` corrects that plane's
 that two cards price (a config apply or an earlier correction lands inside it), or a cell on a plane
 with no card of its own, is refused `400 invalid_request` and nothing is recorded: split the
 window at the boundary and sign each part.
+
+### Reading the rate-card history: `GET /ledger/rate-history`
+
+`GET /api/v1/admin/ledger/rate-history` reads back what the configuration and
+`amend-rate-history` wrote: the dated rate-card history, one row per entry. With these rows and
+the ledger's counts a reader recomputes every spend figure itself: spend is the card in force at
+the count's instant times the count. It is a ledger view: `read-only` scope, the same credential
+`GET /usage` takes, and it mutates nothing.
+
+**A card prices an instant from its start, inclusive, to its end, exclusive.** An instant exactly
+at an entry's start is priced by that entry. Of the live entries whose window covers an instant,
+the one with the highest `key` (the one written last) is the card in force.
+
+Each page reads the history **from the store**, never from this node's copy of it (a node's copy
+is refreshed every few seconds), so every node answers the same rows for the same store state.
+Rows come in `key` order, which is the order the entries were written in. Pages work as every
+other admin list: `?limit=` (default 200, at most 1000) and `?cursor=` (the previous page's
+`next_cursor`, which is `null` after the last row); a malformed cursor is `400 malformed_cursor`
+and a cursor of another list is `400 cursor_mismatch`. `generation` is the store generation of the
+history the page was read at, as decimal text: it moves with every write to the history by any
+node, so pages with different `generation` values were read from different histories (start again
+from the first page). There is no `ETag`, as on `GET /records` and `GET /audit`. A node whose
+history is not loaded answers `503`.
+
+| Field | Meaning |
+| --- | --- |
+| `key` | The entry's identity: 40 lowercase hex digits, the same on every node and after every restart |
+| `entry_id` | The id the ledger files counts priced by this entry under (24 hex digits: the first 12 bytes of SHA-256 of `key`) |
+| `effective_from_ms` | The start of the entry's window, inclusive, milliseconds since the epoch. A configuration entry starts when its activation was authorized |
+| `effective_until_ms` | The end of its window, exclusive, milliseconds since the epoch. Absent: open-ended. A configuration entry is stored open-ended and the next one written ends it |
+| `authored_from_ms` | The start the writer stored, before an activation moved it |
+| `in_force` | The spans `{from_ms, until_ms}` (start inclusive, end exclusive; `until_ms` absent means open, the card in force now) in which this entry IS the card in force under the rule above. The spans of all entries never overlap. After a configuration change the first entry's span ends at exactly the second's start |
+| `voided` | The entry prices nothing. Its id stays known |
+| `written_as` | `configuration` or `correction` (written by `amend-rate-history`) |
+| `author` | As stored: `opening`, `change`, `amend` or `migrated` |
+| `actor` | Who wrote it, as stored. A correction stores the authenticated admin principal that submitted it. A configuration entry stores where it came from (`boot of node <id>`, or `a configuration change`); it names no principal |
+| `writer_node` | The writing node's durable id, 16 lowercase hex digits |
+| `appended_at_ms` | When the entry was written, milliseconds since the epoch |
+| `base_key`, `set_fields` | The entry it extended, and the card fields that changed from it |
+| `correction` | For a correction: `{from_ms, until_ms, reason_sha256}`, its window and the SHA-256 of its reason, as stored. No correction carries a signature: no admin verb takes an operator signature |
+| `migrated_from` | For an entry copied from a node's journal: `{node, node_seq, opening}` |
+| `envelope` | The entry's stored correction envelope, hex, when it has one |
+| `card` | The whole card (below) |
+
+Every money figure in `card` is a decimal string, never a JSON number:
+
+- `per_request_fee_minor`: the flat per-request fee, in **minor units** (hundredths of the cost
+  unit the card is priced in; `GET /usage` names that unit in `currency`).
+- `cards[]`: the flat card (`plane` null, the pools plane's) when a `rate_card` is configured,
+  then each other plane's own card. Each lane has `lane`, `card_lane` (the lane as the whole card
+  keys it: `<plane>` U+001F `<lane>` for another plane's, the spelling `amend-rate-history`
+  takes) and `rates[]`. A plane with no card in `cards` is not priced by the entry; a card that
+  names no lane refuses to price that lane.
+- `rates[]`: `class`, `micro_per_unit` (the rate as stored, in **micro-units of the cost unit per
+  unit of the class**, exact decimal text that reads back to the stored figure exactly) and
+  `nanos_per_unit` (the rate the card prices with, in **nano-units of the cost unit per unit of the
+  class**; `null` when the stored figure is finer than one nano-unit, which the card refuses to
+  price). A lane with no `cache_write` row prices cache writes at its `input` rate.
+- `plane_fees[]`: each other plane's `per_request_minor` and `per_session_minor`, in **minor
+  units**.
+- `measurements[]`: plugin measurement rates by `kind` and `namespace`, with the same `rates[]`.
+
+Recomputing a spend figure: a count the ledger filed under `entry_id` E at instant t is priced by
+E's card, unless a correction written after E (a higher `key`, `written_as: correction`, not
+voided) covers t; then the highest-keyed such correction prices it. Its cost is the count times
+that card's `nanos_per_unit` nano-units. A billable request's flat fee is found the same way and
+costs that card's `per_request_fee_minor` minor units.
 
 These money-governance verbs are not part of the verb table (`set_operator_key`,
 `set_escrow`, `set_dual_control`, `set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`,

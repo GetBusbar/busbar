@@ -275,6 +275,13 @@ impl CardStore {
     pub fn entries(&self) -> Vec<StoredEntry> {
         self.lock().snapshot.entries.values().cloned().collect()
     }
+    /// The history as the store holds it now, read from the store: never this node's copy, which
+    /// a rescan refreshes only every [`RESCAN_INTERVAL`]. Takes no lock of this holder, so it
+    /// contends with no publication, rescan or pricing read; the snapshot it returns is the
+    /// caller's to drop.
+    pub async fn stored(&self) -> Result<Snapshot, String> {
+        self.store.prices().snapshot().await.map_err(error)
+    }
     pub fn entry(&self, key: &EntryKey) -> Option<StoredEntry> {
         self.lock().snapshot.entries.get(key).cloned()
     }
