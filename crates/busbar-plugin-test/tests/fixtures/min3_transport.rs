@@ -59,7 +59,7 @@ impl Transport for Dial {
         &self,
         _h: &Host,
         conn: &ConnInfo<'_>,
-        _out: &mut Out<'_>,
+        out: &mut Out<'_>,
     ) -> Result<DialSession, Fail> {
         if conn.role != tp::ROLE_CLIENT {
             return Err(Fail::refused_because(
@@ -67,6 +67,17 @@ impl Transport for Dial {
                 "fixture: a dial framer begins client conns only",
             ));
         }
+        // `begin` states its SESSION, first and exactly once: one stream, no multiplexing, no windows.
+        out.put_pod(
+            tag::SESSION,
+            &tp::SessionRec {
+                flags: 0,
+                stream_window: 0,
+                conn_window: 0,
+                _r: 0,
+            },
+        )
+        .map_err(full)?;
         Ok(DialSession { opened: false })
     }
 
