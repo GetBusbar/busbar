@@ -7,13 +7,14 @@ use std::sync::Arc;
 
 use busbar_contract::response_delivery::{DeliverySnapshot, ResponseKey, ResponseStop};
 use busbar_core_connector::framed_stream::session::{Feed, Payload, Piece, RegisterResponse};
+use busbar_core_connector::hold::{Hold, Piece as HoldPiece};
 use busbar_core_connector::response_delivery::{DeliveryInput, DeliveryWatch, ResponseHandles};
 use busbar_kernel::auth::native_data::NativeDataPending;
 use busbar_kernel::inbound::native::{
     PhysicalAdminExecution, PhysicalPublicExecution, PhysicalRefusal, RequestBinding, StreamOwner,
 };
 use busbar_kernel::plane_driver::request_admission::AdmittedRequest;
-use busbar_plugin_abi::transport::{E_BODY, E_END, E_HEAD, E_TRAILERS};
+use busbar_plugin_abi::transport::{E_BODY, E_END, E_HEAD, E_TRAILERS, SH_END_STREAM};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
@@ -195,6 +196,13 @@ impl RegisteredResponse {
         let input = finalizer.input();
         let source = binding.request().storage();
         let (send, pieces) = mpsc::channel(1);
+        // The body length the answer's head states exactly, if it states one: a caller knows such an answer
+        // is complete at its last byte, so that byte is what a held answer withholds.
+        let stated_len = response
+            .headers()
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
         let run = async {
             let mut response = ResponsePieces::new(response, source.clone())?;
             if let Some(admin) = response.take_admin() {
@@ -216,14 +224,37 @@ impl RegisteredResponse {
                 .await
                 .map_err(|_| InputError::Delivery(ResponseStop::CarrierRetired))?;
             let mut plan = plan;
+            // THE HOLD IS THE ENGINE'S. When an answer must wait for its record (`advanced.wait_for_commit`),
+            // the piece that completes it is not given to the transport until the record is in: the end; the
+            // trailers with it; the body piece that reaches a length the head stated; a head that is the
+            // whole answer. With the setting off nothing is withheld and the path is exactly the unheld one.
+            // Nothing is parked in the connection's byte pipe, so other answers on it keep flowing.
+            let mut hold = Hold::new(node.waits_for_commit());
+            let mut withheld: Vec<Piece> = Vec::new();
             while let Some(piece) = response.next().await? {
-                match piece.piece {
-                    E_HEAD => plan.record_head(Some(response.status())),
-                    E_BODY => plan.record_body(),
-                    E_TRAILERS => plan.record_trailers(),
+                let completes = match piece.piece {
+                    E_HEAD => {
+                        plan.record_head(Some(response.status()))
+                            .map_err(InputError::FinalIntent)?;
+                        hold.withholds(HoldPiece::Head {
+                            ends: piece.arg & SH_END_STREAM != 0,
+                            stated_len,
+                        })
+                    }
+                    E_BODY => {
+                        plan.record_body().map_err(InputError::FinalIntent)?;
+                        hold.withholds(HoldPiece::Body(piece.bytes.as_slice().len() as u64))
+                    }
+                    E_TRAILERS => {
+                        plan.record_trailers().map_err(InputError::FinalIntent)?;
+                        hold.withholds(HoldPiece::Trailers)
+                    }
                     _ => return Err(InputError::Delivery(ResponseStop::Integrity)),
+                };
+                if completes {
+                    withheld.push(piece);
+                    continue;
                 }
-                .map_err(InputError::FinalIntent)?;
                 send.send(piece)
                     .await
                     .map_err(|_| InputError::Delivery(ResponseStop::CarrierRetired))?;
@@ -243,8 +274,7 @@ impl RegisteredResponse {
                     stamp,
                 )
                 .map_err(InputError::FinalIntent)?;
-            // Confirmation runs while E_END is blocked behind held output. Neither path bypasses
-            // prior body pieces, and both stay owned by this supervisor until they finish.
+            let waits = hold.withholds(HoldPiece::End);
             let confirm = async {
                 let result = finalizer
                     .finalize(intent)
@@ -257,6 +287,13 @@ impl RegisteredResponse {
                 result
             };
             let end = async {
+                // What was withheld goes first, in the order it was withheld, then the end.
+                for piece in withheld {
+                    if send.send(piece).await.is_err() {
+                        finalizer.cancel().cancel(ResponseStop::Cancelled);
+                        return Err(InputError::Delivery(ResponseStop::CarrierRetired));
+                    }
+                }
                 let bytes = Payload::copy(&source, &[]).map_err(|_| InputError::Capacity)?;
                 let result = send
                     .send(Piece {
@@ -273,9 +310,18 @@ impl RegisteredResponse {
                 }
                 result
             };
-            let (confirmed, ended) = tokio::join!(confirm, end);
-            confirmed?;
-            ended
+            if waits {
+                // The record first; only then does the transport get the piece that completes the answer.
+                // A record that is refused ends the answer without its end: the caller sees it cut.
+                confirm.await?;
+                hold.committed();
+                end.await
+            } else {
+                // Nothing waits: the end goes at once and the record is confirmed beside it.
+                let (confirmed, ended) = tokio::join!(confirm, end);
+                confirmed?;
+                ended
+            }
         };
         let result = tokio::select! {
             result = run => result,

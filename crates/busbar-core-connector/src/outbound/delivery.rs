@@ -608,7 +608,7 @@ impl Ledger {
 
 /// One piece of an answer the engine is about to give the transport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Piece {
+pub enum Piece {
     /// `E_HEAD`. `ends` = the engine set `SH_END_STREAM`; `stated_len` = the body length the head
     /// states exactly, if it states one.
     Head {
@@ -637,7 +637,7 @@ pub(crate) enum Piece {
 /// | a body whose exact length the head stated | the body piece that reaches that length, and `E_END` |
 /// | a head and nothing else | the head, and `E_END` |
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Hold {
+pub struct Hold {
     /// The record is not in yet.
     waiting: bool,
     /// A piece was withheld: every later piece waits behind it, in order.
@@ -648,7 +648,8 @@ pub(crate) struct Hold {
 
 impl Hold {
     /// `wait` = the answer must wait for its record.
-    pub(crate) const fn new(wait: bool) -> Self {
+    #[must_use]
+    pub const fn new(wait: bool) -> Self {
         Self {
             waiting: wait,
             held: false,
@@ -658,7 +659,7 @@ impl Hold {
     }
 
     /// Whether the engine withholds `piece` now. A piece that is not withheld is counted as given.
-    pub(crate) fn withholds(&mut self, piece: Piece) -> bool {
+    pub fn withholds(&mut self, piece: Piece) -> bool {
         if !self.waiting {
             return false;
         }
@@ -686,13 +687,14 @@ impl Hold {
     }
 
     /// The record is in: every withheld piece goes now, in the order it was withheld.
-    pub(crate) fn committed(&mut self) {
+    pub fn committed(&mut self) {
         self.waiting = false;
         self.held = false;
     }
 
     /// A piece is being withheld.
-    pub(crate) const fn holding(&self) -> bool {
+    #[must_use]
+    pub const fn holding(&self) -> bool {
         self.waiting && self.held
     }
 }

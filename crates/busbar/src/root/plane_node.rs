@@ -154,6 +154,10 @@ pub(crate) struct Node {
 
     marked: AtomicU64,
 
+    /// `advanced.wait_for_commit`: an answer's last piece is withheld until its record is in. Off unless
+    /// the boot sets it from the operator's setting.
+    wait_for_commit: std::sync::atomic::AtomicBool,
+
     lost: Arc<RetainedBook>,
 
     mono: AtomicU64,
@@ -222,6 +226,7 @@ impl Node {
             })),
             next_key: Arc::default(),
             marked: AtomicU64::new(0),
+            wait_for_commit: std::sync::atomic::AtomicBool::new(false),
             lost: Arc::new(RetainedBook(Mutex::new(Self::fixture_terminal_book()))),
             mono: AtomicU64::new(0),
             clock: Arc::new(busbar_kernel::WallClock),
@@ -249,6 +254,19 @@ impl Node {
             process.connection_storage(AdmissionClass::Operator),
         ));
         Ok(())
+    }
+
+    /// Whether an answer waits for its record before its last piece is given to the transport
+    /// (`advanced.wait_for_commit`; off by default: nothing held, nothing paid).
+    pub(crate) fn waits_for_commit(&self) -> bool {
+        self.wait_for_commit
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Set at boot and on a settings reload from `advanced.wait_for_commit`.
+    pub(crate) fn set_wait_for_commit(&self, wait: bool) {
+        self.wait_for_commit
+            .store(wait, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The account a native dial's framer session is charged to: the bound boot admission's Data class, the account
