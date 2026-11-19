@@ -217,7 +217,7 @@ impl Instance {
     }
     /// The live instance of kind `K`, shared; None when this instance is another kind. The proxies of kind `K`
     /// are the only callers.
-    pub(crate) fn live<K: Kind>(&self) -> Option<Arc<LiveInstance<K>>> {
+    pub fn live<K: Kind>(&self) -> Option<Arc<LiveInstance<K>>> {
         Arc::clone(&self.live).downcast::<LiveInstance<K>>().ok()
     }
     /// One Acquire load of the slot's state word (LIVE in this lease's epoch).
@@ -426,6 +426,7 @@ impl<'a, N: Needs> Driver<'a, N> {
             let next = 1 - cur;
             let resumed = {
                 let results = guard.bufs.results.bytes().to_vec();
+                resume_tap(caller.slot, &results);
                 let Some(chain) = guard.chain.as_mut() else {
                     return Err(self.fault(FaultReason::MissingToken));
                 };
@@ -493,6 +494,22 @@ pub(crate) fn report_fault(slot: u32, image_owned: bool, reason: FaultReason) ->
 }
 
 static FAULT_SINK: OnceLock<fn(u32, bool, FaultReason)> = OnceLock::new();
+
+/// Installs the process's resume tap: `tap(slot, results)` runs just before a parked chain of `slot` is
+/// resumed with `results` (the bytes of its Needs' answers: bytes the engine hands a plugin, so the
+/// crossing recorder must see them). A second call is ignored. With none installed a resume pays one load.
+pub fn set_resume_tap(tap: fn(slot: u32, results: &[u8])) {
+    let _ = RESUME_TAP.set(tap);
+}
+
+static RESUME_TAP: OnceLock<fn(u32, &[u8])> = OnceLock::new();
+
+#[inline(always)]
+fn resume_tap(slot: u32, results: &[u8]) {
+    if let Some(tap) = RESUME_TAP.get() {
+        tap(slot, results);
+    }
+}
 
 /// What the first step of a chain came to: a final status (and, for `open`, the instance its INSTANCE named),
 /// or a parked chain on NEED. Built from busbar-ffi's `Started` (kind methods) or `OpenAnswer` (`open`).

@@ -189,6 +189,17 @@ pub fn guard<R>(
     crate::host_side::driver::step(slot, entry, None, out, call)
 }
 
+/// `guard` on caller-owned, fixed output storage: the same owner and watchdog word; the loan cannot
+/// grow, escape the callback or transfer the lender's allocation. None: busbar-ffi's ACTIVE stack is full.
+pub fn guard_fixed<R>(
+    slot: u32,
+    entry: u8,
+    out: &mut [u8],
+    call: impl for<'loan> FnOnce(&mut busbar_ffi::host::OutLease<'loan>) -> R,
+) -> Option<R> {
+    crate::host_side::driver::step_fixed(slot, entry, out, call)
+}
+
 #[cfg(test)]
 mod migration_tests {
     use super::*;

@@ -115,7 +115,7 @@ impl Watchdog {
             .name("busbar-plugin-watchdog".into())
             .spawn(move || {
                 while !stopping.load(Ordering::Acquire) {
-                    busbar_plugin_abi::host_side::watch::scan(
+                    busbar_plugin_abi::host_side::watch::scan_held(
                         |slot, entry| table.watch_view(slot, entry),
                         |slot, epoch, entry, busy_ms, held| {
                             table.hung(slot, epoch, entry, busy_ms, &Holder::of(held))
