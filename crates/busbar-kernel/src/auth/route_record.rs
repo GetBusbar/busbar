@@ -640,3 +640,34 @@ impl RouteRecord {
         })
     }
 }
+
+impl RouteRecord {
+    /// This record as the admission item a plane would state for it: the inverse of
+    /// [`RouteRecord::from_wire`], used by the reference plane so both sides of the wire are
+    /// proved against each other without a plane image.
+    pub fn admission_item(&self, route: u32) -> wire::AdmissionItem<'_> {
+        let mut scope = 0;
+        if self.scope.walk.is_some() {
+            scope |= wire::SCOPE_WALK;
+        }
+        if !self.scope.selected.is_empty() {
+            scope |= wire::SCOPE_SELECTED;
+        }
+        if scope == 0 {
+            scope = wire::SCOPE_NONE;
+        }
+        wire::AdmissionItem {
+            route,
+            scope,
+            money: match self.money {
+                Money::None => wire::MONEY_NONE,
+                Money::Unit => wire::MONEY_UNIT,
+            },
+            callers: match self.caller_state {
+                CallerState::Shared => wire::CALLERS_SHARED,
+                CallerState::Distinct => wire::CALLERS_DISTINCT,
+            },
+            walk_kind: self.scope.walk.as_deref().unwrap_or(""),
+        }
+    }
+}

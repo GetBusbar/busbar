@@ -1127,3 +1127,54 @@ fn an_empty_chain_is_refused_with_its_remedy() {
         unverified(true)
     );
 }
+
+/// THE BOUNDARY, with a stand-in on the plane's side: every route of the reference plane is
+/// written to the wire as a plane states it and read back as core reads it, and comes back the
+/// same record with the same admission. The bytes of one item are pinned here and, word for word,
+/// in each plane's `route_record.rs` test: the two sides meet on these bytes.
+#[test]
+fn the_reference_plane_crosses_the_wire_unchanged() {
+    use crate::auth::route_record::wire::{decode_admission, encode_admission};
+    for route in reference_plane::routes() {
+        let flags = match route.record.class {
+            RouteClass::Data => 0,
+            RouteClass::Catalog => busbar_plugin_abi::plane::ROUTE_CATALOG,
+            RouteClass::Admin => busbar_plugin_abi::plane::ROUTE_ADMIN,
+            RouteClass::Line => busbar_plugin_abi::plane::ROUTE_LINE,
+            RouteClass::Recovery => busbar_plugin_abi::plane::ROUTE_RECOVERY,
+            RouteClass::Upgrade => busbar_plugin_abi::plane::ROUTE_UPGRADE,
+        };
+        let body = encode_admission(&route.record.admission_item(route.route));
+        let item = decode_admission(&body).expect("a whole item");
+        assert_eq!(item.route, route.route);
+        let read = RouteRecord::from_wire(
+            flags,
+            route.record.who.mask(),
+            route.record.cred_header.as_deref(),
+            &route.record.scope.selected,
+            &item,
+            route.record.challenge.as_deref(),
+        )
+        .expect("a stated record");
+        assert_eq!(read, route.record, "{}", route.pattern);
+        assert_eq!(admission_of(&read), route.admission, "{}", route.pattern);
+        assert_eq!(
+            read.validate(route.methods, reference_plane::METHODS),
+            Ok(()),
+            "{}",
+            route.pattern
+        );
+    }
+    // The pinned bytes: route 7, walk, a unit, shared callers, kind `pool`.
+    let walk = reference(Admission::Walk);
+    assert_eq!(
+        encode_admission(&walk.record.admission_item(7)),
+        [
+            7, 0, 0, 0, // route
+            2, 0, 0, 0, // scope: walk
+            2, 0, 0, 0, // money: unit
+            1, 0, 0, 0, // callers: shared
+            b'p', b'o', b'o', b'l',
+        ]
+    );
+}
