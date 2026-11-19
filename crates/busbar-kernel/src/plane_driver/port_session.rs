@@ -1798,19 +1798,16 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                     .exchanges
                     .iter()
                     .any(|exchange| exchange.id != 0 || (!messages && !exchange.msgs.is_empty()))
-                // The reads, and the plane's own records (STORE, DELETE, COMMIT): a write is held by
-                // the pending admission's screen until the unit is admitted (`port_serve`), and is
-                // made in the verified caller's scope (the DATA identity is the session's subject).
+                // The reads (LOOKUP, ENTITLE, JUDGE), and record writes (STORE, DELETE, COMMIT) whose
+                // own flags bind every record to the caller (`caller_scoped_write`): any other write is
+                // refused here, whatever the plane asked. A write is resolved only after the unit is
+                // admitted: the pending admission's screen holds it (`port_serve`), and the resolver
+                // scopes it to the DATA identity's subject (`port::serve_inner`'s principal).
                 || answer.intents.iter().any(|intent| {
                     !matches!(
                         intent,
-                        Intent::Lookup { .. }
-                            | Intent::Entitle { .. }
-                            | Intent::Judge { .. }
-                            | Intent::Store { .. }
-                            | Intent::Delete { .. }
-                            | Intent::Commit { .. }
-                    )
+                        Intent::Lookup { .. } | Intent::Entitle { .. } | Intent::Judge { .. }
+                    ) && super::port_intents::caller_scoped_write(intent, &answer.lent) != Some(true)
                 }))
         {
             self.session = None;

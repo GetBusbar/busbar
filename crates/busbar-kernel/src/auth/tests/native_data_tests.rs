@@ -1928,6 +1928,197 @@ fn the_keys_member_exists_only_on_a_data_chain_that_names_it() {
     );
 }
 
+/// One record write a plane states in its request answer, by the scope its own flags name.
+#[derive(Clone, Copy, Debug)]
+enum Write {
+    Store(u32),
+    Delete(u32),
+    /// A COMMIT of one REC_PUT carrying these flags.
+    Commit(u32),
+}
+
+/// The fixture plane, answering its request with one record write.
+struct WritingCalls(PlaneCalls, Write);
+impl crate::plane_driver::port_session::Calls for WritingCalls {
+    type Session = ();
+    fn resource_scoped(&self, route: u32) -> bool {
+        self.0.resource_scoped(route)
+    }
+    fn request(
+        &self,
+        request: &busbar_ports::plane::PlaneIn<'_>,
+        body: &[u8],
+        sink: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        use busbar_ports::plane::PlaneOut;
+        self.0.request(request, body, sink)?;
+        let mut ops = Reply::new();
+        match self.1 {
+            Write::Store(flags) => sink(PlaneOut::Store {
+                flags,
+                ttl_s: 60,
+                key: b"session",
+                value: b"record",
+            }),
+            Write::Delete(flags) => sink(PlaneOut::Delete {
+                flags,
+                key: b"session",
+            }),
+            Write::Commit(flags) => {
+                ops.put_pod_tail(
+                    tag::REC_PUT,
+                    &busbar_plugin_abi::records::RecPutRec {
+                        flags,
+                        key_len: 7,
+                        ttl_s: 60,
+                    },
+                    b"sessionrecord",
+                )
+                .unwrap();
+                sink(PlaneOut::Commit {
+                    check: 1,
+                    ops: Records::new(ops.as_bytes()),
+                });
+            }
+        }
+        sink(PlaneOut::Respond { status: 200 });
+        sink(PlaneOut::End);
+        Ok(())
+    }
+    fn piece(
+        &self,
+        session: &mut (),
+        exchange: u32,
+        flags: u32,
+        from: u32,
+        bytes: &[u8],
+        sink: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        self.0.piece(session, exchange, flags, from, bytes, sink)
+    }
+    fn rewrite(
+        &self,
+        session: &mut (),
+        conversation: &[u8],
+        sink: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        self.0.rewrite(session, conversation, sink)
+    }
+    fn end(
+        &self,
+        session: (),
+        sink: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        self.0.end(session, sink)
+    }
+    fn probe(
+        &self,
+        target: &busbar_ports::plane::TargetIn<'_>,
+        sink: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        self.0.probe(target, sink)
+    }
+    fn render(
+        &self,
+        request: &busbar_ports::plane::PlaneIn<'_>,
+        code: u32,
+        text: &[u8],
+        sink: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        self.0.render(request, code, text, sink)
+    }
+    fn upstream(
+        &self,
+        session: &mut (),
+        target: &busbar_ports::plane::TargetIn<'_>,
+        sink: &mut dyn FnMut(busbar_ports::plane::PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        self.0.upstream(session, target, sink)
+    }
+}
+
+/// A DATA request's record writes are the verified caller's by the kernel's rule: a STORE or DELETE
+/// outside the caller's scope (no `LK_CALLER`, or the instance-wide chain), and a COMMIT of a record
+/// that is not the caller's (no `REC_CALLER`), end the session before anything is admitted; the
+/// caller-scoped forms are taken (and held by the pending screen until admission).
+#[tokio::test]
+async fn native_data_record_writes_must_be_caller_scoped() {
+    use busbar_plugin_abi::plane::{LK_CALLER, LK_CHAIN};
+    use busbar_plugin_abi::records::commit::REC_CALLER;
+    let f = fixture_with(true, false, Vec::new());
+    for (stream, write, taken) in [
+        (1, Write::Store(0), false),
+        (2, Write::Store(LK_CHAIN), false),
+        (3, Write::Store(LK_CALLER | LK_CHAIN), false),
+        (4, Write::Delete(0), false),
+        (5, Write::Commit(0), false),
+        (6, Write::Store(LK_CALLER), true),
+        (7, Write::Delete(LK_CALLER), true),
+        (8, Write::Commit(REC_CALLER), true),
+    ] {
+        let (request, wire, cx, _owner) = arrival(&f, stream);
+        let authorized = f
+            .route
+            .prepare_test(request, wire, cx)
+            .await
+            .unwrap()
+            .complete()
+            .await
+            .unwrap();
+        let mut allocation = NativeDataAllocation::register(authorized).unwrap();
+        let audit = audit_custody(&mut allocation);
+        let pending = Arc::new(allocation.into_pending(|_| panic!("no money is asked here")));
+        let calls = WritingCalls(PlaneCalls(AtomicUsize::new(0), false), write);
+        let effects = DataEffects(&pending);
+        let withheld = pending.withheld();
+        let begun = pending
+            .snapshot()
+            .with_auth_input(|request| {
+                let lent: Vec<_> = request
+                    .headers
+                    .iter()
+                    .filter(|field| {
+                        !withheld
+                            .iter()
+                            .any(|carrier| carrier.eq_ignore_ascii_case(field.name.get()))
+                    })
+                    .copied()
+                    .collect();
+                crate::plane_driver::port_session::Task::begin(
+                    &calls,
+                    &busbar_ports::plane::PlaneIn {
+                        route: pending.route(),
+                        flags: 0,
+                        auth: AUTH_PRINCIPAL,
+                        method: request.method,
+                        path: request.path,
+                        query: request.query,
+                        headers: &lent,
+                        identity: pending.identity().identity_records(),
+                        request_id: pending.binding().invocation().request_id().get(),
+                        carrier: 0,
+                        work: "",
+                        ticket_record: &[],
+                    },
+                    request.body,
+                    &effects,
+                )
+                .map(|_| ())
+            })
+            .unwrap();
+        if taken {
+            assert!(begun.is_ok(), "{write:?}: {begun:?}");
+        } else {
+            assert!(
+                matches!(begun, Err(SessionError::NotDriven)),
+                "{write:?} is refused on a DATA unit: {begun:?}"
+            );
+        }
+        assert!(pending.execution().is_none(), "{write:?}: nothing ran");
+        drop(audit);
+    }
+}
+
 /// A ticket route at its own preparation, end to end.
 #[path = "native_data_ticket_tests.rs"]
 mod ticket;
