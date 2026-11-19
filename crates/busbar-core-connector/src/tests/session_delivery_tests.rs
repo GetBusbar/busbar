@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::framed_stream::session::{Act, Actions, Flow, Payload, Slots, Task};
+use crate::framed_stream::session::{Act, Actions, Flow, Slots, Task};
 use busbar_contract::response_delivery::{CompletionRequirement, DeliveryTerminal, ResponseKey};
 use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
 use std::collections::VecDeque;
@@ -48,12 +48,7 @@ fn task() -> Task {
 
 fn answer(source: &StorageSource, stream: u64) -> Actions {
     let mut acts = Actions::new(source).unwrap();
-    acts.push(Act::WirePart {
-        stream: 1,
-        class: WireClass::Payload,
-        bytes: Payload::copy(source, b"body").unwrap(),
-    })
-    .unwrap();
+    acts.part(1, WireClass::Payload, b"body").unwrap();
     acts.push(Act::WireEnd {
         stream,
         requirement: CompletionRequirement::Flush,
