@@ -78,8 +78,7 @@ async fn put_seed(core: &Arc<CoreStore>, value: &[u8]) {
         boot_identity::{INSTANCE, KEYSET_SCHEMA},
         scoped::{Outcome, ScopedStore},
     };
-    let records =
-        ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA]).unwrap();
+    let records = ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA]).unwrap();
     assert!(matches!(
         records
             .put(

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Respawn and trip for a CARRIER_STDIO channel (IF §12.19, round 6; today's transport-stdio
-//! supervisor.rs, moved into core with the carrier).
+//! Respawn and trip for a CARRIER_STDIO channel (IF §12.19, round 6). Core owns the stdio carrier, so
+//! the supervisor the retired stdio plugin carried lives here.
 //!
 //! A child that exits or cannot be spawned ends its generation. The next attach respawns it no sooner
 //! than 100 ms × 2^(n−1) after the n-th end counted inside a sliding 60 s window (100, 200, 400,

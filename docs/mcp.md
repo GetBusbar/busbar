@@ -430,16 +430,16 @@ Busbar spawns a local MCP server that has no URL — a filesystem, database or g
 
 **The child is long-lived, not a fire-and-forget spawn.** One child runs per registration; it is spawned on the first call that needs it, and every later call leases the same running process, its messages correlated by JSON-RPC id. Each spawn is a new *generation*, and the plane runs the MCP `initialize` handshake once per generation before it sends that child a call. A child that ends ends every call leased on it, and the next call spawns it anew. A registration that is removed or whose program changes takes no new lease, and its child is killed once its last lease closes (`crates/busbar-core-connector/src/program.rs`; `tool_program.rs`, `door_program.rs`).
 
-**The restart policy is a circuit breaker, not a retry loop.** A child that crashes on startup will crash on every startup, so an unbounded restart loop against a broken binary is a fork bomb with a config file behind it. Exponential backoff from the crash count, capped, and a trip that stops restarting entirely past a threshold inside a window, until the registration is declared anew. The supervisor is the stdio transport's (`supervisor.rs`, in GetBusbar/busbar-transport-stdio):
+**The restart policy is a circuit breaker, not a retry loop.** A child that crashes on startup will crash on every startup, so an unbounded restart loop against a broken binary is a fork bomb with a config file behind it. Exponential backoff from the crash count, capped, and a trip that stops restarting entirely past a threshold inside a window, until the registration is declared anew. The supervisor is core's, part of the stdio carrier (`crates/busbar-kernel/src/channels/respawn.rs`):
 
 | Knob | Value | Configurable |
 |---|---|---|
 | first backoff after a crash | 100 ms | no |
-| backoff ceiling | 30 s | no |
+| longest backoff (after the 4th end; the 5th trips) | 800 ms | no |
 | ends that stop the restarts | 5 | no |
 | the window they are counted over | 60 s | no |
 
-A successful start **does not clear the crash history** — a child that crashes, restarts, serves one call and crashes again is crash-looping, and clearing the window on every successful start is how a breaker is written that never trips. The history ages out by time. The supervisor outlives the child, deliberately: it is keyed by the registration's supervision key, which the host keeps while the registration's program is unchanged across config applies, so supervision resets only when the registration is new — never for a sibling registration running the same program, and never for a changed secret value under an unchanged registration (`supervisor.rs`, in GetBusbar/busbar-transport-stdio).
+A successful start **does not clear the crash history** — a child that crashes, restarts, serves one call and crashes again is crash-looping, and clearing the window on every successful start is how a breaker is written that never trips. The history ages out by time. The supervisor outlives the child, deliberately: it is keyed by the registration's supervision key, which the host keeps while the registration's program is unchanged across config applies, so supervision resets only when the registration is new — never for a sibling registration running the same program, and never for a changed secret value under an unchanged registration (`crates/busbar-kernel/src/channels/respawn.rs`).
 
 Defaults are chosen to make a crash-looping child visible within seconds rather than to maximise availability: an MCP server that will not start is a configuration error, and hiding it behind retries delays the fix.
 

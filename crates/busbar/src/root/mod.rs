@@ -376,8 +376,6 @@ pub(crate) mod real_store;
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 #[cfg(test)]
 owner_test_sources!(root_stdio);
-#[cfg(test)]
-owner_test_sources!(root_http);
 
 pub(crate) mod selected_report;
 #[cfg(test)]

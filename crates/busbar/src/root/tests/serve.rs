@@ -714,8 +714,7 @@ async fn constructed_services_keep_their_governance_record_store() {
     use busbar_kernel::persistence::scoped::{Outcome, ScopedStore};
     let core = crate::root::real_store::core().await;
     let rows =
-        ScopedStore::host_private(core.clone(), "busbar.attach-probe", ["attach-probe"])
-            .unwrap();
+        ScopedStore::host_private(core.clone(), "busbar.attach-probe", ["attach-probe"]).unwrap();
     assert_eq!(
         rows.put(
             "attach-probe",

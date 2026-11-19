@@ -173,28 +173,6 @@
       "lock_sha256": "bb9a617faa30081f1ec54373316ee71b9d3224494a8dc3d2a85ddf2d8e7752cc"
     },
     {
-      "repo": "busbar-transport-stdio",
-      "url": "https://github.com/GetBusbar/busbar-transport-stdio",
-      "commit": "17472a38e267194e915c5aecc74e936580ab784a",
-      "package": "busbar-transport-stdio-plugin",
-      "kind": "transport",
-      "alias": "stdio",
-      "image": "libbusbar_transport_stdio_plugin.so",
-      "declares": "transport-stdio/declares.json",
-      "lock_sha256": "8b806a6ec4a038882f95ea2a003f56af2b34c168fb5fb4d551818d47bc210dcf"
-    },
-    {
-      "repo": "busbar-transport-tcp",
-      "url": "https://github.com/GetBusbar/busbar-transport-tcp",
-      "commit": "83bed651877487a9ee064f0b519c626fb8e29c9e",
-      "package": "busbar-transport-tcp-plugin",
-      "kind": "transport",
-      "alias": "tcp",
-      "image": "libbusbar_transport_tcp_plugin.so",
-      "declares": "transport-tcp/declares.json",
-      "lock_sha256": "a3f31ebfdc11295b60a5ff6b2b71f874208f26bccf149d921acc9cb09a9d624b"
-    },
-    {
       "repo": "busbar-transport-webrtc",
       "url": "https://github.com/GetBusbar/busbar-transport-webrtc",
       "commit": "6699b76bec702cabf4f768cbaf571f18709e4028",

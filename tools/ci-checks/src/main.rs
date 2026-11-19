@@ -27,8 +27,8 @@
 //!   overlay's separation, key and upgrade-page checks (`migrate_overlay.rs`).
 //! - `migrate-size`: the migrator's separation and anchor gates, with its sizes printed
 //!   (`migrate_size.rs`).
-//! - `fleet-manifest`: `fleet/deps.toml`'s `[min3-closure]` and `plugins.yaml`'s 33 ported and 2 archived
-//!   repos (IF §15 rules 1a, 1b).
+//! - `fleet-manifest`: `fleet/deps.toml`'s `[min3-closure]` and `plugins.yaml`'s 33 ported repos
+//!   (IF §15 rules 1a, 1b).
 //! - `c-transport`, `export-streams`, `no-licence`, `core-scan`: source checks over core (C-TRANSPORT
 //!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
 //!   production and test lines (a report, no gate).

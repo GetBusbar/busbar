@@ -79,13 +79,6 @@ excluded_repos:
   - busbar-hook-headroom # removed from busbar and the site (owner ruling 2026-09-30) — the repo is kept, not a busbar plugin
   # (busbar-hook-headroom is also DISCONTINUED and archived, AGREED "HEADROOM DISCONTINUED": no manifest entry, no render, no re-pin.)
 
-# Archived with NO MIN-3 release (IF §8.7; WBS: 33 ports + 2 archives). Their rows below stay until W2 so
-# today's root tests keep reading them; the fleet tool renders, re-pins and releases none of them, and
-# `tools/ci-checks` (`fleet-manifest`) holds this list to exactly these two repos.
-archived_repos:
-  - busbar-transport-tcp
-  - busbar-transport-stdio
-
 # THE ROOT MIGRATION TABLE'S FROZEN TEXT (BUSBAR-1.6.0.md §2): operator-visible
 # 1.5.5 text naming plugins that are not in the build, which the first-boot config upgrade and the boot
 # refusals print. These rows, then every entry's `retired:` rows, are the root migration table,
@@ -394,19 +387,6 @@ plugins:
     # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
     # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
     released: false
-  - repo: busbar-transport-tcp
-    kind: transport
-    alias: tcp
-    crate: busbar-transport-tcp-plugin
-    version_line: "1.0"
-    service: none
-    release_gate: optional
-    gate: suite
-    description: "First-party signed kind:transport plugin cdylib: the tcp transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/ and the boot seal folds the wire beside the linked ones."
-    declares: "transport-tcp/declares.json"
-    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
-    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
-    released: false
   - repo: busbar-plane-llm
     kind: plane
     # Immutable capture used by the generic historical provider-key census.
@@ -524,19 +504,6 @@ plugins:
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
     pending_crate: true
-  - repo: busbar-transport-stdio
-    kind: transport
-    alias: stdio
-    crate: busbar-transport-stdio-plugin
-    version_line: "1.0"
-    service: none
-    release_gate: optional
-    gate: suite
-    description: "First-party signed kind:transport plugin cdylib: the stdio transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
-    declares: "transport-stdio/declares.json"
-    # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its first release
-    # is cut with the core version that pins it.
-    released: false
   - repo: busbar-transport-grpc
     kind: transport
     alias: grpc

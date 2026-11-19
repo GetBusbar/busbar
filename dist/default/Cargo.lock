@@ -1015,6 +1015,7 @@ dependencies = [
  "busbar-secure",
  "crossbeam-queue",
  "hex",
+ "hyper",
  "percent-encoding",
  "zerocopy",
  "zeroize",
@@ -1158,21 +1159,19 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=c5826a640274e171cb257c3a262d321e089c1f73#c5826a640274e171cb257c3a262d321e089c1f73"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=c3ead54ee453e1cfc1569a933e8acb47abce5172#c3ead54ee453e1cfc1569a933e8acb47abce5172"
 dependencies = [
- "busbar-contract",
+ "busbar-plugin-abi",
  "bytes",
- "foldhash 0.2.0",
  "futures-channel",
  "http",
+ "http-body",
  "http-body-util",
- "httpdate",
+ "httparse",
  "hyper",
  "hyper-util",
- "indexmap",
- "memchr",
- "serde_json",
- "zeroize",
+ "serde",
+ "sonic-rs",
 ]
 
 [[package]]

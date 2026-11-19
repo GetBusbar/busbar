@@ -38,7 +38,7 @@ See the [protocol reference](protocols.md), [hooks](hooks.md) (which also owns r
 
 ## Planes and transports
 
-A **plane** gives traffic its meaning. A **transport** moves the bytes. HTTP, WebSocket, and stdio do not by themselves determine whether a request is a model call, tool invocation, or agent task.
+A **plane** gives traffic its meaning. Core's **carriers** move the bytes: TCP and unix sockets, UDP ports, and the stdio pipes of a program Busbar starts. A **transport** frames a protocol on those bytes: HTTP, gRPC, WebSocket, WebRTC. Neither a carrier nor a transport by itself determines whether a request is a model call, tool invocation, or agent task.
 
 | Plane | Reference |
 |---|---|
