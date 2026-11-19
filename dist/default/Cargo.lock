@@ -335,7 +335,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=cdb3f7bbbe7a9a4640e65684358f4947f80ad6ff#cdb3f7bbbe7a9a4640e65684358f4947f80ad6ff"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=9f6c6169d5cb16e4ae9ce78a99fcf20289b1ff90#9f6c6169d5cb16e4ae9ce78a99fcf20289b1ff90"
 dependencies = [
  "busbar-plugin-abi",
  "serde",
@@ -345,10 +345,9 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=63a901a7ad954f645bf8ae91a593f858f51f5312#63a901a7ad954f645bf8ae91a593f858f51f5312"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=5b5df7fa5fc39ac234a259ff47ff3c87c9da4c17#5b5df7fa5fc39ac234a259ff47ff3c87c9da4c17"
 dependencies = [
  "busbar-plugin-abi",
- "foldhash 0.2.0",
  "serde",
  "sonic-rs",
 ]
@@ -356,7 +355,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=a4725aa9e0d3c7f15585bf1f5fd8b27430368a43#a4725aa9e0d3c7f15585bf1f5fd8b27430368a43"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=2eebc1724a3e4e512fe31835c833c5d346c1c86b#2eebc1724a3e4e512fe31835c833c5d346c1c86b"
 dependencies = [
  "base64 0.22.1",
  "busbar-plugin-abi",
@@ -368,14 +367,12 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=55183cc03c16830725bfcc0c961ddbe72f2efffe#55183cc03c16830725bfcc0c961ddbe72f2efffe"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=cf0dfc50601facc1dbbce29e5315cedfca8a5c03#cf0dfc50601facc1dbbce29e5315cedfca8a5c03"
 dependencies = [
  "busbar-plugin-abi",
- "percent-encoding",
  "serde",
  "smallvec",
  "sonic-rs",
- "time",
 ]
 
 [[package]]
@@ -621,7 +618,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-complexity"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-complexity?rev=e8af085deb508638b66cc287dc44627f636acee5#e8af085deb508638b66cc287dc44627f636acee5"
+source = "git+https://github.com/GetBusbar/busbar-hook-complexity?rev=baa4d649d52379a95a743dcfe2da8550dabd0e34#baa4d649d52379a95a743dcfe2da8550dabd0e34"
 dependencies = [
  "busbar-plugin-abi",
  "serde",
@@ -631,7 +628,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-ranking"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=948f2dfd6bcbfe573f463c0cab60eb19fc33fe9b#948f2dfd6bcbfe573f463c0cab60eb19fc33fe9b"
+source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=ee4e388a3741cff6417f0fdc073a59cb55fdadd5#ee4e388a3741cff6417f0fdc073a59cb55fdadd5"
 dependencies = [
  "busbar-plugin-abi",
  "serde",
@@ -817,7 +814,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=794cbd541192798496e5f7b8b8c878c23a6f89d7#794cbd541192798496e5f7b8b8c878c23a6f89d7"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=f4c43f87824c4de7257c86c86f37c74fa26e8ff8#f4c43f87824c4de7257c86c86f37c74fa26e8ff8"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -855,9 +852,8 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=48a9e16db1ce04708f8538a50920f95a54141aa4#48a9e16db1ce04708f8538a50920f95a54141aa4"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=285cabd56823c1f22a503ae0de700faf01ce25a2#285cabd56823c1f22a503ae0de700faf01ce25a2"
 dependencies = [
- "base64 0.22.1",
  "bumpalo",
  "busbar-contract",
  "busbar-plugin-abi",
@@ -974,7 +970,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=5c0406091fd9f811f73c69940741f382ecbdcda3#5c0406091fd9f811f73c69940741f382ecbdcda3"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=12be2954f26eccdd22cc067c9506b98667ce5e27#12be2954f26eccdd22cc067c9506b98667ce5e27"
 dependencies = [
  "busbar-plugin-abi",
  "foldhash 0.2.0",
@@ -1031,7 +1027,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=f3c2bece2a2f8b42bae0351582025f01d1655357#f3c2bece2a2f8b42bae0351582025f01d1655357"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=b241afd43a7cb80ac2617ab14cd648a471b3a5b6#b241afd43a7cb80ac2617ab14cd648a471b3a5b6"
 dependencies = [
  "busbar-plugin-abi",
  "foldhash 0.2.0",
@@ -1869,8 +1865,8 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.4.1"
-source = "git+https://github.com/MattJackson/http?rev=904f4519b5f27a0424b121a4828640c741efcd95#904f4519b5f27a0424b121a4828640c741efcd95"
+version = "1.5.0"
+source = "git+https://github.com/MattJackson/http?rev=7e71322105371bae475f8e68d86324e73f4a11c9#7e71322105371bae475f8e68d86324e73f4a11c9"
 dependencies = [
  "bytes",
  "itoa",
