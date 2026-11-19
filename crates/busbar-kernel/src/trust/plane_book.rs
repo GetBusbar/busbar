@@ -281,12 +281,15 @@ impl<R: PluginRecords> CoreTrustBook<R> {
 
     /// Admits plane instance `plane_name` with its approvals (one per configured upstream, from
     /// [`approval_entry`]), replaying the decisions and quarantines its durable rows hold. A reload admits again;
-    /// a counterparty whose declaration did not change keeps its state.
+    /// a counterparty whose declaration did not change keeps its state. The live book changes only once both reads
+    /// are done: a reload dropped or refused before then leaves it as it was. A counterparty decided while the
+    /// rows were being read keeps that decision, never an older row read before it.
     pub async fn admit(
         &self,
         plane_name: &str,
         entries: Vec<(String, TrustEntry)>,
     ) -> Result<(), RecordsDenied> {
+        let read_at = self.book.decision_snapshot();
         let name = core_name(plane_name, TAG);
         let ns = Self::rows_ns(&name);
         let mut decided: Vec<RulingRow> = Vec::new();
@@ -307,11 +310,12 @@ impl<R: PluginRecords> CoreTrustBook<R> {
                 }
             })
             .await?;
-        self.book.admit_with_decisions(
+        self.book.admit_read_since(
             &Arc::from(plane_name),
             entries,
             demoted.iter().map(|(party, at)| (party.as_str(), *at)),
             &decided,
+            Some(&read_at),
         );
         Ok(())
     }

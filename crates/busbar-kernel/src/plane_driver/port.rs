@@ -1580,7 +1580,14 @@ async fn drive_session(
         None => Resolver::new(intents, None),
     }
     .with_route(route)
-    .with_admission(effects.admission.as_deref());
+    .with_admission(effects.admission.as_deref())
+    // A LOOKUP never waits past the request's own deadline (a DATA request's binding states it).
+    .with_deadline(
+        effects
+            .data
+            .as_ref()
+            .and_then(|data| data.binding().deadline()),
+    );
     let session = carrier.map(|carrier| {
         carrier
             .session_with_budget(

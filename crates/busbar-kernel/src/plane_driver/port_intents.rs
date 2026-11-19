@@ -22,7 +22,7 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_RATE_LIMITED, R_UNSUPPORTED};
@@ -456,6 +456,21 @@ pub trait IntentHost: Send + Sync {
         key: &'a [u8],
         looked: &'a mut Looked,
     ) -> BoxFut<'a, Result<(), RecordsDenied>>;
+    /// [`Self::lookup`], bounded by the request's own `deadline` as well: a host whose calls carry a ceiling of
+    /// their own ([`Namespace::caller`]) waits until the earlier of the two. Default: [`Self::lookup`] (a host with
+    /// no ceiling of its own is bounded by the request's future, which is dropped at the deadline).
+    fn lookup_within<'a>(
+        &'a self,
+        deadline: Instant,
+        scope: Scope,
+        flags: u32,
+        limit: u32,
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        let _ = deadline;
+        self.lookup(scope, flags, limit, key, looked)
+    }
     /// STORE. `flags & LK_CHAIN` appends `value` to the host chain `key`.
     fn store<'a>(
         &'a self,
@@ -656,6 +671,7 @@ pub struct Resolver<'h> {
     principal: Option<Principal<'h>>,
     route: u32,
     pending: Option<&'h super::port_admission::Pending>,
+    deadline: Option<Instant>,
 }
 
 /// The verified principal an intent runs as: its ID_SUBJECT text and the ID_* identity records it was admitted with.
@@ -675,6 +691,7 @@ impl<'h> Resolver<'h> {
             principal: None,
             route: 0,
             pending: None,
+            deadline: None,
         }
     }
 
@@ -699,10 +716,28 @@ impl<'h> Resolver<'h> {
     /// The request's verified principal: its ID_SUBJECT text and the identity records it was admitted with. It sets
     /// the subject scope as [`subject_scope`] does, and is what ENTITLE, MINT and CONNECT run as; without one they
     /// are refused here and the host is never asked.
+    ///
+    /// The anonymous principal (`native_chain::ANONYMOUS`) is the one subject every caller of an open chain
+    /// shares, so it is no caller reference: it sets no scope and no principal, and every caller-scoped intent is
+    /// refused for it as for a request with no verified principal (one anonymous caller never reads another's
+    /// records; v1.5.5 refused it the same way).
     #[must_use]
     pub fn with_principal(mut self, subject: &'h str, identity: &'h [u8]) -> Self {
+        if subject == crate::auth::native_chain::ANONYMOUS {
+            self.subject = None;
+            self.principal = None;
+            return self;
+        }
         self.subject = Some(subject_scope(subject));
         self.principal = Some(Principal { subject, identity });
+        self
+    }
+
+    /// The request's own deadline: a LOOKUP's wait ends at it when it comes before the host's own ceiling
+    /// ([`IntentHost::lookup_within`]). `None`: the host's ceiling alone.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Option<Instant>) -> Self {
+        self.deadline = deadline;
         self
     }
 
@@ -713,13 +748,21 @@ impl<'h> Resolver<'h> {
         self
     }
 
-    /// The scope a flag word selects, or `None` when it asks for the caller's scope and there is no subject.
+    /// The scope a flag word selects, or `None` when it asks for the caller's scope and there is no subject: the
+    /// intent is then refused by core, the host never asked, and the refusal is logged for the audit trail.
     fn scope(&self, caller_bound: bool) -> Option<Scope> {
-        if caller_bound {
-            self.subject.map(|s| Scope { subject: Some(s) })
-        } else {
-            Some(Scope::default())
+        if !caller_bound {
+            return Some(Scope::default());
         }
+        let scope = self.subject.map(|s| Scope { subject: Some(s) });
+        if scope.is_none() {
+            tracing::warn!(
+                audit = "caller_scope_refused",
+                route = self.route,
+                "a caller-scoped intent was refused: the request has no caller reference"
+            );
+        }
+        scope
     }
 
     /// Applies `intents` in answer order and returns the pieces to deliver, in the IF order. `reads` is the
@@ -1007,11 +1050,14 @@ impl<'h> Resolver<'h> {
             index += 1;
             looked.clear();
             if let Some(scope) = self.scope(flags & LK_CALLER != 0) {
-                if let Err(denied) = self
-                    .host
-                    .lookup(scope, *flags, *limit, lent.bytes(*key), looked)
-                    .await
-                {
+                let key = lent.bytes(*key);
+                let read = match self.deadline {
+                    Some(deadline) => self
+                        .host
+                        .lookup_within(deadline, scope, *flags, *limit, key, looked),
+                    None => self.host.lookup(scope, *flags, *limit, key, looked),
+                };
+                if let Err(denied) = read.await {
                     tracing::warn!(?denied, "a plane lookup was refused; it reads as a miss");
                     looked.clear();
                 }
@@ -1618,6 +1664,15 @@ impl Namespace {
             limits: InstanceLimits::default(),
         }
     }
+
+    /// [`Self::caller`] for one request: its ceiling cut to the request's `deadline` when that comes first. The
+    /// clock is read once, by [`Self::caller`].
+    #[must_use]
+    pub fn caller_until(&self, deadline: Instant) -> Caller<'_> {
+        let mut caller = self.caller();
+        caller.deadline = caller.deadline.min(deadline);
+        caller
+    }
 }
 
 /// The production [`IntentHost`]: records through [`PluginRecords`], pushes through the [`StorePushQueue`], signals
@@ -1806,9 +1861,11 @@ impl<R: PluginRecords> KernelIntents<R> {
     }
 }
 
-impl<R: PluginRecords> IntentHost for KernelIntents<R> {
-    fn lookup<'a>(
+impl<R: PluginRecords> KernelIntents<R> {
+    /// One LOOKUP, asked of the records as `who` (whose deadline bounds the store's wait).
+    fn read<'a>(
         &'a self,
+        who: Caller<'a>,
         scope: Scope,
         flags: u32,
         limit: u32,
@@ -1816,7 +1873,6 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         looked: &'a mut Looked,
     ) -> BoxFut<'a, Result<(), RecordsDenied>> {
         Box::pin(async move {
-            let who = self.who.caller();
             if flags & LK_CHAIN != 0 {
                 let split = key.len().checked_sub(8).ok_or(RecordsDenied::Invalid)?;
                 let (chain, after) = key.split_at(split);
@@ -1852,6 +1908,38 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
             }
             Ok(())
         })
+    }
+}
+
+impl<R: PluginRecords> IntentHost for KernelIntents<R> {
+    fn lookup<'a>(
+        &'a self,
+        scope: Scope,
+        flags: u32,
+        limit: u32,
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        self.read(self.who.caller(), scope, flags, limit, key, looked)
+    }
+
+    fn lookup_within<'a>(
+        &'a self,
+        deadline: Instant,
+        scope: Scope,
+        flags: u32,
+        limit: u32,
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        self.read(
+            self.who.caller_until(deadline),
+            scope,
+            flags,
+            limit,
+            key,
+            looked,
+        )
     }
 
     fn store<'a>(
