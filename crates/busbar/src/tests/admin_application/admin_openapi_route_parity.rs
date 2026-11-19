@@ -165,7 +165,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         .expect("the actual admin deployment resolves");
     eprintln!("OpenAPI census: opening the shared actual Store");
     let crate::root::min3_boot::fixture::Fixture {
-        backend: backend,
+        backend,
         rules,
         owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())

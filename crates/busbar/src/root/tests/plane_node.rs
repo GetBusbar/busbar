@@ -96,16 +96,6 @@ async fn native_fixture() -> Result<crate::root::durability::Durability, std::io
     ))
     .await
 }
-async fn native_node_book() -> crate::root::durability::NodeBook {
-    let journal = native_journal(
-        busbar_kernel::door::op_id().counter(),
-        native_budget().records,
-    )
-    .await;
-    (crate::root::durability::node_book(journal, native_budget()))
-        .await
-        .expect("native node book opens")
-}
 async fn selected(
     journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
 ) -> Vec<busbar_kernel_wal::JournalRecord> {
@@ -216,8 +206,6 @@ async fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
 }
 
 const EPOCH: u64 = 1_700_000_000;
-
-const RERANK_LANE: &str = "rerank-v3.5";
 
 fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
     let mut history = busbar_kernel_ledger::cost::History::new();

@@ -752,23 +752,6 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     println!("{WITNESS}");
 }
 
-fn root_unit_modules(manifest: &str) -> Vec<String> {
-    let mut in_table = false;
-    let mut modules = Vec::new();
-    for line in manifest.lines() {
-        let code = line.split('#').next().unwrap_or("").trim();
-        if code.starts_with('[') {
-            in_table = code == "[package.metadata.busbar.root-units]";
-            continue;
-        }
-        if let (true, Some((_, module))) = (in_table, code.split_once('=')) {
-            modules.push(module.trim().trim_matches('"').to_string());
-        }
-    }
-    assert!(!modules.is_empty(), "the manifest lists no root unit");
-    modules
-}
-
 const FLAT_LANE: &str = "gpt";
 
 const PLANE: &str = "planex";

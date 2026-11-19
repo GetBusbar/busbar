@@ -225,6 +225,7 @@ fn original_scan_rejects_changed_horizon_and_nonprogress() {
     assert_eq!(retry.cursor, Some(OriginalPageCursor::start(130)));
 }
 
+#[tokio::test]
 async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery_slices() {
     use crate::root::durability::{notary, signer};
     use crate::root::plane_node::retained_fixture::Retained;

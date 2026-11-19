@@ -124,12 +124,10 @@ pub(crate) fn trusted_config_with_key(
             plugins: archives
                 .iter()
                 .map(|path| {
-                    tarball::unpack(
-                        &std::fs::read(path).expect("fixture archive reads"),
-                    )
-                    .expect("fixture archive unpacks")
-                    .manifest
-                    .name
+                    tarball::unpack(&std::fs::read(path).expect("fixture archive reads"))
+                        .expect("fixture archive unpacks")
+                        .manifest
+                        .name
                 })
                 .collect(),
             keys: vec![busbar_kernel::config::PluginPublisherKey {
@@ -287,10 +285,6 @@ pub const BUILD_LOADER_EXAMPLES: &str = "cargo build -p busbar-plugin-loader --e
 
 pub const BUILD_BUSBAR_EXAMPLES: &str = "cargo build -p busbar --examples";
 
-pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
-    std::fs::read(cdylib_path(snake)?).ok()
-}
-
 #[cfg(all(test, not(oracle_lookup)))]
 include!(concat!(env!("OUT_DIR"), "/common_test_sources.rs"));
 
@@ -301,28 +295,6 @@ include!(concat!(env!("OUT_DIR"), "/common_test_sources.rs"));
 pub(crate) mod token_verifier {
     pub fn token_verifier_cdylib_path() -> Option<std::path::PathBuf> {
         super::cdylib_path("busbar_auth_oidc_plugin")
-    }
-
-    /// One framed (HTTP/2) admission request on `stream` for `path`, with the connection preface when
-    /// `preface`: carried over unchanged from busbar-auth-oidc 7877ca7's retired common source, which
-    /// the transport root sources still mounted here read.
-    pub fn framed_admission_request(stream: u32, path: &str, preface: bool) -> Vec<u8> {
-        assert!(path.len() < 127);
-        let mut bytes = Vec::new();
-        if preface {
-            bytes.extend_from_slice(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-            bytes.extend_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0, 0]);
-        }
-        let mut fields = vec![0x83, 0x86, 0x04, path.len() as u8];
-        fields.extend_from_slice(path.as_bytes());
-        fields.extend_from_slice(&[0x01, 9]);
-        fields.extend_from_slice(b"localhost");
-        let len = fields.len() as u32;
-        bytes.extend_from_slice(&len.to_be_bytes()[1..]);
-        bytes.extend_from_slice(&[1, 4]);
-        bytes.extend_from_slice(&stream.to_be_bytes());
-        bytes.extend_from_slice(&fields);
-        bytes
     }
 }
 #[cfg(test)]
@@ -352,14 +324,6 @@ pub fn native_schema_bomb_path() -> Option<PathBuf> {
     libraries()
         .into_iter()
         .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
-}
-
-pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
-    let file = plugin_library_filename("neutral_frame_door");
-    libraries()
-        .into_iter()
-        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
-        .and_then(|p| std::fs::read(p).ok())
 }
 
 /// The operator admin token an admin test presents, as `Authorization: Bearer`. 1.6 has no open
