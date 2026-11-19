@@ -204,9 +204,6 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// Admission also requires the current layout fingerprint.
 pub const ABI_VERSION: u32 = super::versions::TRANSPORT.raw();
 
-/// The transport kind's generation as the Rust face states it (`Plugin::abi`): [`ABI_VERSION`]
-pub const TRANSPORT_ABI: crate::abi::versions::AbiVersion = crate::abi::versions::TRANSPORT;
-
 /// [`crate::abi::mechanism::call::InHead::op`] of each transport op, in table order: kind op `k` is
 pub mod slot {
     use super::LIFECYCLE_SLOTS;

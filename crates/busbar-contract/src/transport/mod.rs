@@ -17,8 +17,7 @@ pub use crate::abi::versions::AbiVersion;
 
 /// The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check over
 pub use registry::{
-    check_composition, facts, CompositionError, Registered, TransportSettings,
-    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, TRANSPORT_ABI,
+    facts, TransportSettings, DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS,
 };
 
 /// Where a dial lands, as the transport family that dials it spells it — named at the transport

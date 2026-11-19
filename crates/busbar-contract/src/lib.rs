@@ -166,7 +166,6 @@ pub use kinds::{Challenge, ChallengeState, Head, RecordBytes, SecretRef, StoreEr
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin};
 pub use redacted::{constant_time_eq, sha256_hex, OwnerSeal, Secret, SharedSecret};
 pub use signal::{Signal, SignalBag, SignalValue};
-pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
 pub use unit::{AuditFacts, FinishClass, RefusalReason, ResourceLocator, ScopeFacts};
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
