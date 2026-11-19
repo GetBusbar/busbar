@@ -234,9 +234,10 @@ impl NativeDataRoute {
     /// built-in member `keys` (`native_keys::judge`) where the chain names it, and refused by
     /// [`refuse_bound_carriers`] where it does not; it is never accepted unverified. A
     /// DPoP-bound token is refused: this path verifies no proof. A route with a hook bound is
-    /// admitted exactly where its hooks run ([`Self::hooks_run`]): a unit-bearing route that
-    /// selects no resource, and a catalog. Any other stays unmounted and says so; serving it
-    /// unhooked would skip a policy the operator configured.
+    /// admitted exactly where its hooks run ([`Self::hooks_run`]): a route that selects no
+    /// resource and verifies every caller by its chain, whether or not it opens a unit, and a
+    /// catalog. Any other stays unmounted and says so; serving it unhooked would skip a policy
+    /// the operator configured.
     pub fn admits(_app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
         let record = &mounted.record;
         match admission_of(record) {
@@ -281,26 +282,114 @@ impl NativeDataRoute {
     /// A request that opens a unit and selects no resource runs its hooks inside the session,
     /// after the key's grant of the walk is judged and before its money is asked
     /// (`plane_driver::port_serve`): a refusing hook has spoken before any unit is opened. A
-    /// catalog runs no session and reaches no upstream: no hook is bound to a listing (v1.5.5
-    /// listed models with hooks configured), and it is served as it is without one.
+    /// route that opens no unit and verifies every caller by its chain runs them the same way,
+    /// under the verified request itself ([`Self::hook_invocation`]): the same hooks, in the same
+    /// order, shown the same facts, a refusing hook answering at its own status; there is no
+    /// money to ask after them. A catalog runs no session and reaches no upstream: no hook is
+    /// bound to a listing (v1.5.5 listed models with hooks configured), and it is served as it
+    /// is without one.
+    ///
+    /// A route that admits a caller who presents nothing (public, or optional) stays unmounted
+    /// with a hook bound: such a request has no verified caller for a hook to be called under.
     pub fn hooks_run(record: &RouteRecord) -> Result<(), &'static str> {
-        use super::admission_table::{plan, Authority};
+        use super::admission_table::{plan, Authority, VerifyBy};
         let admission = admission_of(record);
-        match plan(admission, record.money).map(|sequence| sequence.serves) {
-            // A selected request runs under its descriptor's authority alone
-            // (`NativeDataEffectGate::hooks_allowed`): its hooks would never be called.
-            Some(Authority::Billed) if admission == Admission::Selected => Err(
+        // A selected request runs under its descriptor's authority alone
+        // (`NativeDataEffectGate::hooks_allowed`): its hooks would never be called, whether
+        // or not the route opens a unit.
+        if admission == Admission::Selected {
+            return Err(
                 "a route with a hook bound whose plane selects resources is not served: a selected request runs no hook",
+            );
+        }
+        let Some(sequence) = plan(admission, record.money) else {
+            return Err("a route with a hook bound is not served by the native data path");
+        };
+        match sequence.serves {
+            Authority::Walk | Authority::Billed | Authority::Catalog => Ok(()),
+            // No unit, and every request verified by the route's chain: the hooks run under
+            // the verified request.
+            Authority::Unbilled if sequence.verify == VerifyBy::Chain => Ok(()),
+            Authority::Unbilled | Authority::Public => Err(
+                "a route with a hook bound that admits a caller who presents no credential is not served: such a request has no verified caller to run a hook under",
             ),
-            Some(Authority::Walk | Authority::Billed | Authority::Catalog) => Ok(()),
-            // No unit: the session is handed no invocation to call a hook under.
-            Some(Authority::Unbilled | Authority::Public) => Err(
-                "a route with a hook bound that opens no unit is not served: its hooks have no admitted request to run under",
-            ),
-            Some(Authority::Upgrade | Authority::Operator) | None => {
+            Authority::Upgrade | Authority::Operator => {
                 Err("a route with a hook bound is not served by the native data path")
             }
         }
+    }
+
+    /// The invocation a verified request on a route that opens no unit runs its hooks under.
+    /// `Ok(None)`: no hook is bound to `route` on `seat`, and the request pays nothing for the
+    /// feature (no number is minted, nothing is registered, the session is handed no
+    /// invocation). `Ok(Some)`: the request is registered under its verified key for the
+    /// lifetime of the returned owner; its context goes to the session as its invocation.
+    ///
+    /// The invocation hears hooks and allows nothing else: no effect, no nested unit, and no
+    /// money can be asked under it (`UnitRecords::admitted_unbilled`).
+    ///
+    /// # Errors
+    /// The seat is not this route's, the route moves money (its hooks run inside its pending
+    /// admission), the request is cancelled or past its deadline, or it cannot be registered.
+    /// The request is then not served: a hook-bound route is never served unhooked.
+    pub fn hook_invocation(
+        &self,
+        seat: &PortSeat,
+        route: u32,
+        authorization: &DataAuthorization,
+    ) -> Result<Option<UnbilledInvocation>, DataRefused> {
+        if !seat.driver.caller().same_incarnation(&self.caller)
+            || !std::ptr::eq(&*authorization.route, self)
+        {
+            return Err(DataRefused::Binding);
+        }
+        if !seat.driver.has_hooks(route) || self.admission == Admission::Catalog {
+            return Ok(None);
+        }
+        if self.billed() {
+            return Err(DataRefused::Binding);
+        }
+        let live_at = authorization
+            .binding
+            .check_live_now()
+            .map_err(|_| DataRefused::Cancelled)?;
+        if live_at >= authorization.deadline {
+            return Err(DataRefused::Cancelled);
+        }
+        let records = Arc::new(crate::plane_driver::port_hooks::HookRecords::default());
+        let gate = Arc::new(NativeDataEffectGate::unbilled(
+            authorization.binding.clone(),
+            authorization.deadline,
+            Arc::clone(&records),
+        ));
+        let unit = self.owners.keys.mint();
+        let units = self.owners.generation.core().units();
+        let record = units
+            .admitted_unbilled(
+                unit.get(),
+                &self.caller,
+                crate::host_units::UnitRecord {
+                    principal: Some(authorization.key.clone()),
+                    depth: 0,
+                },
+                Some(gate),
+            )
+            .ok_or(DataRefused::Unit)?;
+        let context = match InvocationContext::new(
+            self.owners.generation.clone(),
+            self.caller.clone(),
+            unit.get(),
+        ) {
+            Ok(context) => context,
+            Err(_) => {
+                units.ended_if_record(unit.get(), &record);
+                return Err(DataRefused::Unit);
+            }
+        };
+        Ok(Some(UnbilledInvocation {
+            registration: Registration { context },
+            records,
+        }))
     }
 
     pub fn bind(
@@ -1113,6 +1202,9 @@ pub(crate) struct NativeDataEffectGate {
     /// The request selected no resource. One that did runs under its descriptor's authority
     /// alone: no hook is run for it, before its money or after.
     hooks: bool,
+    /// A verified request that opens no unit: where its hooks' records are kept. `None` for a
+    /// request that opens one (its refusal custody or its journal keeps them).
+    records: Option<Arc<crate::plane_driver::port_hooks::HookRecords>>,
 }
 impl NativeDataEffectGate {
     fn new(binding: Arc<RequestBinding>, deadline: Instant, hooks: bool) -> Self {
@@ -1121,7 +1213,27 @@ impl NativeDataEffectGate {
             deadline,
             ready: AtomicBool::new(false),
             hooks,
+            records: None,
         }
+    }
+    /// The gate of a verified request that opens no unit ([`UnbilledInvocation`]). It is never
+    /// made ready, so no effect is ever allowed under it; its hooks are heard while the
+    /// physical request is live and inside `deadline`, and their records are kept in `records`.
+    fn unbilled(
+        binding: Arc<RequestBinding>,
+        deadline: Instant,
+        records: Arc<crate::plane_driver::port_hooks::HookRecords>,
+    ) -> Self {
+        Self {
+            binding,
+            deadline,
+            ready: AtomicBool::new(false),
+            hooks: true,
+            records: Some(records),
+        }
+    }
+    pub(crate) fn records(&self) -> Option<Arc<crate::plane_driver::port_hooks::HookRecords>> {
+        self.records.clone()
     }
     pub(crate) fn effects_allowed(&self) -> bool {
         self.ready.load(Ordering::Acquire)
@@ -1151,6 +1263,29 @@ struct Registration {
 impl Drop for Registration {
     fn drop(&mut self) {
         self.context.retire();
+    }
+}
+
+/// One verified request on a route that opens no unit, registered so the route's hooks have a
+/// request to run under ([`NativeDataRoute::hook_invocation`]). Dropping it ends the
+/// registration: no hook is heard under it afterwards. It holds no money and opens nothing.
+pub struct UnbilledInvocation {
+    registration: Registration,
+    records: Arc<crate::plane_driver::port_hooks::HookRecords>,
+}
+impl UnbilledInvocation {
+    /// The session's invocation (`ServeIn::invocation`).
+    pub fn context(&self) -> &InvocationContext {
+        &self.registration.context
+    }
+    /// The records of the hooks that ran for this request, in the order they ran: what its
+    /// audit record names its hooks from. No unit holds them.
+    pub fn hooks(&self) -> Vec<busbar_kernel_audit::record::HookApplied> {
+        self.records.rows()
+    }
+    /// The hook that refused the request, by its configured name; `None` when no hook did.
+    pub fn refused_by(&self) -> Option<busbar_contract::kept::Text> {
+        self.records.refused_by()
     }
 }
 
@@ -1459,8 +1594,16 @@ struct DataCommitCustody {
 pub(crate) struct DataRefusalCustody {
     authorization: DataAuthorization,
     _registration: Arc<Registration>,
+    /// The records of the hooks that ran for the refused request, the refusing hook's among
+    /// them ([`NativeDataPending::take_refusal`]). Held by the refusal itself: no unit opened.
+    hooks: Vec<busbar_kernel_audit::record::HookApplied>,
 }
 impl DataRefusalCustody {
+    /// The hooks that ran for the refused request, in the order they ran.
+    pub(crate) fn hooks(&self) -> &[busbar_kernel_audit::record::HookApplied] {
+        &self.hooks
+    }
+
     pub(crate) fn matches(&self, binding: &Arc<RequestBinding>) -> bool {
         Arc::ptr_eq(&self.authorization.binding, binding)
     }
@@ -1500,13 +1643,36 @@ impl NativeDataPending {
         }
         let bundle = custody.bundle.take().ok_or(DataRefused::Unit)?;
         custody.phase = DataCommitPhase::RefusalTransferred;
+        drop(custody);
+        // The records of the hooks that ran before the refusal, the refusing hook's among them.
+        // The stage held them for a unit that never opened; the refusal takes them, once, and
+        // the request's own audit record is written from them: handed to the node's journal
+        // under the number the request is registered and recorded under (no unit is opened for
+        // it and none is needed), and kept on the refusal.
+        let hooks = self.audit.take_hook_records();
+        if !hooks.is_empty() {
+            if let Some(journal) = self.pending.journal() {
+                journal.hooks_ran(&crate::plane_driver::HooksRan {
+                    unit: busbar_contract::UnitKey::new(self.context.unit()),
+                    hooks: &hooks,
+                });
+            }
+        }
         Ok((
             bundle.physical,
             DataRefusalCustody {
                 authorization: bundle.authorization,
                 _registration: bundle.registration,
+                hooks,
             },
         ))
+    }
+
+    /// Where the hook stage of this request puts its records when the request is refused
+    /// before its unit opens: the request's own audit custody. [`Self::take_refusal`] takes
+    /// them from it.
+    pub(crate) fn refusal_records(&self) -> Arc<crate::plane_driver::port_hooks::HookRecords> {
+        self.audit.hook_records()
     }
 
     pub fn is_live(&self) -> bool {

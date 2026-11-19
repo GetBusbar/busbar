@@ -232,6 +232,19 @@ impl InvocationContext {
         &self.phase
     }
 
+    /// The request is a verified one on a route that opens no unit
+    /// (`UnitRecords::admitted_unbilled`): it exists so the route's hooks have a request to run
+    /// under. It is never a unit to bill, and a pending admission never belongs to it.
+    pub(crate) fn opens_no_unit(&self) -> bool {
+        self.phase.opens_no_unit()
+    }
+
+    /// Where the records of this request's hooks are kept when it opens no unit to hold them
+    /// (`NativeDataEffectGate::unbilled`); `None` for any other request.
+    pub(crate) fn hook_records(&self) -> Option<Arc<crate::plane_driver::port_hooks::HookRecords>> {
+        self.data_gate.as_ref().and_then(|gate| gate.records())
+    }
+
     pub(crate) fn same_unit(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.record, &other.record)
             && Arc::ptr_eq(&self.generation, &other.generation)

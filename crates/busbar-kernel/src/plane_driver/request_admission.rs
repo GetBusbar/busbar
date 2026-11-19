@@ -33,6 +33,10 @@ const READY: u8 = 2;
 const COMMITTING: u8 = 3;
 const ADMITTED: u8 = 4;
 const ENDED: u8 = 5;
+/// A verified request on a route that opens no unit: its route's hooks are heard, as a billed
+/// request's are between its walk and its money, and it never leaves this phase but to end. No
+/// transition starts here, so no money can be asked and no effect allowed under it.
+const UNBILLED: u8 = 6;
 
 /// Shared only by the actual registered record and its checked invocation clones.
 pub(crate) struct AdmissionPhase(AtomicU8);
@@ -43,13 +47,23 @@ impl AdmissionPhase {
     pub(crate) fn admitted() -> Self {
         Self(AtomicU8::new(ADMITTED))
     }
+    /// A verified request that opens no unit (`UNBILLED`).
+    pub(crate) fn unbilled() -> Self {
+        Self(AtomicU8::new(UNBILLED))
+    }
+    /// The request opens no unit and never will.
+    pub(crate) fn opens_no_unit(&self) -> bool {
+        self.at(UNBILLED)
+    }
     pub(crate) fn effects_allowed(&self) -> bool {
         self.0.load(Ordering::Acquire) == ADMITTED
     }
     /// The request's walk is resolved (the key's grant of it is judged) and its money has not
-    /// been asked: where a hook that may refuse is heard.
+    /// been asked: where a hook that may refuse is heard. A request that opens no unit stands
+    /// there for its whole life: it is verified, and there is no money to ask.
     pub(crate) fn before_money(&self) -> bool {
-        self.at(READY)
+        let phase = self.0.load(Ordering::Acquire);
+        phase == READY || phase == UNBILLED
     }
     pub(crate) fn end(&self) {
         self.0.store(ENDED, Ordering::Release);

@@ -32,13 +32,65 @@ pub struct Invocation {
     pub binder: Arc<super::native_hook_bindings::Bindings>,
     /// Who the request is served as, shared by count.
     pub principal: Option<super::port_auth::Subject>,
-    /// What the plane was handed as its identity, shared by count (step 2 hands it to the stage).
-    pub identity: Option<busbar_ports::auth::Identity>,
     pub now_s: u64,
     /// The instance's declared usage classes, shared with its driver (frozen when it bound).
     pub classes: Arc<[UsageClass]>,
     pub journal: Option<Arc<dyn HookJournal>>,
+    /// The request's unit; for a request that opens none, the number its invocation is
+    /// registered under (no journal holds a record under it).
     pub unit: busbar_contract::UnitKey,
+    /// Where the records of this request's hooks go when no open unit holds them: every record
+    /// of a request that opens no unit, and the records of a request refused before its unit
+    /// opened (by a hook, or by its money after its hooks ran). `None`: such records are dropped.
+    pub records: Option<Arc<HookRecords>>,
+}
+
+/// The records of the hooks that ran for one request, held with no unit: the custody a
+/// refusal's audit record is written from. A hook is named by the key the operator configured
+/// it under; the hook that refused has the head `veto`.
+#[derive(Default)]
+pub struct HookRecords(std::sync::Mutex<Vec<busbar_kernel_audit::record::HookApplied>>);
+
+impl HookRecords {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<busbar_kernel_audit::record::HookApplied>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Keep `rows` after the ones already held, in the order given.
+    pub(crate) fn keep(&self, rows: &[busbar_kernel_audit::record::HookApplied]) {
+        if !rows.is_empty() {
+            self.lock().extend_from_slice(rows);
+        }
+    }
+
+    /// The records held, in the order the hooks ran.
+    #[must_use]
+    pub fn rows(&self) -> Vec<busbar_kernel_audit::record::HookApplied> {
+        self.lock().clone()
+    }
+
+    /// The records held, taken: a second taker finds none.
+    #[must_use]
+    pub fn take(&self) -> Vec<busbar_kernel_audit::record::HookApplied> {
+        std::mem::take(&mut *self.lock())
+    }
+
+    /// The hook that refused the request, by its configured name; `None` when no hook did.
+    #[must_use]
+    pub fn refused_by(&self) -> Option<busbar_contract::kept::Text> {
+        self.lock()
+            .iter()
+            .find(|row| row.head == busbar_kernel_audit::record::HookHead::Veto)
+            .map(|row| row.hook.clone())
+    }
+}
+
+impl std::fmt::Debug for HookRecords {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.lock().iter()).finish()
+    }
 }
 
 #[derive(Clone, Default)]

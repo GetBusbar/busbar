@@ -33,8 +33,14 @@ pub(crate) struct Stage {
     journal: Option<Arc<dyn super::HookJournal>>,
     unit: busbar_contract::UnitKey,
     /// The hook records of a stage that ran before its request's unit was open ([`Early`]);
-    /// `None` for a stage whose unit was open before it ran, and for a node that keeps no journal.
+    /// `None` for a stage whose unit was open before it ran, and for a request nobody keeps
+    /// records for.
     early: Option<Arc<Early>>,
+    /// Where this request's records go when no open unit holds them ([`Invocation::records`]).
+    held: Option<Arc<super::HookRecords>>,
+    /// The request opens no unit ([`InvocationContext::opens_no_unit`]): every record of its
+    /// hooks goes to `held`, and none to a journal.
+    no_unit: bool,
 }
 
 /// Where a hook stage stands to its request's unit.
@@ -50,17 +56,25 @@ pub(crate) enum When {
 
 /// The hook records made before the request's unit is open. The journal seals a hook's record
 /// under its OPEN unit and has nowhere to put one for a unit it does not hold, and a stage that
-/// runs before the request's money has no open unit yet: its records wait here and are handed
-/// to the journal, in the order they were made, when the unit opens ([`Stage::unit_opened`]).
-/// `Some`: still waiting. `None`: the unit is open and a record goes straight to the journal. A
-/// request refused before its unit opened leaves them here: it has no unit record to seal them
-/// under.
-struct Early(std::sync::Mutex<Option<Vec<busbar_kernel_audit::record::HookApplied>>>);
+/// runs before the request's money has no open unit yet: its records wait here
+/// ([`Waiting::Unit`]) and are handed to the journal, in the order they were made, when the unit
+/// opens ([`Stage::unit_opened`]). A request refused before its unit opened has no unit to seal
+/// them under: they are handed to the refusal's own custody instead ([`Stage::refused_unpaid`]),
+/// which is what the refusal's audit record names its hook from.
+struct Early(std::sync::Mutex<Waiting>);
+
+/// Where a record of a stage that ran before its unit opened goes now.
+enum Waiting {
+    /// The unit is not open yet: the records wait, in the order they were made.
+    Unit(Vec<busbar_kernel_audit::record::HookApplied>),
+    /// The unit is open: a record goes straight to the journal.
+    Open,
+    /// The request was refused before its unit opened: a record goes to the refusal's custody.
+    Refused,
+}
 
 impl Early {
-    fn lock(
-        &self,
-    ) -> std::sync::MutexGuard<'_, Option<Vec<busbar_kernel_audit::record::HookApplied>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Waiting> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -122,26 +136,45 @@ impl Stage {
     /// The request's hooks allowed it and its money then refused it at `status`: the response
     /// taps, which saw the request, are told how it ended (`failed`). v1.5.5 asked the money
     /// first and so never showed a hook such a request; now that a hook is heard before the
-    /// money, a tap that saw the request stage is not left without its completion.
+    /// money, a tap that saw the request stage is not left without its completion. The records
+    /// of the hooks that ran go to the refusal's custody: no unit opened to hold them.
     pub(crate) fn money_refused(&self, status: u16, completion: Option<&HookGrant>) {
+        self.refused_unpaid();
         if completion.is_some() {
             self.response_tap(status, false, completion);
         }
     }
     fn report(&self, hooks: &[busbar_kernel_audit::record::HookApplied]) {
-        let Some(journal) = &self.journal else {
+        if self.no_unit {
+            // No unit will ever hold them: the request's own custody does.
+            if let Some(held) = &self.held {
+                held.keep(hooks);
+            }
             return;
-        };
+        }
         if let Some(early) = &self.early {
-            if let Some(waiting) = early.lock().as_mut() {
-                waiting.extend_from_slice(hooks);
-                return;
+            let mut waiting = early.lock();
+            match &mut *waiting {
+                Waiting::Unit(records) => {
+                    records.extend_from_slice(hooks);
+                    return;
+                }
+                Waiting::Refused => {
+                    // Kept under the lock: after the records handed over at the refusal.
+                    if let Some(held) = &self.held {
+                        held.keep(hooks);
+                    }
+                    return;
+                }
+                Waiting::Open => {}
             }
         }
-        journal.hooks_ran(&HooksRan {
-            unit: self.unit,
-            hooks,
-        });
+        if let Some(journal) = &self.journal {
+            journal.hooks_ran(&HooksRan {
+                unit: self.unit,
+                hooks,
+            });
+        }
     }
     /// The request's unit is open: the records its hooks made before that are handed to the
     /// journal, in the order they were made, and every later one goes straight to it. The
@@ -152,14 +185,41 @@ impl Stage {
             return;
         };
         let mut waiting = early.lock();
-        let Some(records) = waiting.take() else {
-            return;
+        let records = match std::mem::replace(&mut *waiting, Waiting::Open) {
+            Waiting::Unit(records) => records,
+            Waiting::Open => return,
+            Waiting::Refused => {
+                // A refused request opens no unit, and stays refused.
+                *waiting = Waiting::Refused;
+                return;
+            }
         };
         if let (Some(journal), false) = (&self.journal, records.is_empty()) {
             journal.hooks_ran(&HooksRan {
                 unit: self.unit,
                 hooks: &records,
             });
+        }
+    }
+    /// The request was refused before its unit opened (by one of its hooks, or by its money
+    /// after its hooks ran): the records its hooks made are handed to the refusal's custody
+    /// ([`Invocation::records`]), in the order they were made, and every later one (a response
+    /// tap's) follows them there. They are handed over under their lock: never twice, and never
+    /// to a journal that holds no unit for them. Nothing is done for a stage whose unit was
+    /// open before it ran (its records are already with its journal), or once the unit opened.
+    pub(crate) fn refused_unpaid(&self) {
+        let Some(early) = &self.early else {
+            return;
+        };
+        let mut waiting = early.lock();
+        match std::mem::replace(&mut *waiting, Waiting::Refused) {
+            Waiting::Unit(records) => {
+                if let Some(held) = &self.held {
+                    held.keep(&records);
+                }
+            }
+            Waiting::Open => *waiting = Waiting::Open,
+            Waiting::Refused => {}
         }
     }
     /// Every tap of one stage event shares the event's one list of facts and its one authority:
@@ -339,6 +399,8 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
         .binder
         .select(&selection)
         .map_err(|_| SessionError::HookPrerequisite)?;
+    // A verified request on a route that opens no unit: its hooks run under the request itself.
+    let no_unit = context.opens_no_unit();
     let mut stage = Stage {
         selected: Arc::new(selected),
         projection,
@@ -351,10 +413,14 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
         context,
         journal: invocation.journal.clone(),
         unit: invocation.unit,
-        // Only a journal has records to keep, and only a unit that is not open yet makes them
-        // wait.
-        early: (when == When::BeforeMoney && invocation.journal.is_some())
-            .then(|| Arc::new(Early(std::sync::Mutex::new(Some(Vec::new()))))),
+        // Only a journal or a refusal's custody has records to keep, and only a unit that is
+        // not open yet makes them wait. A request that opens no unit waits for none.
+        early: (when == When::BeforeMoney
+            && !no_unit
+            && (invocation.journal.is_some() || invocation.records.is_some()))
+        .then(|| Arc::new(Early(std::sync::Mutex::new(Waiting::Unit(Vec::new()))))),
+        held: invocation.records.clone(),
+        no_unit,
     };
     let mut ran: Vec<busbar_kernel_audit::record::HookApplied> = Vec::new();
     let result = async {
@@ -544,6 +610,12 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
     }
     .await;
     stage.report(&ran);
+    if result.is_err() {
+        // Refused (or failed) before any unit opened: the records of the hooks that ran, the
+        // refusing hook's among them, go to the refusal's custody. With the unit already open
+        // they are with its journal and nothing is moved.
+        stage.refused_unpaid();
+    }
     if let Err(SessionError::HookRefused(refusal)) = &result {
         // The synthetic completion that lets an audit tap see a denial. Its authority is taken
         // here, while the refused request still allows its hooks: the caller ends the request's
@@ -679,9 +751,10 @@ mod tests {
     /// wait. A stage whose unit was open before it ran records at once, as it always did.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn records_made_before_the_unit_opens_reach_the_journal_when_it_opens_and_not_before() {
-        use super::{Early, Stage};
+        use super::{Early, Stage, Waiting};
         use crate::plane_driver::hooks::{HookJournal, HooksRan};
         use crate::plane_driver::port_hooks::tests::Fixture;
+        use crate::plane_driver::port_hooks::HookRecords;
         use crate::plane_driver::port_hooks::{Candidates, Projection};
         use busbar_kernel_audit::record::{HookApplied, HookHead};
         use std::sync::{Arc, Mutex};
@@ -704,6 +777,7 @@ mod tests {
             head: HookHead::Pass,
             failed: false,
         };
+        let held = Arc::new(HookRecords::default());
         let stage = |journal: &Arc<Kept>, before_money: bool| Stage {
             selected: Arc::new(fixture.selected.clone()),
             projection: Projection::default(),
@@ -716,7 +790,9 @@ mod tests {
             context: fixture.context.clone(),
             journal: Some(journal.clone()),
             unit: busbar_contract::UnitKey::new(7),
-            early: before_money.then(|| Arc::new(Early(Mutex::new(Some(Vec::new()))))),
+            early: before_money.then(|| Arc::new(Early(Mutex::new(Waiting::Unit(Vec::new()))))),
+            held: Some(held.clone()),
+            no_unit: false,
         };
         let seen = |journal: &Kept| {
             journal
@@ -753,6 +829,39 @@ mod tests {
         assert_eq!(seen(&journal), ["7:gate"]);
         open.unit_opened();
         assert_eq!(seen(&journal), ["7:gate"]);
+        // A refusal after the unit opened moves nothing: its records are with its journal.
+        open.refused_unpaid();
+        assert!(held.rows().is_empty());
+
+        // Refused before its unit opened: the records go to the refusal's custody, in the order
+        // they were made, once; a later tap's record follows them there, and no journal is
+        // handed a record for a unit it never held, even if the unit were then called open.
+        let journal = Arc::new(Kept::default());
+        let refused = stage(&journal, true);
+        let tap = refused.clone();
+        refused.report(&[row("first"), row("gate")]);
+        refused.refused_unpaid();
+        refused.refused_unpaid();
+        tap.report(&[row("response-tap")]);
+        refused.unit_opened();
+        tap.report(&[row("late")]);
+        assert!(seen(&journal).is_empty(), "no unit held these records");
+        let names: Vec<String> = held
+            .take()
+            .iter()
+            .map(|row| row.hook.as_str().to_owned())
+            .collect();
+        assert_eq!(names, ["first", "gate", "response-tap", "late"]);
+        assert!(held.take().is_empty(), "taken once");
+
+        // A request that opens no unit: every record goes to its custody, none to a journal.
+        let journal = Arc::new(Kept::default());
+        let mut unbilled = stage(&journal, false);
+        unbilled.no_unit = true;
+        unbilled.report(&[row("gate")]);
+        unbilled.unit_opened();
+        assert!(seen(&journal).is_empty());
+        assert_eq!(held.rows().len(), 1);
     }
 
     #[test]
