@@ -14,6 +14,7 @@
 //! perf-bar new  <label> <threads> <n> <warm> <port> <pid> <route> [tls]
 //! perf-bar hold <label> <connections> <port> <pid> <route> [tls]
 //! perf-bar header
+//! perf-bar compare <rows.tsv> <baseline label> <candidate label>
 //! ```
 //! `keep`: each thread opens ONE connection and sends warm+n requests on it. `new`: each thread
 //! sends warm+n requests, each on a NEW connection, and closes it. `hold`: open the connections,
@@ -553,6 +554,114 @@ fn stub(args: &[String]) -> Result<(), Fault> {
     Ok(())
 }
 
+/// THE VERDICT of DONE statement 5: `compare <rows.tsv> <baseline label> <candidate label>`.
+///
+/// For every (mode, route, transport, client threads) and every measured quantity the
+/// candidate's MIDDLE repetition is set beside the baseline's middle and worst repetitions:
+/// `PASS` the candidate's middle is no worse than the baseline's middle; `PASS*` it is worse than
+/// the baseline's middle but no worse than the baseline's own worst repetition in this run
+/// (inside the spread the baseline showed on this machine: listed apart so the owner sees every
+/// one; no tolerance is added anywhere); `FAIL` worse than every repetition of the baseline;
+/// `NOT MEASURED` the baseline has the row and the candidate does not, which is never a pass.
+/// Quantities: `med_ns p99_ns first_med_ns server_cpu_ns_per_req` of keep and new rows, and
+/// `per_idle_connection_bytes per_used_connection_bytes` of hold rows. `Ok(true)`: nothing failed
+/// and nothing is unmeasured.
+fn compare(args: &[String]) -> Result<bool, Fault> {
+    use std::collections::BTreeMap;
+    let [rows, base, cand] = args else {
+        return Err("compare <rows.tsv> <baseline label> <candidate label>".into());
+    };
+    let (base, cand) = (base.as_str(), cand.as_str());
+    let names: Vec<&str> = HEADER.split('\t').collect();
+    let column = |name: &str| {
+        names
+            .iter()
+            .position(|n| *n == name)
+            .expect("a header column")
+    };
+    let timed = ["med_ns", "p99_ns", "first_med_ns", "server_cpu_ns_per_req"];
+    let held = ["per_idle_connection_bytes", "per_used_connection_bytes"];
+    // (mode, route, transport, threads, quantity) -> (baseline values, candidate values)
+    type Key = (String, String, String, String, &'static str);
+    let mut seen: BTreeMap<Key, (Vec<u64>, Vec<u64>)> = BTreeMap::new();
+    for line in std::fs::read_to_string(rows)?.lines() {
+        if line.starts_with('#') || line.starts_with("label\t") {
+            continue;
+        }
+        let field: Vec<&str> = line.split('\t').collect();
+        let (Some(&label), Some(mode)) = (field.first(), field.get(1)) else {
+            continue;
+        };
+        if label != base && label != cand {
+            continue;
+        }
+        let quantities: &[&'static str] = match *mode {
+            "keep" | "new" => &timed,
+            "hold" => &held,
+            _ => continue,
+        };
+        for quantity in quantities {
+            let Some(value) = field
+                .get(column(quantity))
+                .and_then(|text| text.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            let key = (
+                (*mode).to_owned(),
+                field.get(2).copied().unwrap_or_default().to_owned(),
+                field.get(3).copied().unwrap_or_default().to_owned(),
+                field.get(4).copied().unwrap_or_default().to_owned(),
+                *quantity,
+            );
+            let entry = seen.entry(key).or_default();
+            if label == base {
+                entry.0.push(value);
+            } else {
+                entry.1.push(value);
+            }
+        }
+    }
+    // The middle repetition: the value at rank ceil(n / 2) of the sorted repetitions.
+    let middle = |values: &mut Vec<u64>| {
+        values.sort_unstable();
+        values[(values.len() + 1) / 2 - 1]
+    };
+    println!(
+        "mode\troute\ttransport\tthreads\tquantity\t{base}_middle\t{base}_worst\t{cand}_middle\tverdict"
+    );
+    let mut met = true;
+    for ((mode, route, transport, threads, quantity), (mut theirs, mut ours)) in seen {
+        // A row only the candidate has sets no bar: it is not printed and decides nothing.
+        if theirs.is_empty() {
+            continue;
+        }
+        let (bar, worst) = (
+            middle(&mut theirs),
+            *theirs.iter().max().expect("not empty"),
+        );
+        let (shown, verdict) = if ours.is_empty() {
+            met = false;
+            (String::new(), "NOT MEASURED")
+        } else {
+            let got = middle(&mut ours);
+            let verdict = if got <= bar {
+                "PASS"
+            } else if got <= worst {
+                "PASS*"
+            } else {
+                met = false;
+                "FAIL"
+            };
+            (got.to_string(), verdict)
+        };
+        println!(
+            "{mode}\t{route}\t{transport}\t{threads}\t{quantity}\t{bar}\t{worst}\t{shown}\t{verdict}"
+        );
+    }
+    Ok(met)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let done = match args.first().map(String::as_str) {
@@ -564,7 +673,16 @@ fn main() {
             println!("{HEADER}");
             Ok(())
         }
-        _ => Err("perf-bar stub|wait|keep|new|hold|header (see the head of main.rs)".into()),
+        Some("compare") => compare(&args[1..]).and_then(|met| {
+            if met {
+                Ok(())
+            } else {
+                Err("the bar is not met: see the FAIL and NOT MEASURED rows".into())
+            }
+        }),
+        _ => {
+            Err("perf-bar stub|wait|keep|new|hold|header|compare (see the head of main.rs)".into())
+        }
     };
     if let Err(fault) = done {
         eprintln!("perf-bar: {fault}");
