@@ -581,8 +581,17 @@ fn plane_instances(
             ));
         }
         let config = match sections.get(name.as_str()) {
-            Some(section) => serde_json::to_vec(section)
-                .map_err(|error| format!("{name}: the plane's section is not JSON ({error})"))?,
+            Some(section) => {
+                // The audience is core's word ([`plane_audiences`]): it binds the plane's routes and
+                // is never part of the plane's bag, whose reader does not know it.
+                let mut bag = section.clone();
+                if let Some(map) = busbar_contract::yaml::ValueExt::as_mapping_mut(&mut bag) {
+                    let _lifted = busbar_contract::yaml::MappingExt::remove_key(map, AUDIENCE_KEY);
+                }
+                serde_json::to_vec(&bag).map_err(|error| {
+                    format!("{name}: the plane's section is not JSON ({error})")
+                })?
+            }
             None => b"{}".to_vec(),
         };
         out.push(Configured {
