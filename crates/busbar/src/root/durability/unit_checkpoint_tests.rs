@@ -420,12 +420,22 @@ async fn assert_recovered_audit(book: &TestBook, report: &UnitCheckpoint) {
     assert_eq!(audit.usage.fee_count, 0);
     assert_eq!(audit.mono, 91);
     assert_eq!(audit.wall, report.arrived);
-    let keys = super::super::keyset_of(&book.lock().unwrap().record);
-    busbar_kernel_audit::AuditChain::verify_signature(
-        audit,
-        keys.get(audit.key_id.as_deref().unwrap()).unwrap(),
-    )
-    .unwrap();
+    // Proved by its record version's rule: a recovered line is re-appended chained and unsigned
+    // (version 2), proved by its digest; one signed singly (version 1) by its signature.
+    match audit.record_version() {
+        Some(busbar_kernel_audit::RecordVersion::SignedLine) => {
+            let keys = super::super::keyset_of(&book.lock().unwrap().record);
+            busbar_kernel_audit::AuditChain::verify_signature(
+                audit,
+                keys.get(audit.key_id.as_deref().unwrap()).unwrap(),
+            )
+            .unwrap();
+        }
+        Some(busbar_kernel_audit::RecordVersion::SignedHead) => {
+            assert_eq!(busbar_kernel_audit::AuditChain::digest_of(audit), audit.hash);
+        }
+        None => panic!("a recovered line carries half a signature"),
+    }
 }
 
 #[tokio::test]
