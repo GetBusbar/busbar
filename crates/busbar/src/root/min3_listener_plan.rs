@@ -132,23 +132,9 @@ impl NativeListenerPlan {
                 }
                 let chain = configured_chain(app, owners)?;
                 let route_chains = route_chains(app, served, owners)?;
-                // The native listener completes a core route only as public or admin: a core route
-                // that takes a data key has no producer here, so it is not mounted (one line) and is
-                // answered as an unknown route is, never served unauthenticated.
-                let served_core: Vec<_> = core
-                    .iter()
-                    .filter(|(path, method, auth)| {
-                        let keyed = *auth == RouteAuth::Key;
-                        if keyed {
-                            tracing::warn!(
-                                "core route '{} {path}' is not served: the native listener has no producer for a key-authenticated core route",
-                                method.as_str()
-                            );
-                        }
-                        !keyed
-                    })
-                    .cloned()
-                    .collect();
+                // A core route that takes a data key is served: the data chain verifies its caller
+                // (`listener_native_corekey.rs`), the handler is given the verified key, no unit.
+                let served_core: Vec<_> = core.to_vec();
                 let mounts =
                     super::serve::data_mounts(served.clone(), &chain, &route_chains, &served_core)?;
                 let guests = mounts.data.guests.clone();
