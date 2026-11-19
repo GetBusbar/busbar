@@ -480,10 +480,13 @@ impl<H: CustodyHost> Custody<H> {
         };
         let stack = pushed(who.stack, who.instance).ok_or(CustodyDenied::Cycle)?;
         let scrub = self.host.scrub(who).ok_or(CustodyDenied::Unavailable)?;
+        // The node's monotonic clock, read once for this resolve and handed to the secret plugin;
+        // the deadline stays the caller's own.
         let cx = CallCx {
             deadline: who.deadline,
             request_id: who.chain,
             stack,
+            mono_ns: crate::store::monotonic_ns(),
         };
         let seeded = lock(&self.seeds).get(&key.instance).cloned();
         let resolved = self.resolved(cx, &binding, seeded.as_deref()).await?;

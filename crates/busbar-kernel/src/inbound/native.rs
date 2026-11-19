@@ -460,8 +460,9 @@ impl PhysicalConnection {
         stream: u64,
         head: Head,
         request: RequestLease,
-        deadline: Option<Instant>,
+        arrival: Option<Arrival>,
     ) -> Result<(PhysicalRequest, StreamOwner), ArrivalRefusal> {
+        let deadline = arrival.map(|arrival| arrival.deadline);
         if stream == 0 {
             return Err(ArrivalRefusal::InvalidStream);
         }
@@ -507,6 +508,7 @@ impl PhysicalConnection {
             request,
             _head_credit: credit,
             deadline,
+            mono_ns: arrival.map(|arrival| arrival.mono_ns),
             facts: self.facts.clone(),
             state: state.clone(),
             stream,
@@ -634,6 +636,8 @@ pub struct RequestBinding {
     request: RequestLease,
     _head_credit: ByteCredit,
     deadline: Option<Instant>,
+    /// The arrival's one monotonic reading (`Arrival`), the one `deadline` was derived from.
+    mono_ns: Option<u64>,
     facts: Arc<AcceptedConnection>,
     state: Arc<StreamState>,
     stream: u64,

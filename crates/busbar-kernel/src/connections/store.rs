@@ -475,10 +475,13 @@ impl<R: PluginRecords> StoreConnections<R> {
             let state_key =
                 pkce::random_b64url(pkce::STATE_BYTES).ok_or(RecordsDenied::Unavailable)?;
             let nonce = pkce::random_b64url(pkce::STATE_BYTES).ok_or(RecordsDenied::Unavailable)?;
+            // The node's monotonic clock, read once for this BEGIN and handed to the auth plugin;
+            // the deadline stays the caller's own.
             let cx = CallCx {
                 deadline: who.deadline,
                 request_id: 0,
                 stack: who.stack,
+                mono_ns: crate::store::monotonic_ns(),
             };
             let answer = port
                 .login(
