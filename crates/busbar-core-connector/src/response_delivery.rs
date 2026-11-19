@@ -5,7 +5,7 @@
 //!
 //! An accepted connection is driven by the same driver as a dialled one
 //! ([`crate::outbound::wire::Wire`], here with [`Role::Answer`]): every answer of the transport is
-//! checked against the output model (L1 to L7, L9), queued for the connection as one run, and the
+//! checked against the output model (L1 to L7, L9) and placed for the connection as one run, and the
 //! delivery state machine ([`crate::outbound::delivery`]) says, per answer, how much of it the
 //! operating system accepted. [`DeliveryLedger`] is that driver for one accepted connection, with the
 //! one thing the dial does not have: each answer's OWNER, the request's side in the root, which reads
@@ -33,14 +33,12 @@ use std::time::{Duration, Instant};
 use busbar_contract::response_delivery::{
     CarrierProgress, DeliverySnapshot, DeliveryTerminal, ResponseKey, ResponseStop,
 };
-use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::transport as abi;
 use futures::task::AtomicWaker;
 
 use crate::outbound::delivery::{Delivery as Verdict, Reason, Role, State as Sent};
 use crate::outbound::records::Out;
-use crate::outbound::tunnel::Dialling;
-use crate::outbound::wire::{Fault, Outcome, Wire};
+use crate::outbound::wire::{Checked, Fault, Wire};
 
 #[cfg(test)]
 #[path = "response_delivery_tests.rs"]
