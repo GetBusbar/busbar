@@ -43,3 +43,45 @@ pub fn supported_abi(kind: &str) -> Option<u32> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod abi_tests {
+    use super::{kind_word, supported_abi};
+    use crate::sign::{validate_abi, Manifest};
+    use busbar_plugin_abi::types::KindCode;
+    use busbar_plugin_abi::versions::abi_of;
+
+    #[test]
+    fn supported_abi_is_the_call_shape_number_of_every_kind() {
+        for code in (1..=7).filter_map(KindCode::from_raw) {
+            assert_eq!(
+                supported_abi(kind_word(code)),
+                Some(abi_of(code)),
+                "{}",
+                kind_word(code)
+            );
+        }
+        assert_eq!(supported_abi("mechanism"), None);
+    }
+
+    #[test]
+    fn an_artifact_stamped_with_the_old_store_number_3_is_refused() {
+        let old = Manifest {
+            kind: "store".to_string(),
+            abi_version: 3,
+            ..Manifest::default()
+        };
+        let refused = validate_abi(&old, &supported_abi);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("abi_version 3 is not supported")),
+            "{refused:?}"
+        );
+        let current = Manifest {
+            abi_version: abi_of(KindCode::Store),
+            ..old
+        };
+        assert_eq!(validate_abi(&current, &supported_abi), Ok(()));
+    }
+}
