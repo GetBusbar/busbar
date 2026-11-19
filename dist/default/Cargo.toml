@@ -636,11 +636,11 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
 busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "01db3f64708d576305fe623188766d0d99fd2314" }
 # Published MIN-3 MCP implementation, linked through its PLUGIN header.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "e6b8e0ea51c48f80e0a7422acb83ef4c1d95a21b" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "0a36fe3645b795607d0c93b8171af60433f2c0a4" }
 # Published MIN-3 decisions implementation, linked through its PLUGIN header.
 busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "2fe40cf77af7a11a81908811c01ec6696e5713e2" }
 # Published MIN-3 A2A implementation, linked through its PLUGIN header.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "ace4888fae27989bd10fe754ca3435b95b885cf5" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "b6c5c75ffb14672fe3031c3cb5bfd72eddb40bc0" }
 # Published MIN-3 streaming implementation and its matching dropped-in artifact.
 busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "2d7454a0c243bc74fcb9b2b5abe7bd575448e6a3" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace

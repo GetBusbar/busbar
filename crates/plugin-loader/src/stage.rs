@@ -90,10 +90,16 @@ fn open_on_worker(
 pub(crate) fn close_on_worker(opened: busbar_ffi::image::Opened) {
     #[cfg(test)]
     crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    let _ = crate::ffi_thread::on_plugin_thread(move || {
+    // The thread `dlclose` (and with it the image's finalizers) ran on, when that thread is a permanent worker.
+    let closed_on = crate::ffi_thread::on_plugin_thread(move || {
         crate::ffi_thread::debug_assert_permanent("dlclose");
         opened.close();
+        crate::ffi_thread::on_permanent_worker().then(|| std::thread::current().id())
     });
+    #[cfg(test)]
+    CLOSED_ON.with(|last| last.set(Some(closed_on.ok().flatten())));
+    #[cfg(not(test))]
+    let _ = closed_on;
 }
 
 /// Admit step 8 (IF §11.1): stage the verified bytes under the native load guard (a sealed memfd on Linux, else
@@ -546,6 +552,10 @@ std::thread_local! {
     /// TEST WITNESS: the libraries the calling thread staged through [`load_library_from_bytes`]
     /// (the staging is entered on the loading thread; only the `dlopen` runs on a worker).
     pub(crate) static STAGED_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// TEST WITNESS: for the calling thread's last [`close_on_worker`], the permanent worker its `dlclose` ran
+    /// on (`Some(None)`: not a permanent worker, or the close panicked).
+    pub(crate) static CLOSED_ON: std::cell::Cell<Option<Option<std::thread::ThreadId>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 pub type NativeLoadGuard = fn(&[u8], &str) -> Result<(), String>;
