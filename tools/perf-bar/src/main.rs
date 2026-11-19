@@ -15,6 +15,7 @@
 //! perf-bar hold <label> <connections> <port> <pid> <route> [tls]
 //! perf-bar header
 //! perf-bar compare <rows.tsv> <baseline label> <candidate label>
+//! perf-bar run <reps> <server-dir> [<server-dir> ...]        (rows to stdout; see `run`)
 //! ```
 //! `keep`: each thread opens ONE connection and sends warm+n requests on it. `new`: each thread
 //! sends warm+n requests, each on a NEW connection, and closes it. `hold`: open the connections,
@@ -554,6 +555,326 @@ fn stub(args: &[String]) -> Result<(), Fault> {
     Ok(())
 }
 
+/// A started engine. Dropping it stops the process, on every path out of a run.
+struct Engine {
+    child: std::process::Child,
+    port: String,
+    log: std::path::PathBuf,
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Run a helper program to its end and return what it printed.
+fn tool(program: &str, args: &[&str], input: Option<&[u8]>) -> Result<String, Fault> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{program}: {error}"))?;
+    if let (Some(mut stdin), Some(bytes)) = (child.stdin.take(), input) {
+        stdin.write_all(bytes)?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        let said = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("{program} failed: {}", said.trim()).into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// What one run renders into every server's configuration.
+struct Rendered {
+    work: std::path::PathBuf,
+    admin_token: String,
+    admin_sha256: String,
+    stub_port: u16,
+}
+
+impl Rendered {
+    fn tls(&self) -> std::path::PathBuf {
+        self.work.join("tls")
+    }
+
+    /// `@RUN@` the run directory, `@STUB_PORT@`, `@ADMIN_SHA256@` and `@TLS@`.
+    fn render(&self, template: &std::path::Path, run: &std::path::Path) -> Result<String, Fault> {
+        Ok(std::fs::read_to_string(template)
+            .map_err(|error| format!("{}: {error}", template.display()))?
+            .replace("@RUN@", &run.display().to_string())
+            .replace("@STUB_PORT@", &self.stub_port.to_string())
+            .replace("@ADMIN_SHA256@", &self.admin_sha256)
+            .replace("@TLS@", &self.tls().display().to_string()))
+    }
+
+    /// A fresh engine of the server directory `dir` on the configuration template `config`.
+    fn start(&self, dir: &std::path::Path, config: &str) -> Result<Engine, Fault> {
+        let read = |name: &str| -> Result<String, Fault> {
+            Ok(std::fs::read_to_string(dir.join(name))
+                .map_err(|error| format!("{}/{name}: {error}", dir.display()))?
+                .trim()
+                .to_owned())
+        };
+        let label = dir.file_name().unwrap_or_default().to_string_lossy();
+        let run = self.work.join(format!("run-{label}"));
+        let _ = std::fs::remove_dir_all(&run);
+        std::fs::create_dir_all(&run)?;
+        std::fs::write(
+            run.join("config.yaml"),
+            self.render(&dir.join(config), &run)?,
+        )?;
+        if dir.join("providers.yaml").exists() {
+            std::fs::write(
+                run.join("providers.yaml"),
+                self.render(&dir.join("providers.yaml"), &run)?,
+            )?;
+        }
+        let log = run.join("engine.log");
+        let out = std::fs::File::create(&log)?;
+        let child = std::process::Command::new(read("bin")?)
+            .current_dir(&run)
+            .env("BUSBAR_CONFIG", run.join("config.yaml"))
+            // The run's admin token exists only here, in the engine's environment.
+            .env("BUSBAR_ADMIN_TOKEN", &self.admin_token)
+            .env("MOCK_KEY", "x")
+            .stdout(out.try_clone()?)
+            .stderr(out)
+            .spawn()?;
+        Ok(Engine {
+            child,
+            port: read("port")?,
+            log,
+        })
+    }
+}
+
+/// THE RUNNER of DONE statement 5: `run <reps> <server-dir> [<server-dir> ...]`, rows to stdout.
+///
+/// A server directory (`ci/perf/servers/<label>`) describes one engine binary: `bin` (a file
+/// holding the path of its release binary on this machine), `port`, `routes` (the routes it can
+/// serve: `healthz chat stream`; a binary that cannot serve a route yet lists fewer, and the
+/// verdict then reports that route NOT MEASURED), `config.yaml` (a template, see
+/// [`Rendered::render`]), optionally `providers.yaml` and `config-tls.yaml` (when present every
+/// row is measured over TLS as well, with a certificate made for this run). The directory's name
+/// is the row label; the baseline's is `v155`.
+///
+/// The method and the counts are the v1.5.5 baseline's (perf-155, 18 Nov 2026): loopback, a fresh
+/// engine per (route, transport, client thread count), kept-alive then new-connection; per client
+/// thread 20,000 kept-alive and 10,000 new at 1 thread, 4,000 and 2,500 at 8 threads, a tenth of
+/// that again as warm-up; then, on a fresh engine, 200 warm-up requests of each kind and 2,000
+/// connections held for the memory figures. `SMOKE=1` divides every count by 100 for a rehearsal
+/// whose numbers mean nothing.
+fn run(args: &[String]) -> Result<(), Fault> {
+    let [reps, dirs @ ..] = args else {
+        return Err("run <reps> <server-dir> [<server-dir> ...]".into());
+    };
+    if dirs.is_empty() {
+        return Err("run <reps> <server-dir> [<server-dir> ...]".into());
+    }
+    let reps: usize = reps.parse()?;
+    let smoke = std::env::var("SMOKE").as_deref() == Ok("1");
+    let div = if smoke { 100 } else { 1 };
+    let (keep_1, new_1, keep_8, new_8) = (20_000 / div, 10_000 / div, 4_000 / div, 2_500 / div);
+    let (held, held_warm) = (2_000 / div, 200 / div);
+
+    let work = std::env::temp_dir().join(format!("perf-bar.{}", std::process::id()));
+    let mut token = [0u8; 24];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut token)?;
+    let admin_token: String = token.iter().map(|byte| format!("{byte:02x}")).collect();
+    let digest = tool("sha256sum", &[], Some(admin_token.as_bytes()))?;
+    let rendered = Rendered {
+        admin_sha256: digest
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+        admin_token,
+        stub_port: 18090,
+        work,
+    };
+    // This run's certificate: a CA and a leaf for `localhost`, valid two days.
+    let tls = rendered.tls();
+    std::fs::create_dir_all(&tls)?;
+    let at = |name: &str| tls.join(name).display().to_string();
+    let curve = [
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-nodes",
+    ];
+    let mut ca = vec!["req", "-x509", "-days", "2", "-subj", "/CN=perf-bar CA"];
+    ca.extend(curve);
+    let (ca_key, ca_pem, leaf_key, leaf_csr, leaf_pem, san) = (
+        at("ca.key"),
+        at("ca.pem"),
+        at("leaf.key"),
+        at("leaf.csr"),
+        at("leaf.pem"),
+        at("san.cnf"),
+    );
+    ca.extend([
+        "-addext",
+        "basicConstraints=critical,CA:TRUE",
+        "-addext",
+        "keyUsage=critical,keyCertSign,cRLSign",
+        "-keyout",
+        ca_key.as_str(),
+        "-out",
+        ca_pem.as_str(),
+    ]);
+    tool("openssl", &ca, None)?;
+    let mut leaf = vec!["req", "-subj", "/CN=localhost"];
+    leaf.extend(curve);
+    leaf.extend(["-keyout", leaf_key.as_str(), "-out", leaf_csr.as_str()]);
+    tool("openssl", &leaf, None)?;
+    std::fs::write(
+        &san,
+        "basicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n",
+    )?;
+    tool(
+        "openssl",
+        &[
+            "x509",
+            "-req",
+            "-in",
+            leaf_csr.as_str(),
+            "-CA",
+            ca_pem.as_str(),
+            "-CAkey",
+            ca_key.as_str(),
+            "-CAcreateserial",
+            "-days",
+            "2",
+            "-extfile",
+            san.as_str(),
+            "-out",
+            leaf_pem.as_str(),
+        ],
+        None,
+    )?;
+    let over_tls = format!("tls:{ca_pem}:localhost");
+
+    std::env::set_var("PERF_CLK_TCK", tool("getconf", &["CLK_TCK"], None)?);
+    println!("{HEADER}");
+    println!(
+        "# host {} cores={} load={}",
+        tool("uname", &["-r"], None)?,
+        std::thread::available_parallelism().map_or(0, usize::from),
+        std::fs::read_to_string("/proc/loadavg")
+            .unwrap_or_default()
+            .trim(),
+    );
+    println!(
+        "# keep_1={keep_1} new_1={new_1} keep_8={keep_8} new_8={new_8} hold={held} reps={reps} smoke={smoke}"
+    );
+    for dir in dirs {
+        let bin = std::fs::read_to_string(std::path::Path::new(dir).join("bin"))
+            .map_err(|error| format!("{dir}/bin: {error}"))?;
+        println!("# binary {dir} {}", tool("sha256sum", &[bin.trim()], None)?);
+    }
+
+    let stub_port = rendered.stub_port.to_string();
+    std::thread::spawn(move || {
+        if let Err(fault) = stub(&[stub_port, "64".to_owned()]) {
+            eprintln!("perf-bar: the stub ended: {fault}");
+        }
+    });
+
+    // One fresh engine, answering: or its log's last lines as the error.
+    let up = |dir: &std::path::Path, config: &str, tls: Option<&String>| -> Result<Engine, Fault> {
+        let engine = rendered.start(dir, config)?;
+        let mut asked = vec![engine.port.clone()];
+        asked.extend(tls.cloned());
+        if let Err(fault) = wait(&asked) {
+            let log = std::fs::read_to_string(&engine.log).unwrap_or_default();
+            let tail: Vec<&str> = log.lines().rev().take(25).collect();
+            return Err(format!(
+                "{} did not boot ({fault}):\n{}",
+                dir.display(),
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            )
+            .into());
+        }
+        Ok(engine)
+    };
+    let measure =
+        |dir: &std::path::Path, config: &str, tls: Option<&String>| -> Result<(), Fault> {
+            let label = dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let routes = std::fs::read_to_string(dir.join("routes"))
+                .map_err(|error| format!("{}/routes: {error}", dir.display()))?;
+            let word = |n: usize| n.to_string();
+            for route in routes.split_whitespace() {
+                for (threads, keep_n, new_n) in [(1usize, keep_1, new_1), (8, keep_8, new_8)] {
+                    let engine = up(dir, config, tls)?;
+                    for (mode, n) in [("keep", keep_n), ("new", new_n)] {
+                        let mut asked = vec![
+                            label.clone(),
+                            word(threads),
+                            word(n),
+                            word(n / 10),
+                            engine.port.clone(),
+                            engine.child.id().to_string(),
+                            route.to_owned(),
+                        ];
+                        asked.extend(tls.cloned());
+                        drive(mode, &asked)?;
+                    }
+                }
+            }
+            // Memory per connection, on a fresh engine, warmed as the baseline's hold job warmed it.
+            let engine = up(dir, config, tls)?;
+            let target = Target::parse(&engine.port, tls)?;
+            let mut buf = Vec::new();
+            let (mut kept, _) = target.open(1)?;
+            for i in 0..held_warm {
+                kept.write_all(HEALTHZ)?;
+                let _ = response(kept.as_mut(), &mut buf);
+                let (mut fresh, _) = target.open(1 + (i % 200) as u8)?;
+                fresh.write_all(HEALTHZ)?;
+                let _ = response(fresh.as_mut(), &mut buf);
+            }
+            drop(kept);
+            std::thread::sleep(Duration::from_secs(1));
+            let mut asked = vec![
+                label,
+                word(held),
+                engine.port.clone(),
+                engine.child.id().to_string(),
+                "healthz".to_owned(),
+            ];
+            asked.extend(tls.cloned());
+            hold(&asked)
+        };
+
+    let outcome = (|| -> Result<(), Fault> {
+        for _ in 0..reps {
+            for dir in dirs {
+                let dir = std::path::Path::new(dir);
+                measure(dir, "config.yaml", None)?;
+                if dir.join("config-tls.yaml").exists() {
+                    measure(dir, "config-tls.yaml", Some(&over_tls))?;
+                }
+            }
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&rendered.work);
+    outcome?;
+    println!("# MEASURE-DONE");
+    Ok(())
+}
+
 /// THE VERDICT of DONE statement 5: `compare <rows.tsv> <baseline label> <candidate label>`.
 ///
 /// For every (mode, route, transport, client threads) and every measured quantity the
@@ -673,6 +994,7 @@ fn main() {
             println!("{HEADER}");
             Ok(())
         }
+        Some("run") => run(&args[1..]),
         Some("compare") => compare(&args[1..]).and_then(|met| {
             if met {
                 Ok(())
