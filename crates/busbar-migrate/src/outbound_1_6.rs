@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn every_row_states_what_it_was_what_it_is_and_what_the_upgrade_does() {
         let mut ids: Vec<&str> = TABLE.iter().map(|row| row.id).collect();
-        ids.sort_unstable();
+        ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), TABLE.len(), "row names are distinct");
         assert!(TABLE

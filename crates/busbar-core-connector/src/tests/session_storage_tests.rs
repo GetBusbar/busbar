@@ -137,7 +137,7 @@ fn output_grown_past_the_kept_bound_is_released_when_it_empties() {
         out.allocation().is_some(),
         "a small block stays for the next answer"
     );
-    let large = out.append(&[4; OUTPUT_KEPT + 1]).expect("large");
+    let large = out.append(&vec![4; OUTPUT_KEPT + 1]).expect("large");
     assert!(out.allocation().expect("block").len() > OUTPUT_KEPT);
     out.take(large.len());
     out.clear();
