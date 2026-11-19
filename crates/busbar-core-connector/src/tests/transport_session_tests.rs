@@ -222,6 +222,7 @@ async fn rejected_upgrade_retires_original_tcp_writer_before_failed_receipt() {
         io,
         protocol: Name::copy(&source, "websocket").unwrap(),
         leftover: Payload::copy(&source, &[]).unwrap(),
+        feed: None,
     }));
     assert!(handles.watch.snapshot().terminal.is_none());
     outcome.retire();

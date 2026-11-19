@@ -935,6 +935,11 @@ impl Connector {
         self.proxy_by_address.store(by_address, Ordering::Relaxed);
     }
 
+    /// Whether `outbound.proxy_resolution` is `proxy`: the proxy resolves a name busbar cannot.
+    pub(crate) fn proxy_delegated(&self) -> bool {
+        !self.proxy_by_address.load(Ordering::Relaxed)
+    }
+
     /// Whether `caller`'s open of `desc` carries its owner's core-held plaintext acceptance: the
     /// opener stated it ([`OpenDesc::plaintext_accepted`]) or the host registered the owner's
     /// acceptance ([`DeclaredConns::accept_plaintext`]). SEC-2 (#297 model A): nothing else does.
