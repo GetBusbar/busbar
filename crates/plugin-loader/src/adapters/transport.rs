@@ -659,9 +659,8 @@ fn walk(
                 bits(s.flags, t::S_MULTIPLEX)?;
                 let multiplex = s.flags & t::S_MULTIPLEX != 0;
                 // The two windows are stated exactly when the session carries several streams.
-                if multiplex == (s.stream_window == 0 || s.conn_window == 0)
-                    && (multiplex || s.stream_window != 0 || s.conn_window != 0)
-                {
+                let windows = (s.stream_window != 0, s.conn_window != 0);
+                if windows != (multiplex, multiplex) {
                     return Err(GRAMMAR);
                 }
                 stated = true;
@@ -1596,6 +1595,21 @@ mod tests {
             )
         });
         assert_eq!(run(&close, Call::Ingest), Err(Bad::Rec(RecErr::Reserved)));
+        // A retired record is a fault for ever: the plain write of transport 1 has no meaning in 2.0.
+        let write = answer(|w| w.put(0x0100, b"bytes with no label"));
+        assert_eq!(run(&write, Call::Ingest), Err(Bad::Tag(0x0100)));
+        // And a reset knows one flag only.
+        let reset = answer(|w| {
+            w.put_pod(
+                tag::STREAM_RESET,
+                &StreamReset {
+                    stream: 5,
+                    code: 8,
+                    flags: 2,
+                },
+            )
+        });
+        assert_eq!(run(&reset, Call::Ingest), Err(GRAMMAR));
     }
 
     /// C-SCRUB-CUT (transport adapter arm): the port error's text is scrubbed first and cut after, so a secret
