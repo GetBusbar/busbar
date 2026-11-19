@@ -1916,10 +1916,10 @@ Repeated operator requests cannot extend either interval. Reserve at least
 least 31 seconds before margin. The six seconds covers the existing bounded exit handover.
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
-once at process/client construction), so unlike `rate_sweep_interval` they are
-not live-mutable via `PUT /config/settings`. A change takes effect on the next restart.
-(`usage_flush_interval_ms` is accepted by `PUT /config/settings`, but its writer reads the value
-once when it starts, so it too needs a restart to act.) The
+once at process/client construction), so unlike `rate_sweep_interval` and `usage_flush_interval_ms`
+they are not live-mutable via `PUT /config/settings`. A change takes effect on the next restart.
+(The usage writer reads `usage_flush_interval_ms` before each wait, so an applied change is used
+from the next wait on.) The
 `BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time;
 see the [development migration limitation](#environment-variables) before upgrading a launcher
 that sets them. `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
@@ -1962,7 +1962,8 @@ private target carries its own core-owned `allow_private` on its declared regist
 connector restricts this grant to that selected route's origin. Configured providers retain
 private reach only on their own base/token origins; other requests, strict JUDGE/OPEN_WEB checks,
 redirects to other origins and callbacks cannot borrow it. `advanced.allow_destinations` is
-removed and refused as an unknown field. The scheme a
+removed: a configuration that still carries it loads, the key is ignored (it grants nothing and is
+never written back) and one warning line says so. The scheme a
 destination may use is part of the same check: an export sink or hook on the `loopback-allowed`
 class takes `https://`, or plaintext `http://` only to loopback; an `open-web` destination (a
 webhook sink, an identity provider's documents) takes `https://` only.
@@ -1971,7 +1972,8 @@ webhook sink, an identity provider's documents) takes `https://` only.
 
 Every key an operator can write under `advanced:`, in one place. The whole block is optional;
 leaving a key out gives the default shown. `advanced` refuses keys it does not know (a typo is a
-boot error, never ignored). "Applies" says when a change takes effect: **on apply** means a
+boot error, never ignored), except the removed `allow_destinations`, which is ignored with one
+warning so that an old configuration still loads. "Applies" says when a change takes effect: **on apply** means a
 configuration apply (the next published configuration generation) is enough; **restart** means the
 running process keeps the old value until it is restarted (a stored change is saved, but does not
 act yet).
@@ -1979,9 +1981,9 @@ act yet).
 | Key | Type and unit | Default | Allowed range | What it does | Applies |
 |---|---|---|---|---|---|
 | `advanced.wait_for_commit` | boolean | `false` | `true` / `false` | Whether an answer waits until its audit, ledger and usage records are committed. *Arriving with the audit change.* | to be confirmed |
-| `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 0 to 946,080,000,000 (30 years); `0` is not refused but should not be used | How often in-memory usage and budget counters are written out. | restart |
+| `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 1 to 946,080,000,000 (30 years); `0` is raised to 1 with one warning | How often in-memory usage and budget counters are written out. | on apply |
 | `advanced.rate_sweep_interval` | integer, count of admissions | `256` | 1 to 4,294,967,295; `0` is refused | How often a budget table drops entries that are no longer needed. | on apply |
-| `advanced.worker_threads` | integer, threads | one per CPU core | 1 to 128; `0` is refused or ignored (see entry); above 128 is lowered to 128 | Number of data-plane worker threads. | restart |
+| `advanced.worker_threads` | integer, threads | one per CPU core | 1 to 65,535; `0` means the default, and above 65,535 is lowered to 65,535, each with one warning (`BUSBAR-9008`) | Number of data-plane worker threads. | restart |
 | `advanced.upstream_http1_only` | boolean | `false` | `true` / `false` | Pin the upstream HTTP client to HTTP/1.1. | restart |
 | `advanced.upstream_h2_prior_knowledge` | boolean | `false` | `true` / `false` | Speak HTTP/2 without negotiation to cleartext upstreams. | restart |
 | `advanced.response_headers.server_timing` | boolean | `false` | `true` / `false` | Add `Server-Timing: busbar;dur=<ms>` to responses. | restart |
@@ -1995,13 +1997,14 @@ act yet).
 | `advanced.tls.destinations` | list of entries | empty list | see [`advanced.tls`](#advancedtls) | Per-destination authorities, key pins and client certificate. | restart |
 
 "Restart" for the keys above is what the code does today: `advanced.rate_sweep_interval` is read
-again on every admission, and the configuration apply republishes it; every other key is read once
-at boot (or, for `usage_flush_interval_ms`, once when the background writer starts). Of the
-restart keys, the pending-restart list in the admin API (`reload_to_apply`) reports changes to
-`worker_threads`, `response_headers`, `shutdown.deregister_delay`, `upstream_http1_only` and
-`upstream_h2_prior_knowledge` only; a changed `trusted_proxies`, `forwarded_header`,
-`block_private_addresses`, `proxy_resolution` or `tls` is stored without that flag, so restart
-the engine after editing them.
+again on every admission, `advanced.usage_flush_interval_ms` before each wait of the background
+writer, and the configuration apply republishes both; every other key is read once at boot. Every
+one of those restart keys is reported by the pending-restart list in the admin API
+(`reload_to_apply`) when an edit changes it: `worker_threads`, `response_headers`,
+`shutdown.deregister_delay`, `upstream_http1_only`, `upstream_h2_prior_knowledge`,
+`trusted_proxies`, `forwarded_header`, `block_private_addresses`, `proxy_resolution` and `tls`.
+`trusted_proxies` and `block_private_addresses` are security settings: an edit to them is stored
+but does not act until the engine restarts, and the list now says so.
 
 #### `advanced.wait_for_commit`
 
@@ -2032,9 +2035,11 @@ advanced:
 #### `advanced.usage_flush_interval_ms`
 
 How often the engine writes its in-memory usage and budget counters to the store, in milliseconds.
-Between writes the counters live only in memory. The writer reads this once when it starts
-(`crates/busbar-kernel/src/governance/mod.rs`, `run_budget_flusher`), so a changed value needs a
-restart even though `PUT /config/settings` accepts it.
+Between writes the counters live only in memory. The writer reads this before each wait
+(`crates/busbar-kernel/src/governance/mod.rs`, `run_budget_flusher`), so a value changed through
+`PUT /config/settings` or the configuration document is used from the next wait on: the wait
+already in progress when the change is applied is the last one on the old value. It applies on a
+configuration apply, with no restart.
 
 When to change it: lower it to shrink the window of lost spend after a crash; raise it to write
 to a slow store less often. Cost: a lower value means more writes to the store; a higher value
@@ -2042,8 +2047,11 @@ widens the loss window.
 
 **What can be lost:** on a crash (kill -9, power loss) up to this many milliseconds of accrued
 spend and request counts. A graceful shutdown flushes fully. The code refuses values above
-946,080,000,000 ms (30 years) but does not refuse `0`; do not set `0`, since a zero interval makes
-the writer loop without pause.
+946,080,000,000 ms (30 years). The shortest interval is 1 ms: the writer waits on the runtime's
+timer, which has a resolution of one millisecond, and a wait of `0` would make the writer loop with
+no pause. A configured `0` is therefore converted to 1, with one warning line (`BUSBAR-3117`) at boot
+and on every configuration apply; nothing is refused. The store has no commit period of its own that
+would set a higher floor.
 
 ```yaml
 advanced:
@@ -2071,13 +2079,18 @@ advanced:
 
 The number of data-plane worker threads; each runs its own runtime and listener. Left out, the
 engine uses one per available CPU core. `TOKIO_WORKER_THREADS` is read as a fallback when the key
-is absent. The engine never uses more than 128, and silently lowers a larger value to 128.
+is absent. The engine never starts more than 65,535, which is the most the Tokio scheduler can
+run (it keeps its count of searching workers in 16 bits); a larger value is lowered to 65,535.
 
 When to change it: on a container with a CPU limit far below the host's core count, set it to the
 limit; on a shared host, to the cores you want to give the engine. Cost: too few threads cap
 throughput; too many on a limited CPU quota add scheduling overhead.
 
-`0` is not a valid count. At boot it is ignored with a warning (`BUSBAR-9008`) and the default is used; the admin document edit refuses it.
+`0` is not a valid count. One rule applies wherever the value is read (the boot read of
+`config.yaml`, the runtime built after recovery, and the admin document edit): `0` is converted to
+the default, a count above 65,535 to 65,535, and each conversion writes one warning line
+(`BUSBAR-9008`). Nothing is refused: an edit carrying `0` or a larger count is accepted and stored as
+written.
 
 ```yaml
 advanced:
@@ -2089,8 +2102,9 @@ advanced:
 Pins the client that talks to providers and other upstreams to HTTP/1.1. By default the client
 negotiates HTTP/2 where the far end offers it. When to change it: an upstream or middlebox that
 handles HTTP/2 badly. Cost: no HTTP/2 multiplexing, so more connections for the same traffic. The
-value is passed to the HTTP transport (it reaches a transport plugin only if its settings name
-this path).
+value is passed to the HTTP transport, which declares this key in its settings and reads it (a
+transport reaches it only if its settings name this path). If `upstream_h2_prior_knowledge` is
+also `true`, this setting wins.
 
 ```yaml
 advanced:
@@ -2102,8 +2116,10 @@ advanced:
 Speaks HTTP/2 directly (no HTTP/1.1 upgrade or negotiation) to cleartext (`http://`) upstreams.
 When to change it: an h2c-only upstream. Cost: a far end that does not speak HTTP/2 fails; the
 source records that this measurably lowered throughput in performance testing, which is why it is
-off. Setting it together with `upstream_http1_only` is not refused; the combination is
-contradictory, so set only one.
+off. Setting it together with `upstream_http1_only` is not refused, and the rule is fixed:
+`upstream_http1_only` wins. Over TLS the HTTP transport then offers `http/1.1` alone, and to a
+cleartext upstream it speaks HTTP/1.1, not h2c. The engine passes both values to the transport
+unchanged; the rule lives in the transport (`door::offer_for`) and is tested there.
 
 ```yaml
 advanced:

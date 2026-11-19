@@ -357,8 +357,11 @@ pub(crate) fn assemble_slot(
         .map_err(|_| "native physical line does not match its actual route owner".to_string())?;
         bindings.push(binding);
     }
+    // A head no line matches is answered as an unauthenticated request is, never by closing the
+    // connection: a caller that has not authenticated cannot tell a missing route from a gated one.
     let plan = PhysicalPlan::new(slot.into(), transport, guests, bindings)
-        .map_err(|_| "native physical plan does not cover the complete slot".to_string())?;
+        .map_err(|_| "native physical plan does not cover the complete slot".to_string())?
+        .with_unrouted();
     let mut data = Vec::new();
     let mut upgrades = Vec::new();
     for binding in plan.routes() {

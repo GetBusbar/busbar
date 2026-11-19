@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::auth::native_data::PreparedDataDenial;
-use crate::auth::native_upgrade::UpgradeAuthorization;
+use crate::auth::native_upgrade::{UpgradeAuthorization, UpgradeRefused};
 use crate::plane_driver::port::NativeTaskRetirement;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -109,6 +109,13 @@ enum RefusalProvenance {
     Upgrade {
         _authorization: UpgradeAuthorization,
     },
+    /// The route's chain denied an upgrade request (credential, policy or replay).
+    UpgradeDenied {
+        _denied: DataPreparationDenied,
+    },
+    /// No route of this listener matched the head: answered as an unauthenticated request is, so
+    /// the answer does not tell a caller whether a route exists.
+    Unrouted,
 }
 impl PhysicalRefusal {
     pub fn binding(&self) -> &Arc<RequestBinding> {
@@ -119,7 +126,9 @@ impl PhysicalRefusal {
             RefusalProvenance::Allocated { _witness, .. } => Some(_witness.unit()),
             RefusalProvenance::Admin { .. }
             | RefusalProvenance::Data { .. }
-            | RefusalProvenance::Upgrade { .. } => None,
+            | RefusalProvenance::Upgrade { .. }
+            | RefusalProvenance::UpgradeDenied { .. }
+            | RefusalProvenance::Unrouted => None,
         }
     }
 }
@@ -261,6 +270,42 @@ impl CompletingPhysicalRequest {
         Ok(PhysicalUpgrade {
             binding: self.binding.clone(),
             authorization,
+        })
+    }
+
+    /// The answer to an upgrade request its route's chain denied: only that denial of this same
+    /// request produces it. A failure that is not a denial (an unavailable verifier, a deadline)
+    /// grants no answer: the request stays cancelled.
+    pub fn refuse_upgrade_denied(
+        mut self,
+        refused: UpgradeRefused,
+    ) -> Result<PhysicalRefusal, ArrivalRefusal> {
+        let UpgradeRefused::Denied { preparation, .. } = refused else {
+            return Err(ArrivalRefusal::Cancelled);
+        };
+        if !Arc::ptr_eq(&self.binding, preparation.binding()) {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
+        self.enter_refusal(Some(PreparationState::Denied))?;
+        self.cancel_on_drop = false;
+        Ok(PhysicalRefusal {
+            binding: self.binding.clone(),
+            _provenance: RefusalProvenance::UpgradeDenied {
+                _denied: preparation,
+            },
+        })
+    }
+
+    /// The answer to a head no route of this listener matched (the plan's unrouted binding).
+    pub fn refuse_unrouted(mut self) -> Result<PhysicalRefusal, ArrivalRefusal> {
+        if !matches!(self.binding.route.target(), RouteTarget::Unrouted) {
+            return Err(ArrivalRefusal::Class);
+        }
+        self.enter_refusal(Some(PreparationState::Unused))?;
+        self.cancel_on_drop = false;
+        Ok(PhysicalRefusal {
+            binding: self.binding.clone(),
+            _provenance: RefusalProvenance::Unrouted,
         })
     }
 

@@ -1651,6 +1651,18 @@ pub fn resolve_with_provider_planes(
     planes: &[crate::plane_driver::provider_catalog::ProviderPlane],
 ) -> Result<ResolvedConfig, Vec<String>> {
     let mut errors = Vec::new();
+    // Boot and every configuration apply resolve here, so this is where a converted value is said.
+    if let (_, Some(note)) =
+        limits::effective_usage_flush_interval_ms(deploy.advanced.usage_flush_interval_ms)
+    {
+        diag_warn!(crate::diagnostics::CONFIG_SETTING_OUT_OF_RANGE, "{note}");
+    }
+    if deploy.advanced.allow_destinations.is_some() {
+        tracing::warn!(
+            "advanced.allow_destinations was removed and is ignored: a private address is reached \
+             only by a registration that sets its own allow_private, or by a provider's own origin"
+        );
+    }
     for name in deploy
         .rate_card
         .iter()
@@ -2171,6 +2183,22 @@ mod advanced_destinations_tests;
 #[cfg(test)]
 #[path = "tests/retired_advanced_tests.rs"]
 mod retired_advanced_tests;
+
+#[cfg(test)]
+#[path = "tests/worker_threads_tests.rs"]
+mod worker_threads_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_flush_tests.rs"]
+mod usage_flush_tests;
+
+#[cfg(test)]
+#[path = "tests/schema_snapshot_tests.rs"]
+mod schema_snapshot_tests;
+
+#[cfg(test)]
+#[path = "tests/upstream_protocol_tests.rs"]
+mod upstream_protocol_tests;
 
 #[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]

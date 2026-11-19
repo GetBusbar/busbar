@@ -2368,6 +2368,16 @@ pub(super) async fn finish_with_store(
             )?)
             .carrying(&super::min3_framers::assigned(crate::LINKED_CARRIERS)?)?;
             tracing::info!("{}", framers.carrier_line());
+            // The hand-over: the connector dials each assigned carrier through its instance, its sessions charged
+            // to the boot's process admission (Data class), once for the process. (A process boots once; only a
+            // test process composes a second time, and it keeps the first hand-over, as the connector does.)
+            let connector = super::connector::the();
+            if !connector.carries_natively() {
+                let storage = super::plane_node::node().dial_storage().ok_or(
+                    "the native dial has no process account: the boot admission is not bound",
+                )?;
+                connector.carry_natively(framers.native_carriers(), storage)?;
+            }
             framers
         }
     };

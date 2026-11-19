@@ -6736,3 +6736,52 @@ async fn flusher_observes_halt_between_batches() {
         "the units not reached are persisted next pass"
     );
 }
+
+/// `advanced.usage_flush_interval_ms` is patchable on a running engine, so a writer that is
+/// already running must take the applied value on its next tick: here the interval goes from 20 ms
+/// to an hour while the writer runs, and spend admitted afterwards must wait for the shutdown flush.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_applied_flush_interval_reaches_the_running_writer() {
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let records = crate::real_store::core().await;
+    let gov = Arc::new(
+        GovState::new_with_core(records.clone().core(), None, None)
+            .await
+            .unwrap(),
+    );
+    let limits = |usage_flush_interval_ms| crate::config::LimitsResolved {
+        usage_flush_interval_ms,
+        ..Default::default()
+    };
+    crate::config::limits::install(&limits(20));
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+    let flusher = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx, None);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    crate::config::limits::install(&limits(3_600_000));
+    // The wait already running ends within 20 ms; the one after it is an hour.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let cost = flat_cost(1);
+    let key = sample_key("k_live_interval", "h_live_interval");
+    for _ in 0..3 {
+        assert!(gov.try_admit(&cost, &key, "", 1_700_000_000).is_ok());
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let durable = || async {
+        records
+            .ledger()
+            .get_usage("k_live_interval", 0)
+            .await
+            .unwrap()
+            .requests
+    };
+    assert_eq!(
+        durable().await,
+        0,
+        "the writer kept the interval it started with and flushed on it"
+    );
+    shutdown_tx.send(()).unwrap();
+    flusher.await.unwrap();
+    assert_eq!(durable().await, 3, "the shutdown flush loses nothing");
+}

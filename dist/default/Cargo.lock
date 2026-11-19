@@ -1065,6 +1065,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-seal"
+version = "1.6.0"
+
+[[package]]
 name = "busbar-secret-env"
 version = "1.6.0"
 source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=36df49db4f1b3426a5623d45e6375549b7899bd9#36df49db4f1b3426a5623d45e6375549b7899bd9"
@@ -1083,10 +1087,6 @@ dependencies = [
  "serde",
  "serde_json",
 ]
-
-[[package]]
-name = "busbar-seal"
-version = "1.6.0"
 
 [[package]]
 name = "busbar-secure"

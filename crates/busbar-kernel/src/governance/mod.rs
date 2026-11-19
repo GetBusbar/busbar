@@ -2008,7 +2008,6 @@ pub async fn run_budget_flusher(
     app: Option<Arc<crate::state::AppHandle>>,
     clock: Option<Arc<drain::DrainClock>>,
 ) {
-    let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
     purge_usage_windows(&gov).await;
     // The purge cadence rides the runtime's timer: its first tick completes at once (the boot
     // purge above is that tick); later ticks are checked, never awaited, on each flush tick.
@@ -2016,6 +2015,9 @@ pub async fn run_budget_flusher(
     purge_due.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     purge_due.tick().await;
     loop {
+        // Read on every wait: `advanced.usage_flush_interval_ms` is patchable on a running engine,
+        // and the wait already in progress when it is applied is the last one on the old value.
+        let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
         tokio::select! {
             _ = tokio::time::sleep(interval) => {
                 if futures::FutureExt::now_or_never(purge_due.tick()).is_some() {
@@ -2031,8 +2033,7 @@ pub async fn run_budget_flusher(
             }
             _ = shutdown.recv() => {
                 if let Some(clock) = &clock {
-                    drain_money(&gov, app.as_ref(), clock, interval).await;
-                    break;
+                    drain_money(&gov, app.as_ref(), clock, interval).await;                    break;
                 }
                 resume_current_correction_verdicts(&gov, app.as_ref()).await;
                 if let Err(e) = gov.flush_unit_checkpoints().await {
