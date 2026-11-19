@@ -5,8 +5,8 @@
 //! exchange becomes the far end's request, how its reply is read back piece by piece, how the plane's verdicts
 //! reach the breaker, and which dials are judged before they are made.
 
-use std::cell::Cell;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use busbar_contract::abi::auth::{NO_MEMBER_AUTH_FIELD, SCOPE_REQUEST_FIELD};
@@ -18,13 +18,12 @@ use busbar_plugin_abi::host_side::caller::Accept;
 use busbar_plugin_abi::plane::{
     ATT_HARD, ATT_RETRY, CARRIER_GRPC, CARRIER_HTTP, FC_RATE_LIMIT, FC_SERVER, OUTBOUND_NONE,
 };
-use tokio::runtime::Runtime;
 
 use super::{is_request_of, request_of, route_of, EgressWalk, MemberTarget, WalkMembers, WalkSend};
 use crate::plane_driver::far_end::{dial_admitted, UnitRoute};
-use crate::plane_driver::port_session::UpExchange;
+use crate::plane_driver::port_session::{finish, UpExchange};
 use crate::plane_driver::port_upstream::{
-    Candidate, Chunk, Failure, Members, SendFailed, UpSend, Wants,
+    Candidate, Chunk, Failure, Members, SendFailed, UpChunks, UpSend, Wants,
 };
 use crate::plane_driver::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
@@ -170,7 +169,6 @@ fn target_lookup_preserves_the_selected_member_qualification() {
         .lock()
         .unwrap()
         .push_back(member("seat\u{1f}model"));
-    let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
     let make =
@@ -178,9 +176,8 @@ fn target_lookup_preserves_the_selected_member_qualification() {
     let targets = |pool: &str, name: &str| {
         (pool == "pool" && name == "seat\u{1f}model").then(MemberTarget::bare)
     };
-    let handle = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &tok, &handle, &targets);
-    let got = walk.members().next(&Wants::default());
+    let walk = EgressWalk::new(&make, &tok, &targets);
+    let got = finish(walk.members().next(&Wants::default()));
     assert!(
         got.is_some(),
         "the exact configured member must reach its target record"
@@ -199,7 +196,6 @@ fn the_same_member_in_two_pools_uses_each_pools_resolved_target() {
             provider: "configured".into(),
         });
     }
-    let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
     let make =
@@ -216,10 +212,9 @@ fn the_same_member_in_two_pools_uses_each_pools_resolved_target() {
         target.resource = Some(format!("{pool}-resource").into());
         Some(target)
     };
-    let handle = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &tok, &handle, &targets);
+    let walk = EgressWalk::new(&make, &tok, &targets);
     for pool in ["fast", "careful"] {
-        let picked = walk.members().next(&Wants::default()).unwrap();
+        let picked = finish(walk.members().next(&Wants::default())).unwrap();
         assert_eq!(&*picked.pool, pool);
         assert_eq!(&*picked.qualified_member, "seat\u{1f}model");
         assert_eq!(
@@ -237,27 +232,25 @@ fn the_same_member_in_two_pools_uses_each_pools_resolved_target() {
 fn a_pick_becomes_a_candidate_named_as_the_operator_and_stated_as_its_target() {
     let fake = Fake::default();
     fake.picks.lock().unwrap().push_back(member("a"));
-    let rt = Runtime::new().unwrap();
     let tok = token();
-    let made = Cell::new(0);
+    let made = AtomicUsize::new(0);
     let cell = Mutex::new(Some(fake));
     let make = |_: &Wants, _: Option<&super::RequestPoolReceipt>| {
-        made.set(made.get() + 1);
+        made.fetch_add(1, Ordering::Relaxed);
         cell.lock().unwrap().take().unwrap()
     };
-    let handle = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
+    let walk = EgressWalk::new(&make, &tok, &target_for);
     let mut members = walk.members();
-    let got = members.next(&Wants::default()).unwrap();
+    let got = finish(members.next(&Wants::default())).unwrap();
     assert_eq!(&*got.upstream, "a");
     assert_eq!(&*got.provider, "{\"k\":1}");
     assert_eq!(&*got.base_path, "/v1");
     assert_eq!(got.flags, 2);
     assert_eq!(got.params, vec![("region".into(), "eu".into())]);
     // The walk is out of members: the pool's terminal ends it.
-    assert!(members.next(&Wants::default()).is_none());
+    assert!(finish(members.next(&Wants::default())).is_none());
     assert_eq!(
-        made.get(),
+        made.load(Ordering::Relaxed),
         1,
         "the far end is built once, from the first wants"
     );
@@ -265,22 +258,20 @@ fn a_pick_becomes_a_candidate_named_as_the_operator_and_stated_as_its_target() {
 
 #[test]
 fn the_far_end_is_built_from_the_wants_the_plane_forwarded_with() {
-    let rt = Runtime::new().unwrap();
     let tok = token();
     let seen = Mutex::new(None);
     let make = |w: &Wants, _: Option<&super::RequestPoolReceipt>| {
         *seen.lock().unwrap() = Some(w.clone());
         Fake::default()
     };
-    let handle = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
+    let walk = EgressWalk::new(&make, &tok, &target_for);
     let wants = Wants {
         stream: true,
         upstream: Some("pinned".into()),
         affinity: Some("k".into()),
         ..Wants::default()
     };
-    let _ = walk.members().next(&wants);
+    let _ = finish(walk.members().next(&wants));
     assert_eq!(seen.lock().unwrap().as_ref(), Some(&wants));
 }
 
@@ -289,14 +280,12 @@ fn a_member_the_plane_has_no_upstream_for_is_passed_over() {
     let fake = Fake::default();
     fake.picks.lock().unwrap().push_back(member("skip"));
     fake.picks.lock().unwrap().push_back(member("b"));
-    let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
     let make =
         |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
-    let handle = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
-    let got = walk.members().next(&Wants::default()).unwrap();
+    let walk = EgressWalk::new(&make, &tok, &target_for);
+    let got = finish(walk.members().next(&Wants::default())).unwrap();
     assert_eq!(&*got.upstream, "b");
 }
 
@@ -305,15 +294,13 @@ fn with_walk<R>(
     fake: Fake,
     body: impl FnOnce(WalkMembers<'_, '_, Fake>, WalkSend<'_, '_, Fake>) -> R,
 ) -> R {
-    let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
     let make =
         |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
-    let handle = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
+    let walk = EgressWalk::new(&make, &tok, &target_for);
     let mut members = walk.members();
-    let _ = members.next(&Wants::default());
+    let _ = finish(members.next(&Wants::default()));
     body(members, walk.sender())
 }
 
@@ -322,16 +309,14 @@ fn picking(fake: Fake) -> Fake {
     fake
 }
 
-fn judged_of(fake: Fake, run: impl FnOnce(&mut dyn Members)) -> Vec<u8> {
-    let rt = Runtime::new().unwrap();
+fn judged_of(fake: Fake, run: impl FnOnce(&mut WalkMembers<'_, '_, Fake>)) -> Vec<u8> {
     let tok = token();
     let cell = Mutex::new(Some(picking(fake)));
     let make =
         |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
-    let handle = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
+    let walk = EgressWalk::new(&make, &tok, &target_for);
     let mut members = walk.members();
-    let _ = members.next(&Wants::default());
+    let _ = finish(members.next(&Wants::default()));
     run(&mut members);
     walk.far()
         .map(|far| far.judged.lock().unwrap().clone())
@@ -377,15 +362,22 @@ fn an_exchange_is_sent_as_the_far_end_s_request_and_its_reply_is_read_piece_by_p
         pieces.push_back(Some(body_piece(b"b", true)));
     }
     with_walk(fake, |_, mut send| {
-        let mut open = send.open(&candidate(), exchange()).unwrap();
+        let member = candidate();
+        let mut open = finish(send.open(&member, exchange())).unwrap();
         assert_eq!(open.status, 200);
         assert_eq!(
             open.headers,
             vec![(b"content-type".to_vec(), b"text/event-stream".to_vec())]
         );
-        assert_eq!(open.rest.next().unwrap(), Some(Chunk::Body(b"a".to_vec())));
-        assert_eq!(open.rest.next().unwrap(), Some(Chunk::Body(b"b".to_vec())));
-        assert_eq!(open.rest.next().unwrap(), None);
+        assert_eq!(
+            finish(open.rest.next()).unwrap(),
+            Some(Chunk::Body(b"a".to_vec()))
+        );
+        assert_eq!(
+            finish(open.rest.next()).unwrap(),
+            Some(Chunk::Body(b"b".to_vec()))
+        );
+        assert_eq!(finish(open.rest.next()).unwrap(), None);
     });
 }
 
@@ -553,7 +545,7 @@ fn a_send_the_far_end_refuses_is_a_failed_send() {
     };
     with_walk(fake, |_, mut send| {
         assert!(matches!(
-            send.open(&candidate(), exchange()),
+            finish(send.open(&candidate(), exchange())),
             Err(SendFailed)
         ));
     });
@@ -569,7 +561,7 @@ fn a_reply_the_walk_s_own_table_failed_over_is_a_failed_send_before_the_plane_se
     }));
     with_walk(fake, |_, mut send| {
         assert!(matches!(
-            send.open(&candidate(), exchange()),
+            finish(send.open(&candidate(), exchange())),
             Err(SendFailed)
         ));
     });
@@ -588,8 +580,9 @@ fn a_reply_cut_after_its_head_is_an_error_on_the_next_read() {
         }));
     }
     with_walk(fake, |_, mut send| {
-        let mut open = send.open(&candidate(), exchange()).unwrap();
-        assert!(open.rest.next().is_err());
+        let member = candidate();
+        let mut open = finish(send.open(&member, exchange())).unwrap();
+        assert!(finish(open.rest.next()).is_err());
     });
 }
 
@@ -607,12 +600,13 @@ fn trailing_fields_are_their_own_chunk() {
         }));
     }
     with_walk(fake, |_, mut send| {
-        let mut open = send.open(&candidate(), exchange()).unwrap();
+        let member = candidate();
+        let mut open = finish(send.open(&member, exchange())).unwrap();
         assert_eq!(
-            open.rest.next().unwrap(),
+            finish(open.rest.next()).unwrap(),
             Some(Chunk::Trailers(b"grpc-status: 0\r\n".to_vec()))
         );
-        assert_eq!(open.rest.next().unwrap(), None);
+        assert_eq!(finish(open.rest.next()).unwrap(), None);
     });
 }
 
@@ -626,9 +620,13 @@ fn a_whole_send_joins_the_body_and_drops_the_trailers() {
         pieces.push_back(Some(body_piece(b"y", true)));
     }
     with_walk(fake, |_, mut send| {
-        let reply = send.send(&candidate(), exchange()).unwrap();
-        assert_eq!(reply.status, 201);
-        assert_eq!(reply.body, b"xy".to_vec());
+        let member = candidate();
+        let mut open = finish(send.open(&member, exchange())).unwrap();
+        assert_eq!(open.status, 201);
+        assert_eq!(
+            finish(super::whole_body(&mut open.rest)).unwrap(),
+            b"xy".to_vec()
+        );
     });
 }
 
@@ -701,15 +699,13 @@ fn the_route_a_session_walks_under_states_the_wants_and_the_acceptance() {
 #[test]
 fn the_plane_s_wait_rides_with_its_verdict_into_the_breaker() {
     let fake = Fake::default();
-    let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(picking(fake)));
     let make =
         |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
-    let handle = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
+    let walk = EgressWalk::new(&make, &tok, &target_for);
     let mut members = walk.members();
-    let _ = members.next(&Wants::default());
+    let _ = finish(members.next(&Wants::default()));
     members.failed(
         &candidate(),
         &Failure {
@@ -742,20 +738,18 @@ fn an_exhausted_walk_keeps_the_wait_it_stated_for_the_client() {
         retry_after: Some(30),
         detail: "",
     });
-    let rt = Runtime::new().unwrap();
     let tok = token();
     let cell = Mutex::new(Some(fake));
     let make =
         |_: &Wants, _: Option<&super::RequestPoolReceipt>| cell.lock().unwrap().take().unwrap();
-    let handle = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &tok, &handle, &target_for);
+    let walk = EgressWalk::new(&make, &tok, &target_for);
     let mut members = walk.members();
     assert_eq!(
         members.retry_after(),
         None,
         "nothing stated before the walk ends"
     );
-    assert!(members.next(&Wants::default()).is_none());
+    assert!(finish(members.next(&Wants::default())).is_none());
     assert_eq!(members.retry_after(), Some(30));
 }
 

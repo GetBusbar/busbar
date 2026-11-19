@@ -332,7 +332,6 @@ fn the_book_holds_no_signing_capability() {
             record,
             audit_ring,
             audit_findings,
-            audit_signed_from,
             incarnation,
             restart_findings,
             voided_claims,
@@ -347,7 +346,6 @@ fn the_book_holds_no_signing_capability() {
         no_signer(record);
         no_signer(audit_ring);
         no_signer(audit_findings);
-        no_signer(audit_signed_from);
         no_signer(incarnation);
         no_signer(restart_findings);
         no_signer(voided_claims);

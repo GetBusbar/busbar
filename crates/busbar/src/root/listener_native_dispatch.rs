@@ -185,7 +185,7 @@ pub(super) async fn prepare(
         })
     };
     if data_request {
-        // DATA owns real blocking callbacks and monetary state. Its producer observes the
+        // DATA owns the plane session and monetary state. Its producer observes the
         // original cancellation/deadline and joins that work; dropping this await would detach it.
         return work.await;
     }

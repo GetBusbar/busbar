@@ -242,6 +242,17 @@ struct ReplyState {
 }
 
 impl ClientSink for Reply {
+    /// A nested reply is gathered in memory under its bound: items are taken at once and nothing waits.
+    fn poll_items(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        items: &mut Vec<ToClient>,
+    ) -> std::task::Poll<bool> {
+        std::task::Poll::Ready(self.items(std::mem::take(items)))
+    }
+}
+
+impl Reply {
     fn items(&self, items: Vec<ToClient>) -> bool {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.overflow {

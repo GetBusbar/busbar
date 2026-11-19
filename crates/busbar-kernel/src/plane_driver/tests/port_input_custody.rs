@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Real blocking plane calls retain inbound backing and the original count admission.
+//! A plane session runs on the request's own task: the inbound backing and the original count admission are held
+//! for every crossing, and released when the session ends or its future is dropped (no thread is left holding them).
 
-use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::services::Caller;
@@ -32,13 +32,15 @@ fn refused() -> PortError {
     }
 }
 
-struct BlockingPlane {
+/// A plane that notes, from inside its `request` crossing, what the request's admission holds then: the bytes and
+/// count in use, and whether another request is refused.
+struct CustodyPlane {
     routes: [RouteInfo; 1],
-    entered: Mutex<Option<tokio::sync::oneshot::Sender<Vec<u8>>>>,
-    release: Mutex<mpsc::Receiver<()>>,
+    budget: Arc<ProcessAdmission>,
+    entered: Mutex<Option<(Vec<u8>, (usize, usize), bool)>>,
 }
 
-impl PlanePort for BlockingPlane {
+impl PlanePort for CustodyPlane {
     fn routes(&self) -> &[RouteInfo] {
         &self.routes
     }
@@ -67,18 +69,8 @@ impl PlanePort for BlockingPlane {
         body: &[u8],
         _: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<PlaneSession, PortError> {
-        self.entered
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap()
-            .send(body.to_vec())
-            .unwrap();
-        self.release
-            .lock()
-            .unwrap()
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap();
+        let refused_more = self.budget.try_enter(AdmissionClass::Data).is_err();
+        *self.entered.lock().unwrap() = Some((body.to_vec(), self.budget.used(), refused_more));
         Err(refused())
     }
     fn upstream(
@@ -142,41 +134,60 @@ impl PlanePort for BlockingPlane {
     }
 }
 
-struct NoIntents;
+/// A host with no store (the thread hand-off tests share it).
+pub(super) struct NoIntents;
 
 impl IntentHost for NoIntents {
-    fn lookup(
-        &self,
+    fn lookup<'a>(
+        &'a self,
         _: Scope,
         _: u32,
         _: u32,
-        _: &[u8],
-        _: &mut Looked,
-    ) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+        _: &'a [u8],
+        _: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+    fn store<'a>(
+        &'a self,
+        _: Scope,
+        _: u32,
+        _: u64,
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn delete(&self, _: Scope, _: &[u8]) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+    fn delete<'a>(&'a self, _: Scope, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn commit(&self, _: Scope, _: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+    fn commit<'a>(
+        &'a self,
+        _: Scope,
+        _: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+    fn push<'a>(&'a self, _: u64, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
     fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
 }
 
-async fn blocking_input_lifetime(payload: &[u8], cancel: bool) {
+/// One admitted request of `payload` against a fresh budget: the budget, the plane and its driver, and the
+/// request's serve input.
+fn custody(
+    payload: &[u8],
+) -> (
+    Arc<ProcessAdmission>,
+    Arc<CustodyPlane>,
+    PortDriver,
+    ServeIn<'static>,
+) {
     let budget = ProcessAdmission::with_limits(2, 64, 8);
     let request = budget.try_enter(AdmissionClass::Data).unwrap();
     let body = request.copy_input(payload).unwrap().into_bytes();
-    let (entered, started) = tokio::sync::oneshot::channel();
-    let (release, blocked) = mpsc::channel();
-    let port = Arc::new(BlockingPlane {
+    let port = Arc::new(CustodyPlane {
         routes: [RouteInfo {
             route: 1,
             methods: 1,
@@ -186,89 +197,90 @@ async fn blocking_input_lifetime(payload: &[u8], cancel: bool) {
             cred_header: None,
             resource_kinds: Default::default(),
         }],
-        entered: Mutex::new(Some(entered)),
-        release: Mutex::new(blocked),
+        budget: Arc::clone(&budget),
+        entered: Mutex::new(None),
     });
     let driver = PortDriver::new(
-        port,
+        Arc::clone(&port) as Arc<dyn PlanePort>,
         Arc::new(KernelServices::new()),
         Caller::for_test(Arc::from("input-custody"), KindCode::Plane),
         Arc::new(CoreRefusals::new()),
         &|_| None,
     )
     .unwrap();
-    let caller = tokio::spawn(async move {
-        driver
-            .serve(ServeIn {
-                invocation: None,
-                request,
-                admission: None,
-                route: 1,
-                http: HttpIn::new(
-                    HttpHead::Text {
-                        method: "GET".into(),
-                        path: "/input".into(),
-                        query: String::new(),
-                        headers: Vec::new(),
-                    },
-                    body,
-                    1,
-                ),
-                creds: Credentials {
-                    bearer: None,
-                    principal: Principal::Anonymous,
-                    operator: false,
-                    signed: None,
-                },
-                audience: "",
-                now_s: 0,
-                unit: None,
-                upstream: None,
-                client: None,
-                carrier: None,
-                intents: Arc::new(NoIntents),
-                models: Vec::new(),
-            })
-            .await
-    });
-    let mut caller = Some(caller);
-    assert_eq!(started.await.unwrap(), payload);
-    if cancel {
-        let caller = caller.take().unwrap();
-        caller.abort();
-        assert!(matches!(caller.await, Err(error) if error.is_cancelled()));
-    }
-    assert_eq!(budget.used(), (payload.len(), payload.len()));
-    assert!(budget.try_enter(AdmissionClass::Data).is_err());
-    release.send(()).unwrap();
-    if !cancel {
-        assert!(caller.take().unwrap().await.unwrap().is_ok());
-    }
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if budget.used() == (0, 0) && budget.try_enter(AdmissionClass::Data).is_ok() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    let input = ServeIn {
+        invocation: None,
+        request,
+        admission: None,
+        route: 1,
+        http: HttpIn::new(
+            HttpHead::Text {
+                method: "GET".into(),
+                path: "/input".into(),
+                query: String::new(),
+                headers: Vec::new(),
+            },
+            body,
+            1,
+        ),
+        creds: Credentials {
+            bearer: None,
+            principal: Principal::Anonymous,
+            operator: false,
+            signed: None,
+        },
+        audience: "",
+        now_s: 0,
+        unit: None,
+        upstream: None,
+        client: None,
+        carrier: None,
+        intents: Arc::new(NoIntents),
+        models: Vec::new(),
+    };
+    (budget, port, driver, input)
+}
+
+/// The session is spawned as the listener spawns it (so its future is `Send`), the plane's crossing sees the
+/// whole input and the count still held, and both are released when the session ends.
+async fn input_held_through_the_crossing(payload: &[u8]) {
+    let (budget, port, driver, input) = custody(payload);
+    let served = tokio::spawn(async move { driver.serve(input).await })
+        .await
+        .unwrap();
+    assert!(served.is_ok());
+    assert_eq!(
+        *port.entered.lock().unwrap(),
+        Some((payload.to_vec(), (payload.len(), payload.len()), true)),
+        "inside the crossing: the body, its bytes and the count are held"
+    );
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
 }
 
 #[tokio::test]
-async fn blocked_native_input_outlives_cancelled_serve_future() {
-    blocking_input_lifetime(b"payload", true).await;
+async fn native_input_is_held_for_the_crossing_and_retired_with_the_session() {
+    input_held_through_the_crossing(b"payload").await;
 }
 
 #[tokio::test]
-async fn empty_native_request_keeps_count_after_caller_cancellation() {
-    blocking_input_lifetime(b"", true).await;
+async fn an_empty_native_request_keeps_its_count_for_the_crossing() {
+    input_held_through_the_crossing(b"").await;
 }
 
+/// Dropping a session's future releases its input at once: no thread is left running with it.
 #[tokio::test]
-async fn native_input_retires_after_normal_blocking_completion() {
-    blocking_input_lifetime(b"payload", false).await;
+async fn a_dropped_serve_future_releases_its_input_at_once() {
+    let (budget, port, driver, input) = custody(b"payload");
+    let serving = driver.serve(input);
+    assert_eq!(budget.used(), (7, 7), "the future owns the input");
+    drop(serving);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+    assert!(
+        port.entered.lock().unwrap().is_none(),
+        "the plane was never entered"
+    );
 }
 
 #[test]

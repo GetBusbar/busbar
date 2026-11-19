@@ -259,6 +259,7 @@ What a client does with it:
 | Revision | Added |
 |---|---|
 | 1 | `GET /info` `api_revision` and `build` (`{auth_modules, hook_plugins, weighted_floor}`); the `Idempotency-Key` header declared on `POST /trust/approve` and `POST /trust/revoke`; `provider` on each row of the `core/routing` view `pools` |
+| 2 | The enum values of `OperationState` (the `state` of `GET /operations/{key}`) are now `applied`, `rejected` and `in_flight`. Revision 1 documents listed them as `__applied`, `__rejected` and `__in_flight`, by mistake: the engine has always sent `applied`, `rejected` and `in_flight`, and the wire did not change. A client that saw revision 1 treats `__applied`, `__rejected` and `__in_flight` as the same states as `applied`, `rejected` and `in_flight` |
 
 ### Configuration form schemas
 

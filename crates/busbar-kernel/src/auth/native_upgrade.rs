@@ -26,6 +26,7 @@ use crate::inbound::native::{
     RouteTarget,
 };
 use crate::plane_driver::port::PortSeat;
+use crate::plane_driver::port_routes::Mounted;
 use crate::state::{AdmissionLease, App};
 
 /// One canonical upgrade route token and its candidate's actual data chain. No App Arc cycle.
@@ -42,6 +43,28 @@ impl NativeUpgradeRoute {
     /// methods exactly GET (§8.6), auth exactly AUTH_PRINCIPAL, and the route's effective chain
     /// (§12.11: the instances reading its D_ROUTE_CRED_HEADER when it declares one, else the data
     /// chain), which root resolved into the route token's auth instances.
+    /// Whether this path can admit the upgrade route `mounted` on `seat` at all, before any owner
+    /// exists: the route-shape half of [`Self::bind`]. Err names what it lacks. A route this path
+    /// cannot admit is never served unadmitted: the listener leaves it unmounted.
+    pub fn admits(app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
+        if app.oauth_as.is_some() {
+            return Err("the native upgrade path does not serve under oauth_as");
+        }
+        if seat.audience.is_some() {
+            return Err("the native upgrade path does not serve an audience-bound plane");
+        }
+        if mounted.flags != ROUTE_UPGRADE || mounted.methods != METHOD_GET || mounted.catalog {
+            return Err("the native upgrade path admits a GET upgrade route only");
+        }
+        if mounted.auth != AUTH_PRINCIPAL || mounted.effective != AUTH_PRINCIPAL {
+            return Err("the native upgrade path admits principal routes only");
+        }
+        if seat.driver.has_hooks(mounted.route) {
+            return Err("the native upgrade path does not run route hooks");
+        }
+        Ok(())
+    }
+
     pub fn bind(
         app: &App,
         seat: &PortSeat,
@@ -52,16 +75,7 @@ impl NativeUpgradeRoute {
             return Err(DataRefused::Unsupported);
         };
         let mounted = target.mounted();
-        if app.oauth_as.is_some()
-            || seat.audience.is_some()
-            || mounted.flags != ROUTE_UPGRADE
-            || mounted.methods != METHOD_GET
-            || mounted.catalog
-            || mounted.auth != AUTH_PRINCIPAL
-            || mounted.effective != AUTH_PRINCIPAL
-            || seat.driver.has_hooks(mounted.route)
-            || !chain.is_data()
-        {
+        if Self::admits(app, seat, mounted).is_err() || !chain.is_data() {
             return Err(DataRefused::Unsupported);
         }
         if !seat.driver.caller().same_incarnation(target.caller())

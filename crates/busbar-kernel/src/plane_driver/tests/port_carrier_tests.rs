@@ -3,8 +3,8 @@
 
 //! IF §8.6 CHANNEL, EX_MSG, WAKE_AT, DETACH, SIGNAL (PLANE-CARRIER): the exchange-to-upstream map, and the session
 //! loop that keeps a session with a held channel, a wake time or a DETACH alive and delivers what happens to it.
-//! The plane is scripted and the channels are fakes whose attachments the test feeds; the session runs on the
-//! test's own thread over a runtime handle, as it does on a blocking thread in production.
+//! The plane is scripted and the channels are fakes whose attachments the test feeds; the session is a future the
+//! test drives to its end on a runtime of its own, as the request's task drives it in production.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,7 +28,7 @@ use crate::channels::{Attachment, ChannelMsg, ChannelReq, UpstreamChannels};
 use crate::plane_driver::port_intents::{IntentHost, Looked, Namespace, Resolver, WorkOutcome};
 use crate::plane_driver::port_money::AuditRow;
 use crate::plane_driver::port_serve::{run_session, Books, Drive, Ran};
-use crate::plane_driver::port_session::{Calls, Effects, SessionError, ToClient};
+use crate::plane_driver::port_session::{finish, Calls, Effects, SessionError, ToClient};
 use crate::plane_driver::port_upstream::{Candidate, Failure, Members, Wants};
 use crate::plane_driver::usage::{Ending, SessionUsage};
 use crate::plugin_records::{CommitOp, CommitOutcome, RecordsDenied, Scope};
@@ -127,7 +127,7 @@ struct Picks {
 }
 
 impl Members for Picks {
-    fn next(&mut self, _: &Wants) -> Option<Candidate> {
+    async fn next(&mut self, _: &Wants) -> Option<Candidate> {
         self.queue.pop_front()
     }
     fn declined(&mut self, member: &Candidate) {
@@ -151,10 +151,10 @@ fn the_walks_pick_becomes_exchange_zeros_upstream_and_every_verdict_still_reache
     let wants = Wants::default();
     {
         let mut mapped = Mapped::new(&mut picks, &map);
-        let a = mapped.next(&wants).unwrap();
+        let a = finish(mapped.next(&wants)).unwrap();
         assert_eq!(&*map.of(0).unwrap().name, "a");
         mapped.declined(&a);
-        let b = mapped.next(&wants).unwrap();
+        let b = finish(mapped.next(&wants)).unwrap();
         assert_eq!(&*map.of(0).unwrap().name, "b", "the walk moved on");
         assert_eq!(
             &*map.of(5).unwrap().name,
@@ -170,7 +170,7 @@ fn the_walks_pick_becomes_exchange_zeros_upstream_and_every_verdict_still_reache
             },
         );
         mapped.served(&b);
-        assert!(mapped.next(&wants).is_none());
+        assert!(finish(mapped.next(&wants)).is_none());
     }
     assert_eq!(
         picks.said,
@@ -328,31 +328,45 @@ impl Books for NoBooks {
 struct Store;
 
 impl IntentHost for Store {
-    fn lookup(
-        &self,
+    fn lookup<'a>(
+        &'a self,
         _: Scope,
         _: u32,
         _: u32,
-        key: &[u8],
-        looked: &mut Looked,
-    ) -> Result<(), RecordsDenied> {
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
         looked.push(&[key], b"v");
-        Ok(())
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn store<'a>(
+        &'a self,
+        _: Scope,
+        _: u32,
+        _: u64,
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn delete(&self, _: Scope, _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn delete<'a>(&'a self, _: Scope, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn commit(&self, _: Scope, _: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
-        Ok(CommitOutcome::Applied)
+    fn commit<'a>(
+        &'a self,
+        _: Scope,
+        _: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(CommitOutcome::Applied)))
     }
-    fn work<'a>(&self, _: &crate::plane_driver::port_intents::WorkIntent<'a>) -> WorkOutcome<'a> {
-        WorkOutcome::unsupported()
+    fn work<'a>(
+        &'a self,
+        _: &'a crate::plane_driver::port_intents::WorkIntent<'a>,
+    ) -> BoxFut<'a, WorkOutcome<'a>> {
+        Box::pin(std::future::ready(WorkOutcome::unsupported()))
     }
-    fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn push<'a>(&'a self, _: u64, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
     fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
 }
@@ -411,15 +425,12 @@ impl UpstreamChannels for FakeChannels {
 
 struct Rig {
     budget: crate::channels::budget::InstanceBudget,
-    // Owns the runtime the carrier was handed a handle to; held, never read.
-    _rt: tokio::runtime::Runtime,
     channels: Arc<FakeChannels>,
     registry: Arc<SignalRegistry>,
     carrier: PortCarrier,
 }
 
 fn rig(mut channels: FakeChannels, upstreams: &[&str]) -> Rig {
-    let rt = tokio::runtime::Runtime::new().unwrap();
     let budget = crate::channels::budget::ChannelBudget::new().instance();
     channels.budget = Some(budget.clone());
     let channels = Arc::new(channels);
@@ -435,11 +446,9 @@ fn rig(mut channels: FakeChannels, upstreams: &[&str]) -> Rig {
             slot: 0,
         },
         Arc::new(|| 0),
-        rt.handle().clone(),
     );
     Rig {
         budget,
-        _rt: rt,
         channels,
         registry,
         carrier,
@@ -472,21 +481,17 @@ fn run(rig: &Rig, plane: &Plane, point: Option<&str>) -> Result<Ran, SessionErro
     let store = Store;
     let resolver = Resolver::new(&store, Some([1; 32])).with_channels(&session.host);
     let refusals = CoreRefusals::new();
-    run_session(
-        plane,
-        &req(),
-        b"{}",
-        Drive {
-            resolver: &resolver,
-            members: None,
-            send: None,
-            dialect: "x",
-            refusals: &refusals,
-            effects: &Quiet,
-            books: &NoBooks,
-            carrier: Some(&session),
-        },
-    )
+    let drive: Drive<'_> = Drive {
+        resolver: &resolver,
+        members: None,
+        send: None,
+        dialect: "x",
+        refusals: &refusals,
+        effects: &Quiet,
+        books: &NoBooks,
+        carrier: Some(&session),
+    };
+    finish(run_session(plane, &req(), b"{}", drive))
 }
 
 fn plane(request: Vec<It>, pieces: Vec<Vec<It>>) -> Plane {

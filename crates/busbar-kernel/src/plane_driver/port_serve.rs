@@ -11,7 +11,9 @@
 //! site); [`AuditOnly`] is the books of a session that is not a billed unit (a line). [`TicketGate`] is the
 //! production [`TicketDoor`] over [`Tickets`] under the plane instance's own binding.
 //!
-//! The calls are synchronous: a driver runs this inside `spawn_blocking` with blocking seams.
+//! The plane's calls are direct synchronous entries; [`run_session`] is a future that makes them on the request's
+//! own task and awaits the walk, the far end, the store and the client between them. It is generic over the walk
+//! (`M`) and the carrier (`S`), so none of those seams boxes a future.
 //!
 //! Not done here (PLANE-DRIVER.md): intents a plane states in a `FROM_UPSTREAM` piece answer are not resolved (the
 //! feed in `port_upstream` takes no resolver); a reply is fed whole, so a streamed reply and a mid-stream
@@ -24,6 +26,7 @@ use busbar_plugin_abi::records::Reply;
 use busbar_ports::codec::plane::encode_refusal;
 use busbar_ports::plane::PlaneIn;
 use busbar_ports::FactVal;
+use std::future::Future;
 use std::sync::Arc;
 
 use super::port_auth::{plain_refusal, TicketDoor};
@@ -40,8 +43,9 @@ use crate::plane_grants::{TicketAdmitted, TicketDenied, Tickets};
 use crate::refusal::RefusalMap;
 use crate::teller::UnitCtx;
 
-/// Where a session's accounting goes.
-pub trait Books {
+/// Where a session's accounting goes. Synchronous (no implementation waits); `Sync` because a session's books are
+/// borrowed across the awaits of its task.
+pub trait Books: Sync {
     /// The session's end: `End` after `end` ran, `Failed` when the plane or the session broke.
     fn ended(&self, ending: Ending, usage: &SessionUsage);
     /// One AUDIT row the plane stated.
@@ -144,12 +148,49 @@ impl TicketDoor for TicketGate {
     }
 }
 
-/// What one session needs besides the plane.
-pub struct Drive<'a> {
+/// A walk and a carrier that do not exist: the `M` and `S` of a session that walks nothing (its `members` and
+/// `send` are `None`). It has no values, so none of its methods can run.
+pub enum NoWalk {}
+
+impl Members for NoWalk {
+    async fn next(&mut self, _wants: &Wants) -> Option<super::port_upstream::Candidate> {
+        match *self {}
+    }
+    fn declined(&mut self, _member: &super::port_upstream::Candidate) {
+        match *self {}
+    }
+    fn failed(
+        &mut self,
+        _member: &super::port_upstream::Candidate,
+        _failure: &super::port_upstream::Failure,
+    ) {
+        match *self {}
+    }
+    fn served(&mut self, _member: &super::port_upstream::Candidate) {
+        match *self {}
+    }
+}
+
+impl UpSend for NoWalk {
+    type Rest<'a> = super::port_upstream::Whole;
+
+    async fn open<'a>(
+        &'a mut self,
+        _member: &'a super::port_upstream::Candidate,
+        _exchange: super::port_session::UpExchange,
+    ) -> Result<super::port_upstream::UpOpen<Self::Rest<'a>>, super::port_upstream::SendFailed>
+    {
+        match *self {}
+    }
+}
+
+/// What one session needs besides the plane: `M` is its member walk and `S` its carrier ([`NoWalk`] when it has
+/// none), both static.
+pub struct Drive<'a, M: Members = NoWalk, S: UpSend = NoWalk> {
     pub resolver: &'a Resolver<'a>,
     /// The member walk and the far end; both or neither. A FORWARD with neither is `NotDriven`.
-    pub members: Option<&'a mut dyn Members>,
-    pub send: Option<&'a mut dyn UpSend>,
+    pub members: Option<&'a mut M>,
+    pub send: Option<&'a mut S>,
     /// The dialect the plane's `upstream` is asked in.
     pub dialect: &'a str,
     pub refusals: &'a dyn RefusalMap,
@@ -159,6 +200,93 @@ pub struct Drive<'a> {
     /// and a session that holds a channel, a media bridge, a wake time or a DETACH is pumped until it ends
     /// ([`CarrierSession::pump`]). `None` = no carrier: a CHANNEL is `P_ERROR` and the session ends with its walk.
     pub carrier: Option<&'a CarrierSession>,
+}
+
+/// A [`Drive`] without its walk: what a step that never touches the walk borrows across an await (a borrow of the
+/// whole `Drive` would make the session's future `Send` only for a `Sync` walk).
+#[derive(Clone, Copy)]
+struct Seams<'a> {
+    resolver: &'a Resolver<'a>,
+    refusals: &'a dyn RefusalMap,
+    effects: &'a dyn Effects,
+    books: &'a dyn Books,
+}
+
+impl<'a, M: Members, S: UpSend> Drive<'a, M, S> {
+    fn seams(&self) -> Seams<'a> {
+        Seams {
+            resolver: self.resolver,
+            refusals: self.refusals,
+            effects: self.effects,
+            books: self.books,
+        }
+    }
+}
+
+/// One session of a seat's plane, everything but its walk: handed to [`super::port_egress::PortUpstream::walk`],
+/// which runs it over the walk's own members and carrier, so the session is compiled for them (static calls).
+pub struct SessionRun<'a> {
+    pub port: &'a dyn busbar_ports::plane::PlanePort,
+    pub req: &'a PlaneIn<'a>,
+    pub body: &'a [u8],
+    pub resolver: &'a Resolver<'a>,
+    pub dialect: &'a str,
+    pub refusals: &'a dyn RefusalMap,
+    pub effects: &'a dyn Effects,
+    pub books: &'a dyn Books,
+    pub carrier: Option<&'a CarrierSession>,
+}
+
+impl<'a> SessionRun<'a> {
+    /// The session to its end over `members` and `send`.
+    ///
+    /// # Errors
+    /// As [`run_session`].
+    pub fn run<'m, M: Members, S: UpSend>(
+        self,
+        members: &'m mut M,
+        send: &'m mut S,
+    ) -> impl Future<Output = Result<Ran, SessionError>> + Send + use<'a, 'm, M, S>
+    where
+        'a: 'm,
+    {
+        self.drive(Some(members), Some(send))
+    }
+
+    /// The session to its end with no walk: a FORWARD is `NotDriven`.
+    ///
+    /// # Errors
+    /// As [`run_session`].
+    pub fn alone(self) -> impl Future<Output = Result<Ran, SessionError>> + Send + use<'a> {
+        self.drive::<NoWalk, NoWalk>(None, None)
+    }
+
+    /// `Send` is stated here, where the walk's types are still generic: a caller's future that holds this one is
+    /// then `Send` without the compiler re-proving it through every borrow the session holds.
+    fn drive<'m, M: Members, S: UpSend>(
+        self,
+        members: Option<&'m mut M>,
+        send: Option<&'m mut S>,
+    ) -> impl Future<Output = Result<Ran, SessionError>> + Send + use<'a, 'm, M, S>
+    where
+        'a: 'm,
+    {
+        run_session(
+            self.port,
+            self.req,
+            self.body,
+            Drive {
+                resolver: self.resolver,
+                members,
+                send,
+                dialect: self.dialect,
+                refusals: self.refusals,
+                effects: self.effects,
+                books: self.books,
+                carrier: self.carrier,
+            },
+        )
+    }
 }
 
 /// What a session produced.
@@ -208,27 +336,27 @@ pub(super) fn absorb(
 ///
 /// # Errors
 /// The plane refused, failed or faulted, broke a once rule, or stated a FORWARD with nothing to walk.
-pub fn run_session<K: Calls + ?Sized>(
+pub async fn run_session<K: Calls + ?Sized, M: Members, S: UpSend>(
     calls: &K,
     req: &PlaneIn<'_>,
     body: &[u8],
-    mut drive: Drive<'_>,
+    mut drive: Drive<'_, M, S>,
 ) -> Result<Ran, SessionError> {
     if let Some(pending) = drive.effects.admission() {
-        return run_pending_session(calls, req, body, drive, pending);
+        return run_pending_session(calls, req, body, drive, pending).await;
     }
     if let Some(hooks) = drive
         .effects
         .hooks()
         .filter(|hooks| hooks.binder.active(req.route))
     {
-        return run_hook_session(calls, req, body, drive, hooks);
+        return run_hook_session(calls, req, body, drive, hooks).await;
     }
     let (mut task, first) = Task::begin(calls, req, body, drive.effects)?;
     if let Some(user) = end_user_of(&first) {
         drive.books.end_user(user);
     }
-    match drive_task(&mut task, first, req, &mut drive) {
+    match drive_task(&mut task, first, req, &mut drive).await {
         Ok(ran) => Ok(ran),
         Err(error) => {
             drive.books.ended(Ending::Failed, task.usage());
@@ -237,24 +365,26 @@ pub fn run_session<K: Calls + ?Sized>(
     }
 }
 
-fn run_pending_session<K: Calls + ?Sized>(
+async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
     calls: &K,
     req: &PlaneIn<'_>,
     body: &[u8],
-    mut drive: Drive<'_>,
+    mut drive: Drive<'_, M, S>,
     pending: &super::port_admission::Pending,
 ) -> Result<Ran, SessionError> {
     use super::port_hooks::stage::{self, Buffered, Observed};
     let buffered = Buffered::new(drive.effects);
     let (mut task, first) = Task::begin(calls, req, body, &buffered)?;
-    let outcome = (|| {
-        let mut answers = task.resolve_before_hooks(first, drive.resolver, &buffered)?;
+    let outcome = async {
+        let mut answers = task
+            .resolve_before_hooks(first, drive.resolver, &buffered)
+            .await?;
         let wants = answers
             .iter()
             .find_map(|answer| answer.forward.as_ref())
             .map(|forward| Wants::from_facts(&forward.wants));
         pending.admit(
-            drive.members.as_deref_mut().map(|m| m as &mut dyn Members),
+            drive.members.as_deref_mut(),
             wants.as_ref(),
             task.request_declaration()?,
         )?;
@@ -267,7 +397,8 @@ fn run_pending_session<K: Calls + ?Sized>(
             .hooks()
             .filter(|hooks| hooks.binder.active(req.route))
         {
-            let stage = stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered)?;
+            let stage =
+                stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered).await?;
             let observed = Observed::new(drive.effects, stage);
             buffered.release();
             let mut resolved = None;
@@ -277,20 +408,20 @@ fn run_pending_session<K: Calls + ?Sized>(
                 }
                 gather(
                     &mut resolved,
-                    task.resolve(answer, drive.resolver, &observed)?,
+                    task.resolve(answer, drive.resolver, &observed).await?,
                 );
             }
             let mut allowed = Drive {
                 resolver: drive.resolver,
-                members: drive.members.take().map(|m| m as &mut dyn Members),
-                send: drive.send.take().map(|s| s as &mut dyn UpSend),
+                members: drive.members.take(),
+                send: drive.send.take(),
                 dialect: drive.dialect,
                 refusals: drive.refusals,
                 effects: &observed,
                 books: drive.books,
                 carrier: drive.carrier,
             };
-            drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut allowed)
+            drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut allowed).await
         } else {
             buffered.release();
             let mut resolved = None;
@@ -300,23 +431,24 @@ fn run_pending_session<K: Calls + ?Sized>(
                 }
                 gather(
                     &mut resolved,
-                    task.resolve(answer, drive.resolver, drive.effects)?,
+                    task.resolve(answer, drive.resolver, drive.effects).await?,
                 );
             }
-            drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut drive)
+            drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut drive).await
         }
-    })();
+    }
+    .await;
     if outcome.is_err() {
         drive.books.ended(Ending::Failed, task.usage());
     }
     outcome
 }
 
-fn run_hook_session<K: Calls + ?Sized>(
+async fn run_hook_session<K: Calls + ?Sized, M: Members, S: UpSend>(
     calls: &K,
     req: &PlaneIn<'_>,
     body: &[u8],
-    mut drive: Drive<'_>,
+    mut drive: Drive<'_, M, S>,
     hooks: &super::port_hooks::Invocation,
 ) -> Result<Ran, SessionError> {
     use super::port_hooks::stage::{self, Buffered, Observed};
@@ -329,13 +461,15 @@ fn run_hook_session<K: Calls + ?Sized>(
     if let Some(user) = end_user_of(&first) {
         drive.books.end_user(user);
     }
-    let outcome = (|| {
+    let outcome = async {
         let mut answers = if hooks.binder.enforcing(req.route) {
-            task.resolve_before_hooks(first, drive.resolver, &buffered)?
+            task.resolve_before_hooks(first, drive.resolver, &buffered)
+                .await?
         } else {
-            task.resolve(first, drive.resolver, &buffered)?
+            task.resolve(first, drive.resolver, &buffered).await?
         };
-        let stage = stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered)?;
+        let stage =
+            stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered).await?;
         let observed = Observed::new(drive.effects, stage);
         buffered.release();
         let mut resolved = None;
@@ -345,21 +479,22 @@ fn run_hook_session<K: Calls + ?Sized>(
             }
             gather(
                 &mut resolved,
-                task.resolve(answer, drive.resolver, &observed)?,
+                task.resolve(answer, drive.resolver, &observed).await?,
             );
         }
         let mut allowed = Drive {
             resolver: drive.resolver,
-            members: drive.members.take().map(|m| m as &mut dyn Members),
-            send: drive.send.take().map(|s| s as &mut dyn UpSend),
+            members: drive.members.take(),
+            send: drive.send.take(),
             dialect: drive.dialect,
             refusals: drive.refusals,
             effects: &observed,
             books: drive.books,
             carrier: drive.carrier,
         };
-        drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut allowed)
-    })();
+        drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut allowed).await
+    }
+    .await;
     if outcome.is_err() {
         drive.books.ended(Ending::Failed, task.usage());
     }
@@ -387,70 +522,77 @@ fn end_user_of(first: &Answer) -> Option<&str> {
     })
 }
 
-fn drive_task<K: Calls + ?Sized>(
+async fn drive_task<K: Calls + ?Sized, M: Members, S: UpSend>(
     task: &mut Task<'_, K>,
     first: Answer,
     req: &PlaneIn<'_>,
-    drive: &mut Drive<'_>,
+    drive: &mut Drive<'_, M, S>,
 ) -> Result<Ran, SessionError> {
     if let (Some(carrier), Some(first_forward)) = (drive.carrier, &first.forward) {
         carrier
             .map
             .point_wanted(&Wants::from_facts(&first_forward.wants));
     }
-    let answers = task.resolve(first, drive.resolver, drive.effects)?;
-    drive_answers(task, answers, req, drive)
+    let answers = task.resolve(first, drive.resolver, drive.effects).await?;
+    drive_answers(task, answers, req, drive).await
 }
 
-fn drive_answers<K: Calls + ?Sized>(
+/// The walk of a FORWARD over `members` (recording each pick in the carrier's map when the session has one).
+async fn walk<K: Calls + ?Sized, M: Members, S: UpSend>(
+    task: &mut Task<'_, K>,
+    wants: &Wants,
+    model: &str,
+    members: &mut M,
+    send: &mut S,
+    (carrier, dialect, effects): (Option<&CarrierSession>, &str, &dyn Effects),
+) -> Result<(Attempted, Option<u32>), SessionError> {
+    match carrier {
+        Some(carrier) => {
+            let mut mapped = Mapped::new(members, &carrier.map);
+            let walked =
+                run_attempts(task, wants, dialect, model, &mut mapped, send, effects).await?;
+            Ok((walked, mapped.retry_after()))
+        }
+        None => {
+            let walked = run_attempts(task, wants, dialect, model, members, send, effects).await?;
+            Ok((walked, members.retry_after()))
+        }
+    }
+}
+
+async fn drive_answers<K: Calls + ?Sized, M: Members, S: UpSend>(
     task: &mut Task<'_, K>,
     answers: Vec<Answer>,
     req: &PlaneIn<'_>,
-    drive: &mut Drive<'_>,
+    drive: &mut Drive<'_, M, S>,
 ) -> Result<Ran, SessionError> {
     let mut ran = Ran::default();
     let mut forward = None;
-    let written = write_channels(task, &answers, drive.resolver, drive.effects)?;
+    let written = write_channels(task, &answers, drive.resolver, drive.effects).await?;
     absorb(&mut ran, &mut forward, answers, drive.books);
     absorb(&mut ran, &mut None, written, drive.books);
     drive.effects.observed_usage(task.usage());
-    hand_out(drive.effects, &mut ran.client);
+    hand_out(drive.effects, &mut ran.client).await;
     if let Some(forward) = forward {
         let wants = Wants::from_facts(&forward.wants);
         if task.is_command() {
             let answer = task.command(&wants, drive.dialect, drive.effects)?;
-            let answers = task.resolve(answer, drive.resolver, drive.effects)?;
-            let written = write_channels(task, &answers, drive.resolver, drive.effects)?;
+            let answers = task.resolve(answer, drive.resolver, drive.effects).await?;
+            let written = write_channels(task, &answers, drive.resolver, drive.effects).await?;
             absorb(&mut ran, &mut None, answers, drive.books);
             absorb(&mut ran, &mut None, written, drive.books);
             drive.effects.observed_usage(task.usage());
-            hand_out(drive.effects, &mut ran.client);
+            hand_out(drive.effects, &mut ran.client).await;
         } else {
-            let (Some(members), Some(send)) =
-                (drive.members.as_deref_mut(), drive.send.as_deref_mut())
-            else {
+            let (Some(members), Some(send)) = (drive.members.take(), drive.send.take()) else {
                 return Err(SessionError::NotDriven);
             };
-            let wants = Wants::from_facts(&forward.wants);
             let model = wants.model.clone().unwrap_or_default();
-            let mut mapped;
-            let members: &mut dyn Members = match drive.carrier {
-                Some(carrier) => {
-                    mapped = Mapped::new(members, &carrier.map);
-                    &mut mapped
-                }
-                None => members,
-            };
-            let walked = run_attempts(
-                task,
-                &wants,
-                drive.dialect,
-                &model,
-                members,
-                send,
-                drive.effects,
-            )?;
-            let wait = members.retry_after();
+            let seams = (drive.carrier, drive.dialect, drive.effects);
+            let walked = walk(task, &wants, &model, &mut *members, &mut *send, seams).await;
+            drive.members = Some(members);
+            drive.send = Some(send);
+            let (walked, wait) = walked?;
             match walked {
                 Attempted::Served {
                     client,
@@ -460,7 +602,7 @@ fn drive_answers<K: Calls + ?Sized>(
                 } => {
                     ran.client.extend(client);
                     drive.effects.observed_usage(task.usage());
-                    hand_out(drive.effects, &mut ran.client);
+                    hand_out(drive.effects, &mut ran.client).await;
                     ran.member = Some(member);
                     ran.attempts = attempts;
                 }
@@ -470,13 +612,15 @@ fn drive_answers<K: Calls + ?Sized>(
                 } => {
                     ran.attempts = attempts;
                     ran.exhausted = true;
-                    exhausted(task, req, drive, &mut ran, wait, local_quota)?;
+                    exhausted(task, req, drive.seams(), &mut ran, wait, local_quota).await?;
                 }
             }
         }
     }
     if let Some(carrier) = drive.carrier {
-        carrier.pump(task, &mut ran, drive.resolver, drive.effects, drive.books)?;
+        carrier
+            .pump(task, &mut ran, drive.resolver, drive.effects, drive.books)
+            .await?;
     }
     let mut last = task.end(drive.effects)?;
     // STORE, COMMIT and PUSH of the end answer apply; a session that has ended can be told no result.
@@ -484,12 +628,13 @@ fn drive_answers<K: Calls + ?Sized>(
     if !end_intents.is_empty() {
         let _ = drive
             .resolver
-            .resolve(&end_intents, &last.lent, &mut task.held, &mut task.reads);
+            .resolve(&end_intents, &last.lent, &mut task.held, &mut task.reads)
+            .await;
     }
     absorb(&mut ran, &mut None, [last], drive.books);
     ran.usage = task.usage().clone();
     drive.effects.observed_usage(task.usage());
-    hand_out(drive.effects, &mut ran.client);
+    hand_out(drive.effects, &mut ran.client).await;
     drive.books.ended(Ending::End, &ran.usage);
     Ok(ran)
 }
@@ -497,10 +642,10 @@ fn drive_answers<K: Calls + ?Sized>(
 /// No member is left: the plane is told (one REFUSAL, `P_EXHAUSTED`) and answers the client now. `wait` is the
 /// walk's Retry-After (IF §12.3): the refusal's head carries it unless the plane already stated one (the REFUSAL
 /// record has no field for it, so core stamps the head the client gets).
-fn exhausted<K: Calls + ?Sized>(
+async fn exhausted<K: Calls + ?Sized>(
     task: &mut Task<'_, K>,
     req: &PlaneIn<'_>,
-    drive: &Drive<'_>,
+    drive: Seams<'_>,
     ran: &mut Ran,
     wait: Option<u32>,
     local_quota: bool,
@@ -519,7 +664,7 @@ fn exhausted<K: Calls + ?Sized>(
         return Ok(());
     }
     let answer = task.piece(FROM_CORE, 0, P_EXHAUSTED, arg.as_bytes(), drive.effects)?;
-    let answers = task.resolve(answer, drive.resolver, drive.effects)?;
+    let answers = task.resolve(answer, drive.resolver, drive.effects).await?;
     absorb(ran, &mut None, answers, drive.books);
     if ran.client.len() == before {
         ran.client.extend(plain_refusal(&refusal));

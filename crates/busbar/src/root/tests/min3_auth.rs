@@ -830,6 +830,7 @@ async fn the_default_admin_chain_with_no_operator_credential_installs_and_denies
     assert!(!app.admin_modules.operator.unset("admin-tokens"));
     let empty = Arc::new(AuthSet {
         instances: BTreeMap::new(),
+        opened: Vec::new(),
         owners: Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners,

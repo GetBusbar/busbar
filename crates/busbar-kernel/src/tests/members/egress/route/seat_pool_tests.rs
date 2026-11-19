@@ -12,10 +12,11 @@ use busbar_plugin_abi::host_side::caller::Accept;
 
 use super::*;
 use crate::plane_driver::port_egress::{
-    upstream_targets, PortEgress, PortUpstream, ProbeTarget, SeatPool, SessionFacts,
+    upstream_targets, EgressWalk, PortEgress, ProbeTarget, SeatPool, SessionFacts,
 };
 use crate::plane_driver::port_session::UpExchange;
-use crate::plane_driver::port_upstream::{Members, UpSend, Wants};
+use crate::plane_driver::port_upstream::{Members, UpChunks, UpSend, Wants};
+use crate::plane_driver::request_admission::RequestPoolReceipt;
 use crate::upstreams::{ConfiguredUpstreams, Upstreams};
 
 const PIN_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -156,7 +157,6 @@ fn a_forward_on_a_seat_composed_from_its_upstreams_reaches_the_upstream() {
     let walk = PortEgress::new(
         Arc::new(egress),
         Arc::new(crate::teller::Kernel::new()),
-        rt.handle().clone(),
         pool.pool.clone(),
         Accept::default(),
         upstream_targets("mcp", three()),
@@ -167,27 +167,36 @@ fn a_forward_on_a_seat_composed_from_its_upstreams_reaches_the_upstream() {
         body: b"{}".to_vec(),
         ..UpExchange::default()
     };
-    let mut picked = None;
-    let mut status = None;
-    walk.walk(
-        SessionFacts {
-            pending: None,
-            unit: busbar_contract::UnitKey::new(9),
-        },
-        &mut |members: &mut dyn Members, send: &mut dyn UpSend| {
-            let wants = Wants {
-                upstream: Some("alpha".into()),
-                ..Wants::default()
-            };
-            let member = members.next(&wants).expect("the pinned upstream is picked");
-            picked = Some(member.upstream.to_string());
-            let reply = send
-                .send(&member, exchange.clone())
+    // The walk `PortEgress::walk` runs, built from the same far end and targets, driven on this runtime.
+    let facts = SessionFacts {
+        pending: None,
+        unit: busbar_contract::UnitKey::new(9),
+    };
+    let token = walk.token();
+    let make =
+        |wants: &Wants, receipt: Option<&RequestPoolReceipt>| walk.far_end(&facts, wants, receipt);
+    let walked = EgressWalk::new(&make, &token, walk.targets());
+    let (picked, status) = rt.block_on(async {
+        let (mut members, mut send) = (walked.members(), walked.sender());
+        let wants = Wants {
+            upstream: Some("alpha".into()),
+            ..Wants::default()
+        };
+        let member = members
+            .next(&wants)
+            .await
+            .expect("the pinned upstream is picked");
+        let status = {
+            let mut open = send
+                .open(&member, exchange.clone())
+                .await
                 .expect("the upstream answers");
-            status = Some(reply.status);
-            members.served(&member);
-        },
-    );
+            while let Ok(Some(_)) = open.rest.next().await {}
+            open.status
+        };
+        members.served(&member);
+        (Some(member.upstream.to_string()), Some(status))
+    });
     assert_eq!(picked.as_deref(), Some("alpha"));
     assert_eq!(status, Some(200));
     assert_eq!(

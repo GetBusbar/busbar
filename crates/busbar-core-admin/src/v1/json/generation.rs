@@ -776,11 +776,33 @@ pub(crate) async fn get_operation(
             );
         }
     };
-    let operation_id = operation_id(&actor, &key);
-    let body = match looked {
+    let body = match operation_body(&key, &actor, looked) {
+        Ok(body) => body,
+        Err(refused) => return refused,
+    };
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            busbar_contract::protocol::APPLICATION_JSON,
+        )],
+        body.to_string(),
+    )
+        .into_response()
+}
+
+/// The `GET /operations/{key}` record for what the idempotency store holds under `key`, or the
+/// refusal when the stored bytes cannot be read.
+fn operation_body(
+    key: &str,
+    actor: &str,
+    looked: Looked,
+) -> Result<busbar_contract::json::Value, Response> {
+    let operation_id = operation_id(actor, key);
+    Ok(match looked {
         Looked::Retained { receipt } => {
             let Some(intent) = decode_intent(&receipt) else {
-                return unreadable_replay();
+                return Err(unreadable_replay());
             };
             busbar_contract::json::json!({
                 "idempotency_key": key, "principal": actor, "operation_id": operation_id,
@@ -805,11 +827,11 @@ pub(crate) async fn get_operation(
             completed_at,
         } => {
             let Some(done) = decode_answer(&answer) else {
-                return gate::admin_error_envelope(
+                return Err(gate::admin_error_envelope(
                     500,
                     "internal",
                     "the stored answer is unreadable",
-                );
+                ));
             };
             busbar_contract::json::json!({
                 "idempotency_key": key, "principal": actor, "operation_id": operation_id,
@@ -822,16 +844,7 @@ pub(crate) async fn get_operation(
                     .unwrap_or_default(),
             })
         }
-    };
-    (
-        StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            busbar_contract::protocol::APPLICATION_JSON,
-        )],
-        body.to_string(),
-    )
-        .into_response()
+    })
 }
 
 #[cfg(test)]
