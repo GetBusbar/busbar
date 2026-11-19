@@ -91,6 +91,45 @@ impl<'a> Pieces<'a> {
     }
 }
 
+/// `begin`'s call. texts: alpn, sni, peer, local, local_fingerprint. blobs: tls_peer_cert, leftover,
+/// head.
+pub(crate) fn begin_frame<'a>(conn: &ConnInfo<'a>) -> Frame<'a, BeginHead, 5, 3> {
+    Frame::raw(
+        BeginHead {
+            role: conn.role,
+            flags: conn.flags,
+            mono_ns: conn.mono_ns,
+        },
+        [
+            conn.alpn,
+            conn.sni,
+            conn.peer,
+            conn.local,
+            conn.local_fingerprint,
+        ],
+        [conn.tls_peer_cert, conn.leftover, conn.head],
+    )
+}
+
+/// `emit`'s call: one blob per byte-carrying piece present, packed to the front in the contract's
+/// order.
+pub(crate) fn emit_frame<'a>(
+    stream: u64,
+    pieces: u32,
+    arg: u32,
+    credit: u64,
+    parts: Pieces<'a>,
+) -> Frame<'a, EmitHead, 0, 4> {
+    let (blobs, n) = parts.packed();
+    let head = EmitHead {
+        stream,
+        pieces,
+        arg,
+        credit,
+    };
+    Frame::new(head, [], blobs).known(size_of::<EmitHead>(), 0, n)
+}
+
 super::proxy!(Transport);
 
 /// One live transport session (a connection) and its output state.
@@ -115,21 +154,7 @@ impl Proxy {
         buf: &'o mut PooledOut,
         conn: &ConnInfo<'_>,
     ) -> Result<(Option<SessionHandle>, Answer<'o>), CallError> {
-        let frame = Frame::raw(
-            BeginHead {
-                role: conn.role,
-                flags: conn.flags,
-                mono_ns: conn.mono_ns,
-            },
-            [
-                conn.alpn,
-                conn.sni,
-                conn.peer,
-                conn.local,
-                conn.local_fingerprint,
-            ],
-            [conn.tls_peer_cert, conn.leftover, conn.head],
-        );
+        let frame = begin_frame(conn);
         let (s, answer) = call::opens(&self.to, BEGIN, Mono(conn.mono_ns), &frame, &[], buf)?;
         Ok((
             s.map(|s| SessionHandle {
@@ -235,14 +260,7 @@ impl OnSession for SessionHandle {
         credit: u64,
         parts: Pieces<'_>,
     ) -> Result<Answer<'o>, CallError> {
-        let (blobs, n) = parts.packed();
-        let head = EmitHead {
-            stream,
-            pieces,
-            arg,
-            credit,
-        };
-        let frame = Frame::new(head, [], blobs).known(size_of::<EmitHead>(), 0, n);
+        let frame = emit_frame(stream, pieces, arg, credit, parts);
         call::on(&mut self.s, EMIT, at, &frame, &[], buf)
     }
 
@@ -258,14 +276,7 @@ impl OnSession for SessionHandle {
         credit: u64,
         parts: Pieces<'_>,
     ) -> Result<(Answer<'o>, usize), CallError> {
-        let (blobs, n) = parts.packed();
-        let head = EmitHead {
-            stream,
-            pieces,
-            arg,
-            credit,
-        };
-        let frame = Frame::new(head, [], blobs).known(size_of::<EmitHead>(), 0, n);
+        let frame = emit_frame(stream, pieces, arg, credit, parts);
         call::on_fixed(&mut self.s, EMIT, at, &frame, &[], buf)
     }
 

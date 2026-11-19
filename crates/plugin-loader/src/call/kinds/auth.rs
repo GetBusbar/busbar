@@ -39,6 +39,25 @@ pub struct LoginHead {
     pub step: u32,
 }
 
+/// `verify`'s call: texts method, path, query, authority, peer; blobs headers (a pair list),
+/// tls_peer_cert, body, issued. Every field is lent from where the request already lies.
+pub(crate) fn verify_frame<'a>(req: &AuthReq<'a>) -> Frame<'a, VerifyHead, 5, 4> {
+    Frame::raw(
+        VerifyHead {
+            flags: req.flags,
+            _r: 0,
+            now_s: req.now_s,
+        },
+        [req.method, req.path, req.query, req.authority, req.peer],
+        [
+            pairs(req.headers.get()),
+            req.tls_peer_cert,
+            req.body,
+            req.issued,
+        ],
+    )
+}
+
 super::proxy!(Auth);
 
 impl Proxy {
@@ -51,15 +70,7 @@ impl Proxy {
         req: &AuthReq<'_>,
     ) -> Result<Answer<'o>, CallError> {
         let headers = req.headers.get();
-        let frame = Frame::raw(
-            VerifyHead {
-                flags: req.flags,
-                _r: 0,
-                now_s: req.now_s,
-            },
-            [req.method, req.path, req.query, req.authority, req.peer],
-            [pairs(headers), req.tls_peer_cert, req.body, req.issued],
-        );
+        let frame = verify_frame(req);
         call::plain(&self.to, VERIFY, at, &frame, headers, buf)
     }
 

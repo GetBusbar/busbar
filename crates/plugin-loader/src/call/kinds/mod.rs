@@ -222,3 +222,435 @@ mod layout_tests {
         assert_eq!(1u64 << transport::OFFER, t::M_OFFER);
     }
 }
+
+/// SIDE BY SIDE with the contract's own packers. The contract crate generates, from each kind's
+/// declaration, the host's half of every method (`<kind>::pack::<method>`) and each method's table
+/// position (`<kind>::slot::<method>`). These tests build the same call both ways from the same
+/// arguments and require the two to be one call: the same head bytes, and the same lent memory in every
+/// text and blob position. A face that drifts from the contract fails here, with no plugin and no
+/// engine.
+#[cfg(test)]
+mod against_the_contract {
+    use super::*;
+    use crate::call::frame::{Frame, Head, Mono};
+    use crate::call::Call;
+    use busbar_plugin_abi::types::{Bytes, Pair, Slice, Str};
+
+    /// The two calls are one call: equal heads, and position by position the same address and length.
+    fn same(mine: &Call<'_>, theirs: &Call<'_>) {
+        assert_eq!(mine.head(), theirs.head(), "head");
+        assert_eq!(mine.mono_ns(), theirs.mono_ns(), "mono_ns");
+        assert_eq!(mine.texts().len(), theirs.texts().len(), "texts");
+        for (at, (a, b)) in mine.texts().iter().zip(theirs.texts()).enumerate() {
+            assert!(
+                core::ptr::eq(a.get().as_ptr(), b.get().as_ptr()),
+                "text {at}"
+            );
+            assert_eq!(a.len(), b.len(), "text {at}");
+        }
+        assert_eq!(mine.blobs().len(), theirs.blobs().len(), "blobs");
+        for (at, (a, b)) in mine.blobs().iter().zip(theirs.blobs()).enumerate() {
+            assert!(
+                core::ptr::eq(a.get().as_ptr(), b.get().as_ptr()),
+                "blob {at}"
+            );
+            assert_eq!(a.len(), b.len(), "blob {at}");
+        }
+    }
+
+    /// My frame against the contract's packer, at one clock reading.
+    fn check<H: Head, const T: usize, const B: usize>(
+        frame: &Frame<'_, H, T, B>,
+        theirs: impl FnOnce(u64, &mut dyn FnMut(&Call<'_>)),
+    ) {
+        let mine = frame.call(Mono(77));
+        let mut crossed = 0;
+        theirs(77, &mut |call: &Call<'_>| {
+            crossed += 1;
+            same(&mine, call);
+        });
+        assert_eq!(crossed, 1, "the contract's packer crossed once");
+    }
+
+    #[test]
+    fn the_slots_are_the_contracts() {
+        use busbar_plugin_abi::{
+            auth as a, export as x, hook as h, plane as p, secret as s, store as st, transport as t,
+        };
+        let u = usize::from;
+        assert_eq!(
+            [
+                u(store::READ),
+                u(store::SCAN),
+                u(store::COMMIT),
+                u(store::CLOCK),
+                u(store::INFO)
+            ],
+            [
+                st::slot::read,
+                st::slot::scan,
+                st::slot::commit,
+                st::slot::clock,
+                st::slot::info
+            ]
+        );
+        assert_eq!(u(secret::RESOLVE), s::slot::resolve);
+        assert_eq!(
+            [
+                u(auth::VERIFY),
+                u(auth::LOGIN),
+                u(auth::OUTBOUND),
+                u(auth::REFRESH),
+                u(auth::SERVE)
+            ],
+            [
+                a::slot::verify,
+                a::slot::login,
+                a::slot::outbound,
+                a::slot::refresh,
+                a::slot::serve
+            ]
+        );
+        assert_eq!([u(hook::ON), u(hook::ON_IO)], [h::slot::on, h::slot::on_io]);
+        assert_eq!(
+            [u(export::DELIVER), u(export::RENDER), u(export::CONFIRM)],
+            [x::slot::deliver, x::slot::render, x::slot::confirm]
+        );
+        assert_eq!(
+            [
+                u(plane::REQUEST),
+                u(plane::UPSTREAM),
+                u(plane::PIECE),
+                u(plane::END),
+                u(plane::REWRITE),
+                u(plane::RENDER),
+                u(plane::ADMIN),
+                u(plane::PROBE),
+                u(plane::DEMUX),
+                u(plane::SELECT_RESOURCES),
+                u(plane::CHANNEL)
+            ],
+            [
+                p::slot::request,
+                p::slot::upstream,
+                p::slot::piece,
+                p::slot::end,
+                p::slot::rewrite,
+                p::slot::render,
+                p::slot::admin,
+                p::slot::probe,
+                p::slot::demux,
+                p::slot::select_resources,
+                p::slot::channel
+            ]
+        );
+        assert_eq!(
+            [
+                u(transport::BEGIN),
+                u(transport::INGEST),
+                u(transport::EMIT),
+                u(transport::TIMER),
+                u(transport::DATAGRAM),
+                u(transport::EVENT),
+                u(transport::OFFER)
+            ],
+            [
+                t::slot::begin,
+                t::slot::ingest,
+                t::slot::emit,
+                t::slot::timer,
+                t::slot::datagram,
+                t::slot::event,
+                t::slot::offer
+            ]
+        );
+        // And the loader's own table of the 34 methods names them as the contract does.
+        for (kind, names) in [
+            (busbar_plugin_abi::types::KindCode::Store, &st::METHODS[..]),
+            (busbar_plugin_abi::types::KindCode::Secret, &s::METHODS[..]),
+            (busbar_plugin_abi::types::KindCode::Auth, &a::METHODS[..]),
+            (busbar_plugin_abi::types::KindCode::Hook, &h::METHODS[..]),
+            (busbar_plugin_abi::types::KindCode::Export, &x::METHODS[..]),
+            (busbar_plugin_abi::types::KindCode::Plane, &p::METHODS[..]),
+            (
+                busbar_plugin_abi::types::KindCode::Transport,
+                &t::METHODS[..],
+            ),
+        ] {
+            for (slot, name) in names.iter().enumerate() {
+                let row = crate::call::layout::method(kind, slot as u8).expect("a row");
+                assert_eq!(row.name, *name, "{} slot {slot}", kind.word());
+                assert_eq!(crate::watchdog::entry_name(kind, slot as u8), *name);
+            }
+            assert!(crate::call::layout::method(kind, names.len() as u8).is_none());
+        }
+    }
+
+    fn headers() -> [Pair<'static>; 2] {
+        [
+            Pair {
+                name: Str::new("accept"),
+                value: Bytes::new(b"*/*"),
+            },
+            Pair {
+                name: Str::new("x-request"),
+                value: Bytes::new(b"7"),
+            },
+        ]
+    }
+
+    #[test]
+    fn auth_verify_is_the_contracts_call() {
+        let headers = headers();
+        let req = busbar_plugin_abi::auth::AuthReq {
+            flags: busbar_plugin_abi::auth::REQ_ISSUED_LOOKED_UP,
+            _r: 0,
+            method: Str::new("POST"),
+            path: Str::new("/v1/chat"),
+            query: Str::new("a=b"),
+            authority: Str::new("gw.example"),
+            headers: Slice::new(&headers),
+            peer: Str::new("10.0.0.9:443"),
+            tls_peer_cert: Bytes::new(b"cert"),
+            body: Bytes::new(b"body"),
+            issued: Bytes::new(b"issued"),
+            now_s: 1_800_000_000,
+        };
+        check(&auth::verify_frame(&req), |at, cross| {
+            busbar_plugin_abi::auth::pack::verify(at, &req, |call| cross(call));
+        });
+    }
+
+    fn plane_req<'a>(headers: &'a [Pair<'a>]) -> busbar_plugin_abi::plane::PlaneReq<'a> {
+        busbar_plugin_abi::plane::PlaneReq {
+            route: 3,
+            flags: 1,
+            auth: 2,
+            _r: 0,
+            method: Str::new("POST"),
+            path: Str::new("/v1/messages"),
+            query: Str::new(""),
+            headers: Slice::new(headers),
+            identity: Bytes::new(b"identity-records"),
+            request_id: 0x0102_0304_0506_0708,
+            carrier: 9,
+            work: Str::new("work-1"),
+            ticket_record: Bytes::new(b"ticket"),
+        }
+    }
+
+    #[test]
+    fn plane_request_render_and_select_are_the_contracts_calls() {
+        let headers = headers();
+        let req = plane_req(&headers);
+        let body = b"{\"model\":\"m\"}";
+        check(&plane::request_frame(&req, body), |at, cross| {
+            busbar_plugin_abi::plane::pack::request(at, &req, Bytes::new(body), |call| cross(call));
+        });
+        check(&plane::render_frame(&req, 4, body), |at, cross| {
+            busbar_plugin_abi::plane::pack::render(at, &req, 4, Bytes::new(body), |call| {
+                cross(call)
+            });
+        });
+        check(&plane::select_frame(2, &req, body), |at, cross| {
+            busbar_plugin_abi::plane::pack::select_resources(
+                at,
+                2,
+                &req,
+                Bytes::new(body),
+                |call| cross(call),
+            );
+        });
+    }
+
+    #[test]
+    fn plane_target_calls_are_the_contracts_calls() {
+        let params = headers();
+        let target = busbar_plugin_abi::plane::Target {
+            attempt: 2,
+            flags: 1,
+            dialect: Str::new("openai"),
+            model: Str::new("m"),
+            base_path: Str::new("/v1"),
+            upstream: Str::new("primary"),
+            provider: Str::new("mock"),
+            params: Slice::new(&params),
+            admission: Bytes::new(b"admission"),
+        };
+        let frame = plane::target_frame(&target);
+        check(&frame, |at, cross| {
+            busbar_plugin_abi::plane::pack::upstream(at, &target, |call| cross(call));
+        });
+        check(&frame, |at, cross| {
+            busbar_plugin_abi::plane::pack::probe(at, &target, |call| cross(call));
+        });
+        check(&frame, |at, cross| {
+            busbar_plugin_abi::plane::pack::channel(at, &target, |call| cross(call));
+        });
+    }
+
+    #[test]
+    fn plane_piece_and_demux_are_the_contracts_calls() {
+        let bytes = b"chunk";
+        let head = plane::PieceHead {
+            from: 1,
+            exchange: 2,
+            flags: 4,
+        };
+        check(&Frame::new(head, [], [bytes.as_slice()]), |at, cross| {
+            busbar_plugin_abi::plane::pack::piece(at, 1, 2, 4, Bytes::new(bytes), |call| {
+                cross(call)
+            });
+        });
+        let key = "session-key";
+        check(&Frame::new((), [key], [bytes.as_slice()]), |at, cross| {
+            busbar_plugin_abi::plane::pack::demux(at, Str::new(key), Bytes::new(bytes), |call| {
+                cross(call)
+            });
+        });
+    }
+
+    #[test]
+    fn transport_begin_and_emit_are_the_contracts_calls() {
+        let conn = busbar_plugin_abi::transport::ConnInfo {
+            role: busbar_plugin_abi::transport::ROLE_SERVER,
+            flags: busbar_plugin_abi::transport::CONN_ACCEPT,
+            alpn: Str::new("h2"),
+            sni: Str::new("gw.example"),
+            peer: Str::new("10.0.0.9:51000"),
+            local: Str::new("10.0.0.1:443"),
+            tls_peer_cert: Bytes::new(b"cert"),
+            leftover: Bytes::new(b"PRI * HTTP/2.0"),
+            head: Bytes::new(b""),
+            local_fingerprint: Str::new("sha256:ab"),
+            mono_ns: 77,
+        };
+        check(&transport::begin_frame(&conn), |at, cross| {
+            busbar_plugin_abi::transport::pack::begin(at, &conn, |call| cross(call));
+        });
+        // A whole small answer in one call: head, body and the end.
+        use busbar_plugin_abi::transport::{E_BODY, E_END, E_HEAD};
+        let (head, body) = (b"head-records".as_slice(), b"payload".as_slice());
+        let parts = transport::Pieces {
+            head: Some(head),
+            body: Some(body),
+            trailers: None,
+            end: Some(&[]),
+        };
+        let lent = [
+            Bytes::new(head),
+            Bytes::new(body),
+            Bytes::new(parts.end.unwrap()),
+        ];
+        let pieces = E_HEAD | E_BODY | E_END;
+        check(
+            &transport::emit_frame(5, pieces, 0, 0, parts),
+            |at, cross| {
+                busbar_plugin_abi::transport::pack::emit(
+                    at,
+                    5,
+                    pieces,
+                    0,
+                    0,
+                    Slice::new(&lent),
+                    |call| cross(call),
+                );
+            },
+        );
+        // Credit alone: no blob.
+        let consumed = busbar_plugin_abi::transport::E_CONSUMED;
+        check(
+            &transport::emit_frame(5, consumed, 0, 4096, transport::Pieces::default()),
+            |at, cross| {
+                busbar_plugin_abi::transport::pack::emit(
+                    at,
+                    5,
+                    consumed,
+                    0,
+                    4096,
+                    Slice::new(&[]),
+                    |call| cross(call),
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn the_one_number_heads_are_the_contracts_calls() {
+        let bytes = b"records";
+        check(
+            &Frame::new(hook::PointHead { point: 3 }, [], [bytes.as_slice()]),
+            |at, cross| {
+                busbar_plugin_abi::hook::pack::on(at, 3, Bytes::new(bytes), |call| cross(call));
+            },
+        );
+        check(
+            &Frame::new(export::ScopeHead { scope: 2 }, [], [bytes.as_slice()]),
+            |at, cross| {
+                busbar_plugin_abi::export::pack::render(at, 2, Bytes::new(bytes), |call| {
+                    cross(call)
+                });
+            },
+        );
+        let deliver = export::DeliverHead {
+            stream: 4,
+            _gap: 0,
+            delivery: 0x1122_3344_5566_7788,
+            attempt: 2,
+            lines: 9,
+        };
+        check(&Frame::new(deliver, [], [bytes.as_slice()]), |at, cross| {
+            busbar_plugin_abi::export::pack::deliver(
+                at,
+                4,
+                0x1122_3344_5566_7788,
+                2,
+                9,
+                Bytes::new(bytes),
+                |call| cross(call),
+            );
+        });
+        check(
+            &Frame::new(export::ConfirmHead { delivery: 8 }, [], []),
+            |at, cross| {
+                busbar_plugin_abi::export::pack::confirm(at, 8, |call| cross(call));
+            },
+        );
+        check(
+            &Frame::new(transport::OfferHead { role: 1 }, [], []),
+            |at, cross| {
+                busbar_plugin_abi::transport::pack::offer(at, 1, |call| cross(call));
+            },
+        );
+        check(
+            &Frame::new(
+                transport::DatagramHead { path: 6, flags: 1 },
+                [],
+                [bytes.as_slice()],
+            ),
+            |at, cross| {
+                busbar_plugin_abi::transport::pack::datagram(at, 6, 1, Bytes::new(bytes), |call| {
+                    cross(call)
+                });
+            },
+        );
+        check(
+            &Frame::new(plane::AdminHead { op: 5 }, [], [bytes.as_slice()]),
+            |at, cross| {
+                busbar_plugin_abi::plane::pack::admin(at, 5, Bytes::new(bytes), |call| cross(call));
+            },
+        );
+        check(
+            &Frame::new(auth::LoginHead { step: 2 }, [], [bytes.as_slice()]),
+            |at, cross| {
+                busbar_plugin_abi::auth::pack::login(at, 2, Bytes::new(bytes), |call| cross(call));
+            },
+        );
+        check(&Frame::new((), [], [bytes.as_slice()]), |at, cross| {
+            busbar_plugin_abi::secret::pack::resolve(at, Bytes::new(bytes), |call| cross(call));
+        });
+        check(&Frame::new((), [], []), |at, cross| {
+            busbar_plugin_abi::store::pack::info(at, |call| cross(call));
+        });
+    }
+}

@@ -120,7 +120,7 @@ fn request_blobs<'a>(req: &PlaneReq<'a>, last: &'a [u8]) -> [Bytes<'a>; 4] {
 
 /// The frame of a target (`upstream`, `probe`, `channel`). texts: dialect, model, base_path, upstream,
 /// provider. blobs: params (a pair list), admission.
-fn target_frame<'a>(target: &Target<'a>) -> Frame<'a, TargetHead, 5, 2> {
+pub(crate) fn target_frame<'a>(target: &Target<'a>) -> Frame<'a, TargetHead, 5, 2> {
     Frame::raw(
         TargetHead {
             attempt: target.attempt,
@@ -134,6 +134,58 @@ fn target_frame<'a>(target: &Target<'a>) -> Frame<'a, TargetHead, 5, 2> {
             target.provider,
         ],
         [pairs(target.params.get()), target.admission],
+    )
+}
+
+/// `request`'s call. `blobs[3]` = `body`.
+pub(crate) fn request_frame<'a>(
+    req: &PlaneReq<'a>,
+    body: &'a [u8],
+) -> Frame<'a, RequestHead, 4, 4> {
+    Frame::raw(
+        request_head(req),
+        request_texts(req),
+        request_blobs(req, body),
+    )
+}
+
+/// `render`'s call. `blobs[3]` = `arg`. The head is sent to the table's 36 bytes.
+pub(crate) fn render_frame<'a>(
+    req: &PlaneReq<'a>,
+    what: u32,
+    arg: &'a [u8],
+) -> Frame<'a, RenderHead, 4, 4> {
+    Frame::raw(
+        RenderHead {
+            req: request_head(req),
+            what,
+            _gap: 0,
+        },
+        request_texts(req),
+        request_blobs(req, arg),
+    )
+    .known(RENDER_HEAD_LEN, 4, 4)
+}
+
+/// `select_resources`'s call. `blobs[3]` = `body`.
+pub(crate) fn select_frame<'a>(
+    mode: u32,
+    req: &PlaneReq<'a>,
+    body: &'a [u8],
+) -> Frame<'a, SelectHead, 4, 4> {
+    Frame::raw(
+        SelectHead {
+            mode,
+            route: req.route,
+            flags: req.flags,
+            auth: req.auth,
+            _r: 0,
+            _gap: 0,
+            request_id: req.request_id,
+            carrier: req.carrier,
+        },
+        request_texts(req),
+        request_blobs(req, body),
     )
 }
 
@@ -151,11 +203,7 @@ impl Proxy {
         req: &PlaneReq<'_>,
         body: &[u8],
     ) -> Result<(Option<SessionHandle>, Answer<'o>), CallError> {
-        let frame = Frame::raw(
-            request_head(req),
-            request_texts(req),
-            request_blobs(req, body),
-        );
+        let frame = request_frame(req, body);
         let (s, answer) = call::opens(&self.to, REQUEST, at, &frame, req.headers.get(), buf)?;
         Ok((s, answer))
     }
@@ -169,16 +217,7 @@ impl Proxy {
         what: u32,
         arg: &[u8],
     ) -> Result<Answer<'o>, CallError> {
-        let frame = Frame::raw(
-            RenderHead {
-                req: request_head(req),
-                what,
-                _gap: 0,
-            },
-            request_texts(req),
-            request_blobs(req, arg),
-        )
-        .known(RENDER_HEAD_LEN, 4, 4);
+        let frame = render_frame(req, what, arg);
         call::plain(&self.to, RENDER, at, &frame, req.headers.get(), buf)
     }
 
@@ -214,20 +253,7 @@ impl Proxy {
         req: &PlaneReq<'_>,
         body: &[u8],
     ) -> Result<Answer<'o>, CallError> {
-        let frame = Frame::raw(
-            SelectHead {
-                mode,
-                route: req.route,
-                flags: req.flags,
-                auth: req.auth,
-                _r: 0,
-                _gap: 0,
-                request_id: req.request_id,
-                carrier: req.carrier,
-            },
-            request_texts(req),
-            request_blobs(req, body),
-        );
+        let frame = select_frame(mode, req, body);
         call::plain(
             &self.to,
             SELECT_RESOURCES,
