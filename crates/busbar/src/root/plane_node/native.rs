@@ -127,8 +127,8 @@ impl Node {
         classes: Arc<[String]>,
     ) -> Result<NativeInstalled, NativeInstallRefused> {
         let failure = |error| (error, None);
-        // The book that will own this entry's fee observer must receive original captures.
-        self.bind_fee_debt(billing);
+        // The book that will own this entry's fee observer receives original captures: it is the
+        // fee-debt owner every root-built GovState is given (`fee_debt_owner`).
         let ready = self
             .book
             .get()
@@ -743,12 +743,11 @@ impl FeeDebtAssociate for Node {
     }
 }
 
-impl Node {
-    /// Bind this Node book as the fee producer's original observer owner, weakly.
-    pub(crate) fn bind_fee_debt(self: &Arc<Self>, billing: &PortBilling) {
-        let owner: Arc<dyn FeeDebtAssociate> = self.clone();
-        let _ = billing.bind_fee_debt_owner(Arc::downgrade(&owner));
-    }
+/// The process Node book as the original fee-debt observer owner, weakly: what every GovState the
+/// composition root builds is given (`RootRules::fee_debt_owner`).
+pub(crate) fn fee_debt_owner() -> std::sync::Weak<dyn FeeDebtAssociate> {
+    let owner: Arc<dyn FeeDebtAssociate> = super::node();
+    Arc::downgrade(&owner)
 }
 
 /// A real retained table for the original notary's tests: reserved entries and originals.

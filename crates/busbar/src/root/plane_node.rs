@@ -47,7 +47,9 @@ impl RetainedBook {
 mod native;
 #[cfg(test)]
 pub(crate) use native::retained_fixture;
-pub(crate) use native::{deliver_original_page, fund_original_page, NativeNodeHandle};
+pub(crate) use native::{
+    deliver_original_page, fee_debt_owner, fund_original_page, NativeNodeHandle,
+};
 
 #[cfg(test)]
 use crate::root::linked::node::Handed;
