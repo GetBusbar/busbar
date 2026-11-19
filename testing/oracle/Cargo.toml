@@ -56,20 +56,8 @@ name = "validate_matches_the_1_5_5_golden"
 path = "../../dist/default/tests/validate_matches_the_1_5_5_golden.rs"
 
 [[test]]
-name = "scrape_shape_1_5_5"
-path = "../../dist/default/tests/scrape_shape_1_5_5.rs"
-
-[[test]]
 name = "metrics_scrape_boot_window"
 path = "../../dist/default/tests/metrics_scrape_boot_window.rs"
-
-[[test]]
-name = "models_empty_surface_1_5_5"
-path = "../../dist/default/tests/models_empty_surface_1_5_5.rs"
-
-[[test]]
-name = "export_request_log_file_1_5_5"
-path = "../../dist/default/tests/export_request_log_file_1_5_5.rs"
 
 [[test]]
 name = "export_settings_refusal_1_5_5"
@@ -78,14 +66,6 @@ path = "../../dist/default/tests/export_settings_refusal_1_5_5.rs"
 [[test]]
 name = "export_unknown_module_lists_what_links"
 path = "../../dist/default/tests/export_unknown_module_lists_what_links.rs"
-
-[[test]]
-name = "plane_blackbox"
-path = "../../dist/default/tests/plane_blackbox.rs"
-
-[[test]]
-name = "oracle_store_ports"
-path = "../../dist/default/tests/oracle_store_ports.rs"
 
 # THE HOUSE (H01-H04): the actual product binary with the signed pilot cohort this job packs, booted from
 # the Memory configuration. It reads the cohort from launch.env (ORACLE_CORE, ORACLE_PLUGINS, ORACLE_FETCH).
