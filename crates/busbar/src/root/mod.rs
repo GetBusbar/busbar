@@ -288,6 +288,7 @@ pub mod registry;
 )]
 pub(crate) mod native_secrets;
 /// The launch variables 1.6.0 retired: the BUSBAR-3029 "set but ignored" notice.
+pub(crate) mod retired_carriers;
 pub(crate) mod retired_env;
 pub(crate) mod secret_custody;
 pub(crate) mod secret_grammar;
