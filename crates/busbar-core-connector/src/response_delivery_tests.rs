@@ -572,32 +572,49 @@ fn anonymous_security_keeps_the_exact_storage_origin_and_progress_reader() {
         .is_err());
 }
 
+/// OPEN-3 16 (money): the ledger copies no answer byte. What the connection is given is read where
+/// the caller holds it (the session's charged buffer), placing a run asks the heap for nothing, and a
+/// write that failed gives nothing more.
 #[test]
-fn the_queue_wipes_each_byte_as_the_connection_takes_it() {
+fn the_ledger_holds_no_answer_byte_and_gives_the_callers_own() {
     let mut ledger = ledger();
-    answer(&mut ledger, &[part(0, WIRE_CONTROL, b"abcdef")]).unwrap();
-    ledger.took(3);
-    assert_eq!(ledger.unwritten(), b"def");
-    let live = ledger.queue.live_range();
-    let block = ledger.queue.allocation();
-    assert!(
-        block[..live.start].iter().all(|byte| *byte == 0),
-        "what the connection took is wiped at once"
-    );
-    assert_eq!(&block[live], b"def");
-    // A write failed: nothing unwritten waits for the connection's drop, and nothing more is queued.
+    let held: &'static [u8] = b"abcdef";
+    let items = [part(0, WIRE_CONTROL, held)];
+    let (checked, calls) = crate::support::allocations_during(|| answer(&mut ledger, &items));
+    let checked = checked.unwrap();
+    assert_eq!(calls, 0, "placing a run makes nothing");
+    assert_eq!(checked.bytes(), 6);
+    let block = held.as_ptr_range();
+    let giving = ledger.give(&checked, |index| items[index].1);
+    assert!(giving.pieces.iter().all(|piece| {
+        let range = piece.as_ptr_range();
+        block.start <= range.start && range.end <= block.end
+    }));
+    assert_eq!(giving.pieces.concat(), held);
+    drop(giving);
+    // The connection took half, then a write failed: the rest is never given, and nothing more is
+    // placed.
+    took(&mut ledger, 3);
+    assert_eq!((ledger.written, ledger.queued), (3, 6));
     ledger.discard();
-    assert!(ledger.unwritten().is_empty());
-    assert!(ledger.queue.allocation().iter().all(|byte| *byte == 0));
-    // And once the connection took a whole run, no block is kept for the next.
-    let mut idle = self::ledger();
-    answer(&mut idle, &[part(0, WIRE_CONTROL, b"abcdef")]).unwrap();
-    flush(&mut idle);
-    assert_eq!(idle.queue.capacity(), 0);
     assert_eq!(
         answer(&mut ledger, &[part(0, WIRE_CONTROL, b"x")]).unwrap_err(),
         Fault::Queue
     );
+    // A run not all given places nothing after it either: it would stand behind bytes that never
+    // went out.
+    let mut behind = self::ledger();
+    given(&mut behind, &[part(0, WIRE_CONTROL, b"abcdef")]);
+    took(&mut behind, 5);
+    assert_eq!(
+        answer(&mut behind, &[part(0, WIRE_CONTROL, b"x")]).unwrap_err(),
+        Fault::Queue
+    );
+    // The writer's count never passes what was placed.
+    took(&mut behind, 100);
+    assert_eq!((behind.written, behind.queued), (6, 6));
+    given(&mut behind, &[part(0, WIRE_CONTROL, b"x")]);
+    assert_eq!(behind.queued, 7);
 }
 
 // ---- credit for a stream the engine has left (ENGINE-OPEN-2 row 2) ----------------------------
