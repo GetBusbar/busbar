@@ -59,7 +59,10 @@ fn exact(value: &Value) -> Option<u128> {
 #[test]
 fn priced_llm_calls_after_an_admin_key_mint_are_metered_under_the_model_lane_at_the_exact_price() {
     let upstream = Scripted::start(200, &chat_answer(PROMPT_TOKENS, COMPLETION_TOKENS));
+    // A 1.6 document, as the live engine writes it: `llm.insecure_transport` admits the loopback
+    // plaintext upstream.
     let node = Deployment::new("usage-priced")
+        .section("config_version: 1\n")
         .provider("mock", "openai", &upstream.url(""))
         .section(&format!("models:\n  {MODEL}:\n    provider: mock\n"))
         .section(
