@@ -226,7 +226,11 @@ impl MemIo {
             Ran::Idle
         }
     }
-    /// Drain written bytes into WRITE records, and the earliest timer (or `now` when the budget ran out) into WAKE_AT.
+    /// Drain written bytes and the earliest timer (or `now` when the budget ran out) into WAKE_AT.
+    /// INTERIM (transport 2.0): the plain WRITE record is retired, so an unlabelled drain writes its bytes as
+    /// WIRE_PART on stream 0, class control. That is right only for connection-level bytes; a helper that
+    /// drains a stream's bytes this way breaks rule L3. This whole drain is replaced by the labelled helper
+    /// (`busbar-kind-transport-hyper`), where each write carries its stream and class.
     pub fn flush(&mut self, out: &mut impl Writer) -> Result<(), Full> {
         {
             let mut p = lock(&self.shared.pipes);
@@ -238,7 +242,12 @@ impl MemIo {
             }
             while !p.write.is_empty() {
                 let n = p.write.len().min(WRITE_CHUNK);
-                out.put(tag::WRITE, &p.write.as_slice()[..n])?;
+                let part = crate::kinds::transport::transport::WirePart {
+                    stream: 0,
+                    class: crate::kinds::transport::transport::WIRE_CONTROL,
+                    _r: 0,
+                };
+                out.put_pod_tail(tag::WIRE_PART, &part, &p.write.as_slice()[..n])?;
                 p.write.consume(n);
             }
             if p.write.len() < before
@@ -607,7 +616,10 @@ mod tests {
         assert_eq!(m.run(1, 256), Ran::Idle);
         let mut out = Rec::default();
         m.flush(&mut out).unwrap();
-        assert_eq!(out.0, vec![(tag::WRITE, b"hello".to_vec())]);
+        // Transport 2.0: a WIRE_PART body is its 16-byte fixed part (stream 0, control), then the bytes.
+        assert_eq!(out.0.len(), 1);
+        assert_eq!(out.0[0].0, tag::WIRE_PART);
+        assert_eq!(&out.0[0].1[16..], b"hello");
     }
 
     #[test]
@@ -765,8 +777,8 @@ mod tests {
         let wrote: Vec<u8> = out
             .0
             .iter()
-            .filter(|(t, _)| *t == tag::WRITE)
-            .flat_map(|(_, body)| body.iter().copied())
+            .filter(|(t, _)| *t == tag::WIRE_PART)
+            .flat_map(|(_, body)| body.iter().skip(16).copied())
             .collect();
         wrote.windows(12).filter(|w| *w == b"HTTP/1.1 200").count()
     }

@@ -127,12 +127,15 @@ const fn skip_doc(bytes: &[u8], i: usize) -> usize {
 const fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
     let mut i = 0;
     while i < bytes.len() {
-        let after = skip_doc(bytes, i);
-        if after != i {
-            i = after;
-            continue;
-        }
         let byte = bytes[i];
+        // Only a `#` can open a doc attribute: every other byte costs nothing extra here.
+        if byte == b'#' {
+            let after = skip_doc(bytes, i);
+            if after != i {
+                i = after;
+                continue;
+            }
+        }
         if !is_space(byte) {
             hash = (hash ^ byte as u64).wrapping_mul(PRIME);
         }
