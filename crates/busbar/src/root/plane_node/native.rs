@@ -381,11 +381,6 @@ pub(crate) fn deliver_original_page(
     PageDelivery::Pending(position)
 }
 
-/// HELD (adopted ordinary receipt r2): the original per-fee Applied producer is unresolved and
-/// under separate review. No checkpoint receipt, FeeAccount completion or global zero may stand
-/// in for it, so an admitted native entry stays installed until that producer exists.
-const ORIGINAL_FEE_APPLIED_PRODUCER: bool = false;
-
 /// THE MONEY JOIN of one native entry's retirement, read under the entry lock: the facts an
 /// admitted entry must hold before it may leave the Node book. An entry that was never admitted
 /// holds no money and has nothing to join.
@@ -407,7 +402,11 @@ impl MoneyJoin {
         if !self.admitted {
             return true;
         }
-        self.checkpoint_confirmed && ORIGINAL_FEE_APPLIED_PRODUCER && self.fee_join_complete
+        // The fee receipt is FEE-DEBT r1's: the budget flusher freezes a capture per original cell,
+        // this Node offers it to each installed entry's observer (`FeeDebtAssociate for Node`) and
+        // the flusher finishes it Applied or CancelledBeforeSend. No checkpoint receipt, FeeAccount
+        // completion or global zero stands in for it.
+        self.checkpoint_confirmed && self.fee_join_complete
     }
 }
 
