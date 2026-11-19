@@ -382,7 +382,7 @@ impl Wire {
                             .before_payload_or_end()
                             .map_err(Fault::Sealed)?;
                     }
-                    self.ledger.end(end).map_err(Fault::Output)?;
+                    self.ledger.end_in_answer(end).map_err(Fault::Output)?;
                 }
                 Out::Body { stream, len } => {
                     // A late body piece of a stream the engine has left is not a breach: the stream

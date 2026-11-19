@@ -1075,7 +1075,7 @@ pub struct HttpIn {
 /// Busbar never reaches an upstream through it. The upstream gets the credential core seals for it; a caller's own
 /// credential reaches an upstream only through core's configured passthrough (`upstream_credentials: passthrough`,
 /// the lent `auth::CallerCredential`), never through the plane.
-pub const CLIENT_CREDENTIAL_FIELDS: [&str; 8] = [
+pub const CLIENT_CREDENTIAL_FIELDS: [&str; 9] = [
     "authorization",
     "proxy-authorization",
     "cookie",
@@ -1084,6 +1084,7 @@ pub const CLIENT_CREDENTIAL_FIELDS: [&str; 8] = [
     "x-goog-api-key",
     "x-amz-security-token",
     "x-admin-token",
+    "dpop",
 ];
 
 /// Whether `name` is a head field a client's credential travels in ([`CLIENT_CREDENTIAL_FIELDS`]).
