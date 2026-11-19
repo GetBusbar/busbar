@@ -5,4 +5,3 @@ mod audit;
 mod breaker;
 mod egress;
 mod ledger;
-mod seal_tests;

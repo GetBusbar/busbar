@@ -1,44 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! The kernel's capability seal. The kernel mints it with `busbar_seal::mint_kernel`, which only a
+//! crate that lists `busbar-seal` can name (the kernel and the contract; `deny.toml` and
+//! `tools/ci-checks` hold the manifests to that).
+//!
+//! This module is public, so every crate that lists `busbar-kernel` can obtain a seal through it:
+//! the composition roots (`busbar`, `busbar-default`), core's own crates (`busbar-core-admin`,
+//! `busbar-core-connector`, `busbar-core-oauth2`, `busbar-migrate`) and the test harnesses. That
+//! list is closed by the `busbar-kernel` row of `deny.toml` and the same `tools/ci-checks` test.
+
 use busbar_contract::caps::KernelSeal;
 
-#[cfg(not(test))]
-struct Held(KernelSeal);
-
-#[cfg(not(test))]
-#[must_use]
-#[inline(never)]
-pub fn acquire() -> KernelSeal {
-    match KernelSeal::deliver().downcast::<Held>() {
-        Ok(held) => {
-            let Held(seal) = *held;
-            seal
-        }
-
-        Err(_) => unreachable!("the kernel's root symbol answered with something not the kernel's"),
-    }
-}
-
-// `no_mangle` is an unsafe attribute (a second definition of the name is undefined behaviour at
-// link time, which the linker refuses as a duplicate symbol); this is the one kernel item that
-// needs it, so the crate's `deny(unsafe_code)` is lifted for this item only.
-// SAFETY: the signature is exactly the declaration in `busbar-contract/src/abi/mod.rs`
-// (`fn __busbar_kernel_root(seal: KernelSeal) -> Box<dyn Any + Send + Sync>`), built by the same
-// compiler in the same workspace; the body touches no state.
-#[cfg(not(test))]
-#[allow(unsafe_code)]
-#[no_mangle]
-pub fn __busbar_kernel_root(seal: KernelSeal) -> Box<dyn std::any::Any + Send + Sync> {
-    Box::new(Held(seal))
-}
-
-#[cfg(test)]
+/// A kernel seal. Zero-sized: minting it allocates nothing.
 #[must_use]
 pub fn acquire() -> KernelSeal {
-    KernelSeal::acquire_for_kernel()
+    busbar_seal::mint_kernel()
 }
 
+/// The signing grant, minted with a fresh seal.
 #[must_use]
 pub fn lend() -> busbar_contract::caps::Grant<busbar_contract::caps::Sign> {
     busbar_contract::caps::Grant::mint(&acquire())
