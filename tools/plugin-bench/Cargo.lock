@@ -2150,23 +2150,3 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[patch.unused]]
-name = "h2"
-version = "0.4.18"
-source = "git+https://github.com/MattJackson/h2?rev=6bdbf046878247aebe9138f37f32d2665b54bdd9#6bdbf046878247aebe9138f37f32d2665b54bdd9"
-
-[[patch.unused]]
-name = "hyper"
-version = "1.11.1"
-source = "git+https://github.com/MattJackson/hyper?rev=c140435f43477ca3ffbdb2078a5994e9dfb11969#c140435f43477ca3ffbdb2078a5994e9dfb11969"
-
-[[patch.unused]]
-name = "hyper-util"
-version = "0.1.20"
-source = "git+https://github.com/MattJackson/hyper-util?rev=b4c554c133c7fc83ee55a9ce0271849f7387994d#b4c554c133c7fc83ee55a9ce0271849f7387994d"
-
-[[patch.unused]]
-name = "tungstenite"
-version = "0.29.0"
-source = "git+https://github.com/MattJackson/tungstenite-rs?rev=893a21f1f98011a2665840231330c473836c9a0a#893a21f1f98011a2665840231330c473836c9a0a"
