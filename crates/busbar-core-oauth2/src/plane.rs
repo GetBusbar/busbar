@@ -616,3 +616,7 @@ mod sweeper_tests;
 #[cfg(test)]
 #[path = "tests/access_standing_tests.rs"]
 mod access_standing_tests;
+
+#[cfg(test)]
+#[path = "tests/native_dpop_tests.rs"]
+mod native_dpop_tests;
