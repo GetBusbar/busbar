@@ -1,0 +1,642 @@
+test	file	fate	verdict	present	missing
+captured_admin_over_gate_cells_follow_the_current_413_contract	crates/busbar/src/root/tests/inbound.rs	deleted	none-named		
+actual_admin_body_cap_uses_current_413_contract_and_preserves_authority	crates/busbar/src/root/tests/inbound.rs	deleted	none-named		
+send	crates/busbar/src/root/tests/inbound.rs	deleted	none-named		
+the_roots_line_ids_and_the_kernels_rule_are_one_space	crates/busbar/src/root/tests/inbound.rs	deleted	none-named		
+models_plane_qualifier_lists_the_fallback_catalog	crates/busbar/src/root/tests/inbound.rs	deleted	none-named		
+actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_scoped_credentials	crates/busbar/src/root/tests/inbound_admin_sender_constraint.rs	deleted; rewrite needed	none-named		
+publication_before_final_admission_refuses_without_running_policy	crates/busbar/src/root/tests/inbound_publication_admission.rs	deleted	none-named		
+final_admission_retains_the_original_generation_across_publication	crates/busbar/src/root/tests/inbound_publication_admission.rs	deleted	none-named		
+recovered_transport_and_pool_settings_leave_the_bootstrap_anchor_serving	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+failed_effective_transport_preparation_keeps_the_anchor_and_base_view	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+recovered_http1_only_changes_the_offer_of_a_newly_declared_need	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+recovered_body_cap_and_request_timeout_apply_while_the_anchor_keeps_its_door	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+h2c_prior_knowledge_two_requests_ride_one_connection	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+the_configured_pin_turns_prior_knowledge_on	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+alpn_h2_over_tls_is_the_framers_offer_and_one_connection_carries_two	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+the_http1_only_key_offers_http1_alone	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+an_http1_keep_alive_connection_carries_the_next_request	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+an_idle_http1_line_the_far_end_closed_is_let_go_not_spun_on	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+without_a_pool_each_request_dials	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+concurrent_h2c_requests_share_one_connection	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+a_concurrent_request_rides_an_agreed_h2_tls_connection	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+concurrent_http1_requests_each_take_a_connection	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+a_lent_line_reset_before_any_byte_left_is_redialled_once	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+a_request_whose_bytes_left_is_not_redialled	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+a_request_whose_opening_left_before_the_line_failed_is_not_redialled	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+an_idn_destination_resolves_as_its_punycode_name_and_is_served	crates/busbar/src/root/tests/connector_h2.rs	deleted	none-named		
+the_operator_credentials_row_is_linked_under_its_config_key	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+the_admin_door_answers_only_the_bearer_through_the_linked_row	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+the_chain_ends_at_the_operator_credential_on_any_wrong_token	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+without_the_root_row_the_operator_token_is_refused	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+a_role_shadowing_the_operator_principal_is_refused	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+the_operator_token_ref_is_checked_by_shape_only	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+admin_token_secret_ref_re_resolves_on_apply	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+signing_key_secret_ref_re_resolves_on_apply_and_fails_closed	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+blank_admin_token_refuses_to_start	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+a_renamed_provider_backed_by_the_operator_module_is_the_operator_credential	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+the_operator_module_named_by_its_canonical_name_is_the_operator_credential	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+an_empty_admin_chain_admits_no_one_on_the_loop	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+the_loop_judges_the_operator_token_on_the_bearer_only	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+an_external_admin_module_is_consulted_by_the_loop	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+a_swapped_admin_chain_is_the_loops_next_door	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+a_door_on_the_data_plane_chain_judges_the_request_it_is_lent	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+test_role_bound_principal_governed_like_a_virtual_key	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order	crates/busbar/src/root/tests/linked_auth.rs	deleted	none-named		
+every_linked_row_is_registered_under_its_plugins_yaml_manifest_name	crates/busbar/src/root/tests/linked_canonical.rs	deleted	none-named		
+disabled_linked_auth_and_hook_codes_are_registered_as_their_signed_dropped_declarations_are	crates/busbar/src/root/tests/linked_declarations.rs	deleted	none-named		
+a_malformed_linked_declaration_refuses_the_catalogue	crates/busbar/src/root/tests/linked_declarations.rs	deleted	none-named		
+a_linked_code_cannot_shadow_an_installed_declaration	crates/busbar/src/root/tests/linked_declarations.rs	deleted	none-named		
+signed_third_party_auth_and_hook_codes_cannot_join_the_catalogue	crates/busbar/src/root/tests/linked_declarations.rs	deleted	none-named		
+linked_auth_declarations_need_neither_configuration_nor_an_open_instance	crates/busbar/src/root/tests/linked_declarations.rs	deleted	none-named		
+the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced	crates/busbar/src/root/tests/linked_protocols.rs	deleted	none-named		
+the_derived_protocol_list_is_not_empty	crates/busbar/src/root/tests/linked_protocols.rs	deleted	none-named		
+the_fallback_doors_declared_dialects_are_the_1_5_5_metric_labels	crates/busbar/src/root/tests/linked_protocols.rs	deleted	none-named		
+the_fallback_doors_provider_dialects_are_the_1_5_5_provider_protocols	crates/busbar/src/root/tests/linked_protocols.rs	deleted	none-named		
+a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_refuse_the_boot	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+a_linked_export_declares_stating_needs_boots	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+a_linked_doors_former_name_resolves_its_module	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+a_doors_words_are_its_former_names_then_its_alias_rewrites	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+a_former_name_another_linked_door_answers_to_is_a_claim_conflict	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+a_host_series_and_its_derived_histogram_series_are_the_hosts	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+the_linked_store_is_a_row_of_the_linked_tables	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+a_key_two_doors_register_refuses_the_boot_naming_both	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+a_door_rows_probe_binds_on_the_processs_one_dispatcher	crates/busbar/src/root/tests/linked.rs	deleted	none-named		
+a_framed_stream_carries_messages_and_its_final_status_is_its_framers	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+a_framed_stream_that_ends_whole_is_closed_by_its_framer_as_whole	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+a_framed_unit_that_fails_after_its_head_closes_as_a_refusal_never_as_whole	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+a_framed_unit_the_kernel_cuts_after_its_head_closes_as_the_cuts_refusal	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+a_refused_framed_stream_is_answered_by_its_framers_closing_block_alone	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+a_final_status_the_claims_numbering_does_not_have_never_reaches_the_framer	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+a_datagram_framer_is_never_a_streams_framer_though_its_claim_states_a_session	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+a_claim_stating_no_stream_is_not_stream_framed_though_its_carrier_has_a_framer	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+folded_closing_fields_do_not_advertise_a_trailer_block	crates/busbar/src/root/tests/serve_framed.rs	deleted	none-named		
+the_dispatcher_is_built_once_and_every_caller_shares_it	crates/busbar/src/root/tests/dispatch.rs	deleted	none-named		
+one_plugin_worker_per_data_worker	crates/busbar/src/root/tests/dispatch.rs	deleted	none-named		
+test_builds_watch_with_the_shipped_budgets	crates/busbar/src/root/tests/dispatch.rs	deleted	none-named		
+the_binarys_dispatcher_serves_dest_judge_once_composed	crates/busbar/src/root/tests/dispatch.rs	deleted	none-named		
+the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape	crates/busbar/src/root/tests/diagnostic_logging.rs	deleted	none-named		
+a_declared_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_entry	crates/busbar/src/root/tests/diagnostic_logging.rs	deleted	none-named		
+a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it	crates/busbar/src/root/tests/serve_framed_lock.rs	deleted	none-named		
+an_idle_framed_stream_drives_its_timer_and_wakes_the_unit	crates/busbar/src/root/tests/serve_framed_lock.rs	deleted	none-named		
+measurement_root_admits_declared_classes_unpriced_for_every_kind	crates/busbar/src/root/tests/measurements.rs	deleted	none-named		
+measurement_root_lifecycle_cannot_report_or_bypass_operational_custody	crates/busbar/src/root/tests/measurements.rs	deleted	none-named		
+measurement_root_lost_request_never_becomes_system_usage	crates/busbar/src/root/tests/measurements.rs	deleted	none-named		
+only_a_unit_that_opens_the_book_has_a_book_step	crates/busbar/src/root/tests/transports.rs	deleted	none-named		
+every_linked_transport_row_is_keyed_by_its_doors_statement	crates/busbar/src/root/tests/linked_door_root.rs	deleted	none-named		
+(context root_stdio: busbar-transport-stdio owner tests)	dist/default/Cargo.toml test-source-contexts	deleted	none-named		
+(context boot_carrier_locate: busbar-transport-tcp owner tests)	dist/default/Cargo.toml test-source-contexts	deleted	none-named		
+(context listener_carrier: busbar-transport-tcp owner tests)	dist/default/Cargo.toml test-source-contexts	deleted	none-named		
+(context listener_session: busbar-transport-ws owner tests)	dist/default/Cargo.toml test-source-contexts	deleted	none-named		
+(context linked_auth: busbar-auth-webhook-signature owner tests)	dist/default/Cargo.toml test-source-contexts	deleted	none-named		
+a_door_plane_reads_the_kernels_own_clock_both_ways	dist/default/tests/plane_rider.rs	deleted	none-named		
+with_no_host_services_the_clock_read_is_refused	dist/default/tests/plane_rider.rs	deleted	none-named		
+a_forged_context_in_a_non_lifecycle_op_answers_fault_and_quarantines	dist/default/tests/plane_forged_context.rs	deleted	none-named		
+a_plane_driven_through_its_driver_ticket_answers_under_its_own_frame	dist/default/tests/plane_driver.rs	deleted	none-named		
+the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick	dist/default/tests/plane_driver.rs	deleted	none-named		
+no_tick_follows_a_tick_that_asks_for_none	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_wake_of_the_driver_ticket_runs_drive_then_ticks_again	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_tick_keeps_every_held_exchange_and_the_second_completes_while_the_first_pends	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_tick_that_reuses_a_held_handle_is_faulted_not_answered_the_held_answer	dist/default/tests/plane_driver.rs	deleted	none-named		
+the_held_set_on_a_driver_ticket_is_bounded_by_max_inflight_and_frees_per_exchange	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_tick_parked_at_the_cap_runs_when_a_slot_frees_without_a_poke	dist/default/tests/plane_driver.rs	deleted	none-named		
+the_crossing_is_under_a_microsecond	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_public_route_is_served_by_the_planes_serve_without_a_credential	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_duplex_session_answers_its_caller_and_cleans_up_once	dist/default/tests/plane_driver.rs	deleted	none-named		
+unsolicited_output_reaches_the_caller_through_the_instances_one_driver_ticket	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_turn_leg_walks_inside_the_destination_set_sealed_at_the_open	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_held_far_end_takes_every_turn_while_its_socket_stays_open	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_far_end_that_hangs_up_ends_the_session_with_its_caller	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_dropped_session_cleans_up_exactly_once	dist/default/tests/plane_driver.rs	deleted	none-named		
+a_session_is_refused_while_its_money_is_unstated	dist/default/tests/plane_driver.rs	deleted	none-named		
+the_witness_counts_what_it_measures_and_nothing_else	dist/default/tests/door_ready_alloc.rs	deleted	none-named		
+every_request_path_op_is_measured	dist/default/tests/door_ready_alloc.rs	deleted	none-named		
+a_closed_span_reaches_an_otlp_collector_through_either_door	dist/default/tests/traces_stream_both_doors.rs	deleted; rewrite when the otlp export image is linked	none-named		
+the_shipped_binary_posts_its_spans_to_an_otlp_collector	dist/default/tests/export_otlp_delivers_spans.rs	deleted; rewrite when the otlp export image is linked	none-named		
+the_request_paths_spans_reach_the_collector_as_1_5_5_named_them	dist/default/tests/export_otlp_delivers_spans.rs	deleted; rewrite when the otlp export image is linked	none-named		
+real_producer_span_records_survive_both_otlp_doors	dist/default/tests/otlp_span_records.rs	deleted; rewrite when the otlp export image is linked	none-named		
+the_export_sinks_declare_url_reference_capable_and_the_auth_header_value_secret	dist/default/tests/upgrade_1_5_5_env_secret_fields.rs	deleted; rewrite when the export images are linked	none-named		
+a_1_5_5_config_reading_export_secrets_from_the_environment_boots_and_serves	dist/default/tests/upgrade_1_5_5_env_secret_fields.rs	deleted; rewrite when the export images are linked	none-named		
+the_linked_oidc_plugins_needs_refuse_a_private_idp_unless_allowlisted	dist/default/tests/oidc_needs_refuse_a_private_idp_unless_allowlisted.rs	deleted; rewrite when auth-oidc is a MIN-3 image	none-named		
+a_chain_naming_the_webhook_signature_plugin_resolves_to_the_linked_row	dist/default/tests/inbound_webhook_signature_linked.rs	deleted; rewrite when webhook-signature is a MIN-3 image	none-named		
+a_third_party_metrics_sink_never_serves_metrics	dist/default/tests/export_scrape_is_first_party.rs	deleted; rewrite when the prometheus export image is linked	none-named		
+every_counter_precedes_every_gauge_precedes_every_distribution	dist/default/tests/export_scrape_is_first_party.rs	deleted; rewrite when the prometheus export image is linked	none-named		
+every_real_transport_answers_composed_over_consistently_with_its_construction	dist/default/tests/transport_composed_over_consistency.rs	deleted	none-named		
+a_dropped_in_transport_registers_through_the_one_fold_and_serves	dist/default/tests/transport_dropped_in_serves.rs	deleted	none-named		
+exchange_comparison_preserves_values_and_rejects_truncated_framing	dist/default/tests/transport_dropped_in_serves.rs	deleted	none-named		
+every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary	dist/default/tests/linked_export_sinks_boot_as_their_own_kind.rs	deleted	none-named		
+a_third_party_plugins_cuts_warn_once_per_field_naming_it_and_count_every_time	crates/busbar/src/root/tests/observe.rs	deleted	none-named		
+run_installs_the_gate_for_the_loader	crates/busbar/src/root/tests/migrate_seam.rs	deleted	none-named		
+the_line_carrier_is_the_claim_a_row_declares_opening_on_its_first_line	crates/busbar/src/root/tests/serve_lines.rs	deleted	none-named		
+two_claims_opening_on_their_first_line_are_refused	crates/busbar/src/root/tests/serve_lines.rs	deleted	none-named		
+the_builds_carrier_is_read_off_its_linked_rows	crates/busbar/src/root/tests/serve_lines.rs	deleted	none-named		
+operator_slot_refuses_missing_actual_admin_authority	crates/busbar/src/root/tests/min3_physical.rs	rewritten as nothing_serves_the_admin_listener_before_the_admin_chain_is_installed	kept		
+(file) serve_tests	crates/busbar/src/root/tests/serve_tests.rs	unmounted (root-min3b)	none-named		
+(file) door_rig	crates/busbar/src/root/tests/door_rig.rs	unmounted (root-min3b)	none-named		
+(file) serve_door_far	crates/busbar/src/root/tests/serve_door_far.rs	unmounted (root-min3b)	none-named		
+crates/busbar/src/root/tests/{node_door_rig,work_budget,node_arrival,node_door_cells}.rs	(file) node_door_rig/work_budget/node_arrival/node_door_cells	linked_driver_proofs door cells; per-test rows owed	kept		
+(file) serve_framed	crates/busbar/src/root/tests/serve_framed.rs	unmounted (root-min3b)	none-named		
+(file) secret_source	crates/busbar/src/root/tests/secret_source.rs	unmounted (root-min3b)	none-named		
+(file) usage_fold	crates/busbar/src/root/tests/usage_fold.rs	unmounted (root-min3b)	none-named		
+(file) registration_pin	crates/busbar/src/root/tests/registration_pin.rs	unmounted (root-min3b)	none-named		
+(file) model_egress	crates/busbar/src/root/tests/model_egress.rs	unmounted (root-min3b)	none-named		
+early_plane_archive_pins_refuse_before_native_constructors	crates/busbar/src/root/tests/bootstrap_pins.rs	deleted	none-named		
+(behaviour) refuse at unit open when the journal refuses money	crates/busbar/src/root/plane_node.rs (Node::journal_refusal, journal_failed)	owed	none-named		
+a_door_sections_effective_registry_is_judged_whole_at_resolve	dist/default/tests/config_cross_plane.rs	deleted	none-named		
+a_failover_pool_needs_two_members	dist/default/tests/config_cross_plane.rs	deleted	none-named		
+a_malformed_pools_block_under_any_plane_section_is_refused	dist/default/tests/config_cross_plane.rs	deleted	none-named		
+a_plane_pool_in_the_top_level_pools_is_refused	dist/default/tests/config_cross_plane.rs	deleted	none-named		
+a_planes_pool_breaker_block_is_held_to_the_same_rule_and_carried	dist/default/tests/config_cross_plane.rs	deleted	none-named		
+a_pool_may_not_straddle_two_planes	dist/default/tests/config_cross_plane.rs	deleted	none-named		
+a_pool_named_like_a_registration_of_its_plane_is_refused	dist/default/tests/config_cross_plane.rs	deleted	none-named		
+a_tool_pool_member_that_names_no_server_is_refused	dist/default/tests/config_cross_plane.rs	deleted	none-named		
+resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree	dist/default/tests/config_cross_plane.rs	deleted	none-named		
+a_1_5_5_metadata_entry_naming_no_host_migrates_away	dist/default/tests/config_migrate_1_5_5.rs	deleted	none-named		
+a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration	dist/default/tests/config_migrate_1_5_5.rs	deleted	none-named		
+a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same	dist/default/tests/config_migrate_1_5_5.rs	deleted	none-named		
+a_1_5_5_rate_card_without_units_validates_with_its_unpriced_units_reported	dist/default/tests/config_migrate_1_5_5.rs	deleted	none-named		
+a_1_5_5_yaml_zero_cache_write_boots_at_input_rate	dist/default/tests/config_migrate_1_5_5.rs	deleted	none-named		
+first_boot_migrates_ttl_write_units_and_bills_the_partitioned_write	dist/default/tests/config_migrate_1_5_5.rs	deleted	none-named		
+migrated_ttl_write_units_price_at_the_write_rate	dist/default/tests/config_migrate_1_5_5.rs	deleted	none-named		
+reload_refuses_a_root_yaml_zero_cache_write	dist/default/tests/config_migrate_1_5_5.rs	deleted	none-named		
+a_plane_pool_refuses_each_field_its_plane_does_not_honour	dist/default/tests/config_migrate_cross_plane.rs	deleted	none-named		
+canonical_cross_plane_config_preserves_each_resolved_pool	dist/default/tests/config_migrate_cross_plane.rs	deleted	none-named		
+unreleased_tool_and_agent_pool_keys_are_left_for_admission_to_refuse	dist/default/tests/config_migrate_cross_plane.rs	deleted	none-named		
+a_plane_card_silent_about_a_declared_class_does_not_refuse_boot	dist/default/tests/config_validate_cross_plane.rs	deleted	none-named		
+a_present_plane_card_refuses_every_lane_it_does_not_name	dist/default/tests/config_validate_cross_plane.rs	deleted	none-named		
+the_agents_section_enumerates_every_secret_reference_its_plane_declares	dist/default/tests/config_validate_cross_plane.rs	deleted	none-named		
+the_tools_section_enumerates_every_secret_reference_its_plane_declares	dist/default/tests/config_validate_cross_plane.rs	deleted	none-named		
+sections_holds_the_frozen_named_map_order_under_the_default_feature_set	dist/default/tests/named_map_cross_plane.rs	deleted	none-named		
+no_verb_name_carries_a_plane_key_or_a_protocol_name	dist/default/tests/operation_names_cross_plane.rs	deleted	none-named		
+every_section_the_grammar_declares_is_refused_on_both_planes	dist/default/tests/plane_config_cross_plane.rs	deleted	none-named		
+a_claim_only_names_a_wire_format_its_plane_speaks	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+a_mount_is_normalised_before_it_is_matched	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+a_mount_is_readable_back	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+a_mounted_plane_claims_its_mount_and_everything_below_it	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+a_plane_with_zero_wire_formats_is_labelless_by_design	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+a_prefix_sibling_is_not_the_plane	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+a_resolved_ingress_names_its_own_wire_format	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+all_is_complete_and_has_no_duplicates	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+an_unmounted_plane_claims_nothing	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+an_unmounted_plane_is_never_resolved_from_the_path	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+every_mounted_planes_door_dialect_is_jsonrpc	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+only_a_mounted_plane_claims_a_path_and_the_two_readings_agree	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+plane_identity_strings_never_collide_across_planes	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+sole_wire_format_answers_exactly_when_a_plane_speaks_one	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+the_fallback_plane_cannot_be_mounted	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+the_fallback_wire_format_count_comes_from_the_protocol_registry	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+the_mount_table_is_read_before_the_path_shape	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+the_multi_binding_legs_are_named_by_the_planes_wire_formats	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+transports_do_not_count_as_wire_formats	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+two_mounted_planes_do_not_claim_each_other	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+with_nothing_mounted_every_path_is_the_fallback_plane	dist/default/tests/plane_dispatch_cross_plane.rs	deleted	none-named		
+a_plane_claiming_any_real_core_owned_section_is_refused	dist/default/tests/plane_owned_sections_boot.rs	deleted	none-named		
+dup_claim_guard_admits_the_real_roster	dist/default/tests/plane_owned_sections_boot.rs	deleted	none-named		
+dup_claim_guard_refuses_a_planted_collision	dist/default/tests/plane_owned_sections_boot.rs	deleted	none-named		
+every_owning_plane_wires_the_section_hooks	dist/default/tests/plane_owned_sections_boot.rs	deleted	none-named		
+registering_an_owning_plane_puts_its_section_into_config_sections	dist/default/tests/plane_owned_sections_boot.rs	deleted	none-named		
+the_owned_sections_have_distinct_owners	dist/default/tests/plane_owned_sections_boot.rs	deleted	none-named		
+a_door_admin_route_is_served_only_by_the_generation_lent_its_table	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+admin_corpus_reconciles_with_the_served_router	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+admin_error_surface_witnesses_every_declared_response	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+admin_usage_over_an_unpriced_class_answers_named_409	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+every_admin_error_surface_answers_its_declared_status	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+group_usage_over_an_unpriced_class_answers_named_409	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+key_cap_and_delegation_refusals_are_reachable_declared_and_audited	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+key_usage_over_an_unpriced_class_answers_named_409	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+keys_error_surface_is_byte_stable	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+named_map_error_surface_answers_its_declared_taxonomy	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+openapi_config_forms_include_declared_plane_input_schemas	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+openapi_documents_every_served_admin_operation	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+openapi_every_mutating_operation_declares_a_request_body	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+openapi_host_authoring_uses_installed_oauth_owner_and_loader_parser	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+openapi_json_matches_committed_file	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+openapi_object_body_unions_reject_scalar_and_missing_branches	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+openapi_operations_carry_stable_operation_ids	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+openapi_rendered_component_schemas_are_the_committed_ones	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+overlay_reset_doc_row_matches_the_section_set	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+plugin_reload_reports_an_unrebuildable_disk_config	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+plugin_rollback_reports_missing_and_untrusted_targets	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+rate_limit_doc_table_matches_classifier	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+served_openapi_lists_only_the_configured_planes	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+test_admin_v1_openapi_is_identity_json_for_every_client	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape	dist/default/tests/product/admin_cross_plane/main.rs	deleted	none-named		
+migrate_inserts_the_memory_store_and_the_result_validates	dist/default/tests/store_required.rs	deleted	none-named		
+validate_refuses_a_config_without_a_store_block	dist/default/tests/store_required.rs	deleted	none-named		
+actual_export_dispatch_resolves_the_live_table_on_the_same_listener	crates/busbar/src/tests/kernel_application/plugin_routes_actual.rs	deleted	none-named		
+every_linked_doors_black_box_cases_run_against_the_real_binary	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+a_door_stating_a_black_box_directory_with_no_cases_fails	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+a_malformed_case_is_refused_naming_the_plane_and_the_case	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+a_cited_cell_whose_bytes_differ_fails_naming_the_plane_the_case_and_the_cell	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+a_mismatch_fails_naming_the_plane_and_the_case	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+the_scripted_far_end_answers_what_the_case_states_and_counts_it	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+a_boot_step_is_held_to_the_exit_it_states	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+unless_runs_a_case_only_where_the_axis_is_absent	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+a_reply_under_a_foreign_id_fails_the_call	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+raw_http_responder_preserves_the_full_json_body_without_a_rpc_envelope	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+exact_call_and_transport_fields_refuse_malformed_oracles	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+tls_responder_proves_its_actual_ca_and_spki_and_refuses_wrong_anchors	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+exact_call_oracles_detect_changed_bytes_json_and_headers_on_actual_http	dist/default/tests/plane_blackbox.rs	deleted	none-named		
+routing_recipe_preserves_configured_float_prices_before_ranking	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_unknown	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_pool_route_walks_its_named_pools_members_under_its_label	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+an_entrys_timeout_is_its_members_attempt_bound	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_registration_that_writes_no_timeout_is_bounded_at_the_core_default	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_registration_that_is_no_tool_server_keeps_the_walk_budget	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_direct_route_walks_its_entry_alone_under_the_empty_label	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_model_serving_sections_entries_are_its_models	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_name_that_is_not_text_or_a_class_unknown_routes_nowhere	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+the_grant_is_judged_over_the_named_pool_then_its_fallback	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+test_adhoc_governance_pool_acl_403_via_router	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_pool_members_tier_is_read_off_its_member	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_member_with_a_bad_tier_is_refused_at_the_section_build	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_names	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+an_anonymous_unit_never_reaches_a_billed_path	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+the_door_facts_index_the_fee_units_among_the_billable_classes	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_direct_route_walks_its_entrys_own_cell_and_a_pool_route_its_label	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_blocked_admission_renders_as_the_budget_units_door_does	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_units_principal_is_recorded_from_authenticate_until_its_steps_drop	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_live_parent_at_the_request_cap_admits_and_ledgers_its_child	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+an_exhausted_budget_re_pools_the_unit_through_its_downgrade_pool	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_downgrade_cycle_ends_in_the_plain_refusal_naming_the_last_pool_walked	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_downgrade_never_routes_a_key_into_a_pool_it_may_not_use	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_member_granted_pool_reaches_only_the_members_the_key_grants	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+llm_pool_members_written_by_kernel_sections_are_read	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+pool_member_map_without_a_name_is_refused	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+exhausted_pool_walk_bills_under_a_member_lane	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+llm_pool_member_scope_is_judged_at_the_pool_not_the_member	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+child_grant_on_a_pooled_llm_target_walks_only_the_target	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_routed_unit_with_no_member_is_refused_before_admission_charges	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_downgrade_into_a_pool_with_no_member_is_refused_uncharged	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_child_of_a_routed_unit_with_no_member_opens_no_money	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+opened_lane_refuses_a_routed_unit_with_no_member	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+money_openers_take_no_default_lane	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_need_over_an_upgrade_framer_spells_the_base_url_in_its_scheme	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_member_bound_over_an_upgrade_need_dials_its_spelled_base	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_member_binds_every_need_its_style_names_one_per_transport	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_member_is_bound_under_its_dialects_default_style_on_the_need_that_style_names	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_member_that_cannot_be_reached_refuses_the_load_naming_it	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_members_binding_is_opened_with_its_dialects_parameters_under_the_providers_own	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+the_signing_region_is_read_off_the_host_the_request_dials	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+token_endpoint_prepares_without_sending_and_commits_only_on_its_secured_connection	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+presenting_a_request_preserves_its_independent_bounds_and_secure_delivery_requirement	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_registration_member_is_reached_at_its_own_target	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_bearer_placement_presents_the_secret_only_as_the_bearer	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_named_header_placement_presents_the_secret_verbatim_in_that_header	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+an_unresolvable_credential_fails_closed_and_names_the_member	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+an_expired_lease_is_refused_on_the_next_hop	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_fresh_lease_is_presented	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_secret_pasted_as_its_reference_is_never_echoed_in_the_refusal	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_rotated_secret_is_presented_on_the_first_hop_after_the_next_refresh	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_rotated_header_credential_is_presented_in_the_same_header	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+hops_racing_a_rotation_each_present_one_whole_value	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_hop_resolves_nothing_and_takes_no_lock	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+an_open_runs_under_no_lock_a_hop_waits_on	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+the_per_hop_binding_never_renders_the_secret_in_a_debug_line	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_registration_member_rides_every_member_target_need	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+connection_route_binds_nested_declared_exchange_without_shared_auth_or_peer_identity	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+the_configured_error_body_cap_reaches_both_egress_constructors	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_model_shaped_section_takes_the_stated_labels_the_previous_release_counted	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_pools_reach_follows_its_fallback_and_the_declared_words	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_section	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_plane	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+the_doors_admission_check_reads_the_arrival_window_and_not_the_clock	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+asking_whether_a_name_is_configured_allocates_nothing	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+red_a_peer_key_pin_naming_no_digest_refuses_the_load_naming_the_field_and_its_form	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+serving_a_style_binds_only_the_linked_row_that_states_it	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+a_credential_endpoint_is_read_by_the_styles_bit_never_its_name	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+settings_only_validation_requires_the_auth_declaration_capability	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+door_step_ten_models_one_vault_ref_resolves_once	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+door_step_two_providers_two_refs_resolve_once_each	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+door_step_each_call_resolves_fresh	crates/busbar/src/root/tests/door_steps.rs	deleted	none-named		
+entry_resolved_once	crates/busbar/src/root/tests/door_steps_entry_once.rs	deleted	none-named		
+a_failed_refresh_keeps_the_held_credential_until_its_lease_ends	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+a_failed_reopen_after_rotation_keeps_the_old_handle_and_lease	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+a_refresh_failure_emits_8026_once_per_streak_window_and_audits_degraded	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+a_lapse_emits_8027_once_and_audits_rejected	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+recovery_after_failures_audits_applied_and_resets_the_schedule	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+retry_schedule_is_jittered_exponential_capped_and_fits_two_attempts_before_expiry	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+a_definitive_answer_drops_after_one_confirming_reread_and_an_outage_keeps	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+an_unchanged_file_with_a_trailing_newline_never_reopens	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+a_flapping_source_reuses_the_previous_handle	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+members_failing_on_one_source_report_once_and_count_the_others	crates/busbar/src/root/tests/door_steps_lease.rs	deleted	none-named		
+budget_plan_built_once	crates/busbar/src/root/tests/door_steps_budget_plan.rs	deleted	none-named		
+a_downgrade_rebuilds_the_budget_plan_for_its_new_route	crates/busbar/src/root/tests/door_steps_budget_plan.rs	deleted	none-named		
+usage_folded_once	crates/busbar/src/root/tests/usage_fold.rs	deleted (money)	native-present	every_path_ledgers_a_unit_exactly_once_and_closes_it the_end_ledgers_the_last_reported_counts_once selected_quantity_fold_retains_both_attempts_without_legacy_attribution	
+overflow_unit_audited_unpriced_not_billed	crates/busbar/src/root/tests/usage_fold.rs	deleted (money)	native-present	a_report_that_overflows_is_unpriced_and_never_kept class_sums_are_checked_without_a_saturating_fallback	
+recovery_work_header_cannot_be_supplied_by_an_external_caller	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+duplicate_plane_routes_fail_with_the_listener_method_and_resolution	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+bootstrap_services_answer_refused_and_never_panic	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+constructed_services_keep_their_provider_when_another_source_is_built	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+every_service_is_the_installed_services_answer	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+dest_judge_asks_the_deployments_one_guard	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+the_ingress_caller_answers_with_the_units_head_and_bytes	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+a_whole_answer_is_sent_under_its_length_and_a_stream_piece_by_piece	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+an_ingress_write_waits_for_the_body_to_take_the_piece_before_it	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+after_its_head_the_unit_runs_whether_or_not_its_body_is_read	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+dropping_the_body_drops_the_unit_and_a_read_body_carries_every_piece	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+an_ingress_caller_whose_handler_went_away_answers_false	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+an_ingress_head_the_wire_cannot_carry_is_a_plane_fault	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+the_demotion_owner_is_the_one_plane_declaring_the_demotion_kind	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+constructed_services_sign_and_write_trust_changes_down	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+constructed_services_keep_their_governance_record_store	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+a_framed_claims_caller_reads_the_deframed_messages	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+a_budgeted_pipe_moves_custody_through_owned_reads_only	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+a_failed_decoded_gather_retires_every_partial_payload_credit	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+an_open_claims_line_takes_no_auth_whatever_the_data_chain	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+every_declared_stream_type_goes_piece_by_piece	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+a_planes_inbound_need_binds_at_the_listen_its_block_states	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+record_unit_is_request_id	crates/busbar/src/root/tests/serve.rs	deleted	none-named		
+explicit_wildcard_claim_admits_an_opaque_method_and_target	crates/busbar/src/root/tests/claim_line.rs	deleted	none-named		
+exact_method_claims_keep_their_filter_and_unknown_verbs_refuse	crates/busbar/src/root/tests/claim_line.rs	deleted	none-named		
+a_keyed_unit_is_admitted_and_its_money_settles_at_its_end	crates/busbar/src/root/tests/serve_money.rs	deleted (money)	native-present	an_admitted_request_opens_a_unit_on_the_money_and_its_settlement_closes_it_once	
+an_unknown_route_is_refused_before_admission_and_opens_no_hold	crates/busbar/src/root/tests/serve_money.rs	deleted (money; MONEY-OWED)	none-named		
+an_unkeyed_unit_on_a_credential_claim_is_refused	crates/busbar/src/root/tests/serve_money.rs	deleted	native-present	an_open_chain_or_no_identity_is_anonymous_and_a_refused_credential_is_rejected	
+an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money	crates/busbar/src/root/tests/serve_money.rs	deleted (money; MONEY-OWED)	native-present	an_open_chain_or_no_identity_is_anonymous_and_a_refused_credential_is_rejected	
+a_counted_local_unit_is_charged_as_an_admitted_call	crates/busbar/src/root/tests/serve_money.rs	deleted (money)	native-present	a_local_answer_is_served_with_its_audit_rows_and_billed_as_an_end	
+an_uncounted_local_unit_is_charged_nothing	crates/busbar/src/root/tests/serve_money.rs	deleted (money; MONEY-OWED)	none-named		
+an_estimated_local_unit_is_still_charged	crates/busbar/src/root/tests/serve_money.rs	deleted (money; MONEY-OWED)	none-named		
+a_nested_unit_runs_under_its_parents_key_and_answers_it_whole	crates/busbar/src/root/tests/serve_money.rs	deleted	native-present	a_native_child_uses_the_live_parent_admission_and_cannot_change_its_key	
+a_planes_unit_is_served_verify_and_its_money_settles	crates/busbar/src/root/tests/serve_money.rs	deleted (money)	native-present	an_admitted_request_opens_a_unit_on_the_money_and_its_settlement_closes_it_once the_unit_end_the_owner_settles_says_whether_anything_ran	
+a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing	crates/busbar/src/root/tests/serve_money.rs	deleted (money; MONEY-OWED)	native-present	child_activation_refusal_does_not_mark_original_fee_incurred	
+a_nest_past_the_depth_cap_is_refused	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+the_boot_composition_serves_a_dropped_in_door_plane_in_every_build	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks	crates/busbar/src/root/tests/serve_money.rs	deleted (money; MONEY-OWED)	none-named		
+an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+serving_generation_retains_its_exact_dispatch_snapshot_without_a_route_slot	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+exhausted_terminal_storage_refuses_before_session_attachment	crates/busbar/src/root/tests/serve_money.rs	deleted (money)	native-present	missing_initial_audit_custody_refunds_admission_before_return	
+a_failed_session_attachment_records_its_fault_and_cleans_up_once	crates/busbar/src/root/tests/serve_money.rs	deleted (money)	native-present	failed_phase_activation_removes_only_the_new_open_and_rolls_back_once	
+an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusing	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+in_bound_nested_whole_and_streamed_replies_keep_their_bytes_and_head_fields	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+a_catalog_never_lends_never_kept_fields_and_preserves_permitted_field_bytes	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+a_session_decode_refusal_uses_the_bound_live_facts	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+an_admitted_session_exposes_its_parent_frame_until_cleanup	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+nested_anonymous_admission_matches_the_arrival_rule	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+nested_ordinary_child_never_spends_the_parent_key_on_a_protected_claim	crates/busbar/src/root/tests/serve_money.rs	deleted	native-present	a_native_child_uses_the_live_parent_admission_and_cannot_change_its_key	
+a_root_ticket_stays_pending_until_ack_and_concurrent_claims_move_one_real_reservation	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+failed_mint_completion_burns_pending_custody_without_refunding_its_request	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+source_unregister_and_shutdown_burn_owned_custody_outside_the_maps	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+ticket_sweep_reads_only_due_tickets_batched	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+cancelling_an_actual_owned_session_retires_money_even_without_source_registration	crates/busbar/src/root/tests/serve_money.rs	deleted (money)	native-present	a_cancelled_unit_is_closed_by_its_settlement_too	
+a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_generation	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+only_the_host_line_carrier_adds_a_session_after_external_fields_are_filtered	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+a_line_arrival_carries_its_carrier_id_in_the_typed_field	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+nested_frame_carries_the_same_admitted_request_after_parent_retirement	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+cancelled_nested_frame_does_not_retire_its_retained_input_lease	crates/busbar/src/root/tests/serve_money.rs	deleted	none-named		
+a_real_third_claim_nested_reply_preserves_opaque_status_fields_and_governance	crates/busbar/src/root/tests/serve_nested_neutral.rs	deleted	none-named		
+cancelling_a_nested_collector_drops_its_live_producer	crates/busbar/src/root/tests/serve_nested_neutral.rs	deleted	none-named		
+a_nested_collector_drains_backpressure_and_preserves_every_field_byte	crates/busbar/src/root/tests/serve_nested_neutral.rs	deleted	none-named		
+a_rendered_nested_refusal_is_opaque_and_obeys_the_same_body_bound	crates/busbar/src/root/tests/serve_nested_neutral.rs	deleted	none-named		
+a_whole_nested_refusal_head_keeps_its_rendered_fields_and_states_no_length	crates/busbar/src/root/tests/serve_nested_neutral.rs	deleted	none-named		
+registering_more_units_than_the_custody_cap_refuses_none	crates/busbar/src/root/tests/serve_ticket_custody.rs	deleted	none-named		
+a_saturated_key_is_refused_before_its_ticket_record_is_written	crates/busbar/src/root/tests/serve_ticket_custody.rs	deleted	none-named		
+every_custody_release_keeps_the_key_and_unit_indexes_in_step	crates/busbar/src/root/tests/serve_ticket_custody.rs	deleted	none-named		
+a_configured_door_plane_is_opened_driven_and_its_admin_routes_published	crates/busbar/src/root/tests/serve_planes.rs	deleted	none-named		
+a_door_plane_whose_section_is_absent_stays_unopened	crates/busbar/src/root/tests/serve_planes.rs	deleted	none-named		
+no_door_plane_composes_nothing_and_needs_no_services	crates/busbar/src/root/tests/serve_planes.rs	deleted	none-named		
+a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table	crates/busbar/src/root/tests/serve_planes.rs	deleted	none-named		
+an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_its_bytes	crates/busbar/src/root/tests/serve_planes.rs	deleted	none-named		
+a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open	crates/busbar/src/root/tests/serve_planes.rs	deleted	none-named		
+a_pools_refresh_whose_snapshot_the_host_refuses_is_retired	crates/busbar/src/root/tests/serve_planes.rs	deleted	none-named		
+door_refresh_failure_classification_preserves_typed_bootstrap_refusal	crates/busbar/src/root/tests/serve_planes.rs	deleted	none-named		
+an_unrelated_same_name_entry_keeps_its_primary_grant_boundary	crates/busbar/src/root/tests/catalog_scope_provenance.rs	deleted	native-present	named_pool_and_direct_model_have_distinct_admitted_scope pool_grant_cannot_be_used_for_direct_model_or_another_pool	
+only_a_route_actually_synthesized_from_the_catalog_carries_provenance	crates/busbar/src/root/tests/catalog_scope_provenance.rs	deleted	native-present	named_pool_and_direct_model_have_distinct_admitted_scope pool_grant_cannot_be_used_for_direct_model_or_another_pool	
+one_arrival_reading_spells_both_the_figures_the_loop_asks_for	crates/busbar/src/root/tests/plane_node_money.rs	deleted (duplicate)	none-named		
+the_nodes_interner_leaks_a_lane_name_once	crates/busbar/src/root/tests/plane_node_money.rs	deleted (duplicate)	none-named		
+a_lane_name_reaches_the_interner_once_however_often_it_is_resolved	crates/busbar/src/root/tests/plane_node_money.rs	deleted (duplicate)	none-named		
+the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived	crates/busbar/src/root/tests/plane_node_money.rs	deleted (duplicate)	none-named		
+binding_the_node_keeps_every_confirmed_card_in_the_native_store	crates/busbar/src/root/tests/plane_node_money.rs	deleted (duplicate)	none-named		
+the_exit_arm_seals_no_money_figure_into_the_record	crates/busbar/src/root/tests/plane_node_money.rs	deleted (duplicate, money)	none-named		
+a_competing_sweep_leaves_a_claimed_units_hold_and_slot_with_its_owner	crates/busbar/src/root/tests/plane_node_money.rs	deleted (money)	native-present	an_abandoned_end_goes_to_the_roots_posting_site a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never every_path_ledgers_a_unit_exactly_once_and_closes_it	
+a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line	crates/busbar/src/root/tests/plane_node_money.rs	deleted (money)	native-present	every_path_ledgers_a_unit_exactly_once_and_closes_it native_prepare_freezes_an_encodable_line_and_stages_those_exact_facts	
+no_swept_unit_settles_with_zero_audit_records	crates/busbar/src/root/tests/plane_node_money.rs	deleted (money)	native-present	native_staged_audit_retains_original_after_cancel_and_lost_ack every_path_ledgers_a_unit_exactly_once_and_closes_it	
+cancelling_before_the_door_retires_the_borrowed_facts_and_sweeps_once	crates/busbar/src/root/tests/plane_node_money.rs	deleted (money)	native-present	a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never	
+a_driven_planes_abandoned_end_seals_one_audit_record	crates/busbar/src/root/tests/plane_node_money.rs	deleted (money)	native-present	an_abandoned_end_goes_to_the_roots_posting_site native_staged_audit_retains_original_after_cancel_and_lost_ack	
+a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book	crates/busbar/src/root/tests/plane_node_money.rs	deleted (money)	native-present	an_abandoned_end_goes_to_the_roots_posting_site a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never	
+every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain	crates/busbar/src/root/tests/plane_node_money.rs	deleted (money; MONEY-OWED)	none-named		
+a_screened_veto_through_the_node_admits_nothing	crates/busbar/src/root/tests/plane_node_money.rs	deleted (money; MONEY-OWED)	none-named		
+a_full_journal_lane_refuses_a_new_unit_with_the_reason	crates/busbar/src/root/tests/plane_node_money.rs	deleted (money)	native-missing	missing_initial_audit_custody_refunds_admission_before_return	unbound_terminal_storage_refuses_before_effects saturated_data_terminal_storage_keeps_operator_reservations
+a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold	crates/busbar/src/root/tests/plane_node.rs	deleted (money)	native-present	an_abandoned_end_goes_to_the_roots_posting_site a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never	
+a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line	crates/busbar/src/root/tests/plane_node.rs	deleted (money)	native-present	every_path_ledgers_a_unit_exactly_once_and_closes_it native_prepare_freezes_an_encodable_line_and_stages_those_exact_facts	
+no_swept_unit_settles_with_zero_audit_records	crates/busbar/src/root/tests/plane_node.rs	deleted (money)	native-present	native_staged_audit_retains_original_after_cancel_and_lost_ack every_path_ledgers_a_unit_exactly_once_and_closes_it	
+a_late_arm_with_no_reading_writes_the_exits_own_line	crates/busbar/src/root/tests/plane_node.rs	deleted (money)	native-present	the_exit_arm_seals_no_money_figure_into_the_record an_end_posts_the_final_counts_then_finishes_and_an_end_with_no_usage_only_finishes	
+a_late_body_terminal_stage_refusal_is_a_body_error	crates/busbar/src/root/tests/plane_node.rs	deleted (money)	native-present	native_stage_refusal_keeps_frozen_input_and_does_not_advance_chain	
+a_borrowed_unit_seals_its_verified_destination	crates/busbar/src/root/tests/plane_node_seal.rs	deleted	none-named		
+an_unfinished_session_retires_its_facts_and_preserves_its_destination_for_sweep	crates/busbar/src/root/tests/plane_node_seal.rs	deleted	none-named		
+an_admitted_session_seals_one_record_when_it_ends	crates/busbar/src/root/tests/plane_node_seal.rs	deleted (money)	native-present	a_session_writes_one_line_of_its_last_cumulative_counts_at_its_end an_abandoned_session_is_billed_by_its_cleanup_and_closes	
+a_session_refused_at_its_open_seals_a_refused_record	crates/busbar/src/root/tests/plane_node_seal.rs	deleted	native-present	a_refused_request_has_no_session	
+a_unit_that_passed_two_hooks_seals_both_in_order_with_their_heads	crates/busbar/src/root/tests/plane_node_seal.rs	deleted	none-named		
+a_unit_whose_hook_failed_seals_it_as_failed	crates/busbar/src/root/tests/plane_node_seal.rs	deleted	none-named		
+a_unit_with_no_hooks_seals_an_empty_hook_list	crates/busbar/src/root/tests/plane_node_seal.rs	deleted	none-named		
+a_unit_seals_the_policy_epoch_of_the_configuration_in_force_when_it_arrived	crates/busbar/src/root/tests/plane_node_seal.rs	deleted (money provenance)	native-present	the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head	
+a_unit_under_an_amended_card_seals_the_configuration_beneath_it	crates/busbar/src/root/tests/plane_node_seal.rs	deleted (money provenance)	native-present	a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq	
+a_unit_admitted_under_no_history_seals_no_policy_generation	crates/busbar/src/root/tests/plane_node_seal.rs	deleted (money provenance)	native-present	audit_rate_card_provenance_keeps_the_actual_key_across_peer_insertion	
+a_completed_terminal_receipt_requires_actual_seal_success_even_when_the_chain_advances	crates/busbar/src/root/tests/plane_node_seal.rs	deleted (money)	native-present	original_receipt_requires_exact_signed_run_applied_and_retains_credit	
+timing_sealed_before_post	crates/busbar/src/root/tests/plane_node_seal.rs	deleted	none-named		
+a_unit_that_wrote_nothing_has_no_ttft	crates/busbar/src/root/tests/plane_node_seal.rs	deleted	none-named		
+a_terminal_stage_refusal_is_not_success_after_the_unit_has_completed	crates/busbar/src/root/tests/plane_node_seal.rs	deleted (money)	native-present	native_stage_refusal_keeps_frozen_input_and_does_not_advance_chain	
+a_session_terminal_stage_refusal_fails_finish	crates/busbar/src/root/tests/plane_node_seal.rs	deleted (money)	native-missing	native_stage_refusal_keeps_frozen_input_and_does_not_advance_chain	unbound_terminal_storage_refuses_before_effects
+every_linked_plane_is_one_key_and_every_claim_is_served	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+the_check_answers_now_that_every_claim_names_a_served_transport	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+every_planes_claims_name_a_served_transport	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_do	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+two_linked_door_rows_are_bound_under_two_distinct_labels	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+a_dropped_in_wire_is_served_beside_the_linked_rows_and_answers_the_check	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+a_second_door_on_a_served_key_is_refused_at_the_connector	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+the_upgrade_lines_are_read_off_the_door_statements	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+a_linked_transport_row_logs_to_its_own_plugin_log_file	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+red_3g_deals_each_seat_its_section_and_positions_a_refusal	crates/busbar/src/root/tests/boot.rs	deleted	native-present	the_tables_project_the_resolved_sections_in_lane_order	
+red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool	crates/busbar/src/root/tests/boot.rs	deleted	native-present	kernel_sections_preserve_numeric_scalars_in_every_projected_section	
+bootstrap_archive_pins_refuse_before_native_constructors	crates/busbar/src/root/tests/boot.rs	deleted; SECURITY proof owed	none-named		
+the_root_fixture_cohort_keeps_one_actual_fallback_after_timeout_resolution	crates/busbar/src/root/tests/egress_ports.rs	deleted	native-present	attempt_timeout_defaults_are_signed_and_sent_without_post_auth_mutation	
+a_members_attempt_timeout_wins_over_its_models_default	crates/busbar/src/root/tests/egress_ports.rs	deleted	native-present	attempt_timeout_defaults_are_signed_and_sent_without_post_auth_mutation	
+test_model_default_applies_when_member_has_no_override	crates/busbar/src/root/tests/egress_ports.rs	deleted	native-present	attempt_timeout_defaults_are_signed_and_sent_without_post_auth_mutation	
+test_no_cap_anywhere_is_none	crates/busbar/src/root/tests/egress_ports.rs	deleted	native-present	attempt_timeout_defaults_are_signed_and_sent_without_post_auth_mutation	
+test_empty_cands_uses_model_default	crates/busbar/src/root/tests/egress_ports.rs	deleted	native-present	attempt_timeout_defaults_are_signed_and_sent_without_post_auth_mutation	
+a_changed_upstream_timeout_changes_the_door_settings_an_unrelated_apply_does_not	crates/busbar/src/root/tests/policy.rs	rewritten as a_changed_upstream_timeout_changes_the_client_settings_an_unrelated_apply_does_not	kept		
+queue_depth_counts_waiters_from_overlapping_egress_generations	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+retained_destinations_follow_the_model_name_across_reorder_and_removal	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+budget_refunds_and_probe_releases_keep_their_originating_unit	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+a_success_is_recorded_on_the_walks_clock	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+a_probe_success_joins_the_walks_window	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+probe_failures_and_hard_downs_cool_on_the_walks_clock	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every_direct_route	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+a_direct_routes_fault_is_recorded_on_the_lanes_default_cell	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+a_walk_spanning_a_config_apply_records_into_the_new_store	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+a_keyless_lane_is_not_probed	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol_numbers	crates/busbar/src/root/tests/model_egress.rs	deleted	none-named		
+an_empty_plane_set_still_stages_the_core_listener_lines	crates/busbar/src/root/tests/serve_tests.rs	deleted	none-named		
+detached_session_caller_preserves_text_and_closes_its_pipe_on_worker_shutdown	crates/busbar/src/root/tests/serve_tests.rs	deleted	none-named		
+a_listener_subscribed_after_the_shutdown_broadcast_observes_the_level	crates/busbar/src/root/tests/serve_tests.rs	deleted	none-named		
+a_dropped_session_future_closes_its_admitted_carrier	crates/busbar/src/root/tests/serve_tests.rs	deleted	none-named		
+linked_plane_minimal_configuration_fixtures_parse	crates/busbar/src/root/tests/serve_tests.rs	deleted	none-named		
+the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end	crates/busbar/src/root/tests/serve_door_far.rs	deleted	none-named		
+a_buffered_openai_request_stays_within_its_work_budget	crates/busbar/src/root/tests/work_budget.rs	deleted	none-named		
+a_streamed_openai_request_stays_within_its_work_budget	crates/busbar/src/root/tests/work_budget.rs	deleted	none-named		
+a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in	crates/busbar/src/root/tests/node_arrival.rs	deleted	none-named		
+the_admission_check_reads_the_arrival_window_and_not_the_clock	crates/busbar/src/root/tests/node_arrival.rs	deleted	none-named		
+every_unit_the_door_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain	crates/busbar/src/root/tests/node_door_cells.rs	deleted	none-named		
+a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged	crates/busbar/src/root/tests/node_door_cells.rs	deleted	none-named		
+billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_governs	crates/busbar/src/root/tests/node_door_cells.rs	deleted	none-named		
+the_loop_attributes_the_identity_the_door_resolved_and_invents_none	crates/busbar/src/root/tests/node_door_cells.rs	deleted	none-named		
+a_served_rerank_puts_identical_search_units_on_both_books	crates/busbar/src/root/tests/node_door_cells.rs	deleted	none-named		
+a_reranks_search_units_reach_the_price_on_both_books	crates/busbar/src/root/tests/node_door_cells.rs	deleted	none-named		
+a_same_dialect_rerank_puts_identical_search_units_on_both_books	crates/busbar/src/root/tests/node_door_cells.rs	deleted	none-named		
+every_linked_door_plane_is_driven	crates/busbar/src/root/tests/secret_source.rs	deleted	none-named		
+a_registrations_peer_key_pin_refuses_a_far_end_serving_another_key_and_reaches_its_own	crates/busbar/src/root/tests/registration_pin.rs	deleted	none-named		
+an_mtls_registration_presents_its_client_identity_and_one_with_none_is_refused_by_the_far_end	crates/busbar/src/root/tests/registration_pin.rs	deleted	none-named		
+a_pinned_self_signed_leaf_with_no_member_root_is_refused_for_its_chain_in_words	crates/busbar/src/root/tests/registration_pin.rs	deleted	none-named		
+a_ca_certificate_served_as_its_own_leaf_is_refused_with_a_ca_false_remedy	crates/busbar/src/root/tests/registration_pin.rs	deleted	none-named		
+a_self_signed_leaf_as_its_member_root_is_reached_under_its_pin_and_refused_under_another	crates/busbar/src/root/tests/registration_pin.rs	deleted	none-named		
+structured_member_tls_validates_certificates_and_does_not_accept_nested_identity	crates/busbar/src/root/tests/registration_pin.rs	deleted	none-named		
+legacy_identity_selector_does_not_parse_member_tls_bundle	crates/busbar/src/root/tests/registration_pin.rs	deleted	none-named		
+structured_tls_preserves_sibling_identity_requirements	crates/busbar/src/root/tests/registration_pin.rs	deleted	none-named		
+member_tls_rules_reject_candidate_before_apply_and_ignore_unselected_sections	crates/busbar/src/root/tests/registration_pin.rs	deleted	none-named		
+the_operator_provider_is_the_row_the_manifest_names	crates/busbar/src/root/tests/auth_bindings.rs	kept, trimmed	kept		
+(context admin_application: busbar-hook-webrequest owner tests admin_hook_timeout.rs, admin_scope_ladder.rs)	busbar-hook-webrequest@4a91545 tests/admin_application/	owed (plugin repository GetBusbar/busbar-hook-webrequest)	none-named		
+a_slow_admin_door_does_not_stall_healthz	crates/busbar/src/tests/kernel_application/auth_admin_tests.rs	kept; red until auth-oidc is native	kept		
+admin_max_admin_scope_caps_binding	crates/busbar/src/tests/kernel_application/auth_admin_tests.rs	kept; red until auth-oidc is native	kept		
+admin_plugin_full_binding_allows_mutation	crates/busbar/src/tests/kernel_application/auth_admin_tests.rs	kept; red until auth-oidc is native	kept		
+admin_plugin_readonly_binding_get_ok_post_403	crates/busbar/src/tests/kernel_application/auth_admin_tests.rs	kept; red until auth-oidc is native	kept		
+every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict	crates/busbar/src/tests/kernel_application/auth_admin_tests.rs	kept; red until auth-oidc is native	kept		
+external_admin_verifier_receives_bearer_and_admin_header_candidates	crates/busbar/src/tests/kernel_application/auth_admin_tests.rs	kept; red until auth-oidc is native	kept		
+forbidden_admin_requests_audit_once_per_window	crates/busbar/src/tests/kernel_application/auth_admin_tests.rs	kept; red until auth-oidc is native	kept		
+roleless_external_admin_principal_denied	crates/busbar/src/tests/kernel_application/auth_admin_tests.rs	kept; red until auth-oidc is native	kept		
+the_admin_gate_admits_only_the_listed_verbs	crates/busbar/src/tests/kernel_application/auth_admin_tests.rs	kept; red until auth-oidc is native	kept		
+a_keys_only_chain_is_not_an_open_front_door	crates/busbar/src/tests/kernel_application/auth_chain_tests.rs	kept; red until auth-oidc is native	kept		
+a_slow_auth_door_does_not_park_the_reactor	crates/busbar/src/tests/kernel_application/auth_chain_tests.rs	kept; red until auth-oidc is native	kept		
+a_verified_oidc_role_is_bound_under_the_provider_name	crates/busbar/src/tests/kernel_application/auth_chain_tests.rs	kept; red until auth-oidc is native	kept		
+test_auth_middleware_debug_redacts_tokens	crates/busbar/src/tests/kernel_application/auth_chain_tests.rs	kept; red until auth-oidc is native	kept		
+test_chain_identifies_with_module_and_principal	crates/busbar/src/tests/kernel_application/auth_chain_tests.rs	kept; red until auth-oidc is native	kept		
+test_keys_in_chain_sets_flag_not_module	crates/busbar/src/tests/kernel_application/auth_chain_tests.rs	kept; red until auth-oidc is native	kept		
+test_nonempty_chain_fails_closed_on_all_pass	crates/busbar/src/tests/kernel_application/auth_chain_tests.rs	kept; red until auth-oidc is native	kept		
+exchange_provisions_user_leaf_from_child_default_and_key_is_usable	crates/busbar/src/tests/kernel_application/auth_self_keys_tests.rs	kept; red until auth-oidc is native	kept		
+existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh	crates/busbar/src/tests/kernel_application/auth_self_keys_tests.rs	kept; red until auth-oidc is native	kept		
+existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persistence	crates/busbar/src/tests/kernel_application/auth_self_keys_tests.rs	kept; red until auth-oidc is native	kept		
+proof_self_mint_disabled_refuses_self_serve	crates/busbar/src/tests/kernel_application/auth_self_keys_tests.rs	kept; red until auth-oidc is native	kept		
+self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation	crates/busbar/src/tests/kernel_application/auth_self_keys_tests.rs	kept; red until auth-oidc is native	kept		
+ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals	crates/busbar/src/tests/kernel_application/auth_governance_routes.rs	kept; red until auth-oidc is native	kept		
+ordinary_oidc_chain_without_operator_ignores_persisted_keys	crates/busbar/src/tests/kernel_application/auth_governance_routes.rs	kept; red until auth-oidc is native	kept		
+a_real_plugin_module_is_still_refused_with_plugins_off	crates/busbar/src/tests/kernel_application/external_preflight.rs	kept; red until auth-oidc is native	kept		
+(helper no_authorization_server: the 4 tests of the file)	crates/busbar/src/tests/kernel_application/auth_dpop_tests.rs	kept; red until auth-oidc is native	kept		
+(helper hosted_with_secret: its callers in the file)	crates/busbar/src/tests/oauth2_application/hosted_provider_tests.rs	kept; red until auth-oidc is native	kept		
+(helper build_application with resource auth: the OAuth application tests that stage auth-oidc)	crates/busbar/src/tests/oauth2_application/mod.rs	kept; red until auth-oidc is native	kept		
+test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independently	crates/busbar/src/tests/admin_application/admin_delegated_authority.rs	kept; red until auth-oidc is native	kept		
+test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secrets	crates/busbar/src/tests/admin_application/admin_delegated_authority.rs	kept; red until auth-oidc is native	kept		
+test_admin_v1_idempotency_key_is_principal_scoped	crates/busbar/src/tests/admin_application/admin_delegated_authority.rs	kept; red until auth-oidc is native	kept		
+test_admin_v1_put_auth_dry_run_guard	crates/busbar/src/tests/admin_application/admin_delegated_authority.rs	kept; red until auth-oidc is native	kept		
+proof_role_binding_mode_ceiling_bounds_a_delegated_admin	crates/busbar/src/tests/admin_application/admin_mint_policy_ceilings.rs	kept; red until auth-oidc is native	kept		
+proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed	crates/busbar/src/tests/admin_application/admin_mint_policy_ceilings.rs	kept; red until auth-oidc is native	kept		
+proof_role_mint_ceiling_bounds_a_delegated_admin	crates/busbar/src/tests/admin_application/admin_mint_policy_ceilings.rs	kept; red until auth-oidc is native	kept		
+proof_role_mint_ceiling_bounds_a_delegated_admin_allowed	crates/busbar/src/tests/admin_application/admin_mint_policy_ceilings.rs	kept; red until auth-oidc is native	kept		
+proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl	crates/busbar/src/tests/admin_application/admin_mint_policy_ceilings.rs	kept; red until auth-oidc is native	kept		
+a_past_ceiling_rotate_releases_its_idempotency_claim	crates/busbar/src/tests/admin_application/admin_rotate_pool_ceilings.rs	kept; red until auth-oidc is native	kept		
+proof_role_pool_ceiling_refuses_an_over_ceiling_rotate	crates/busbar/src/tests/admin_application/admin_rotate_pool_ceilings.rs	kept; red until auth-oidc is native	kept		
+proof_role_pool_ceiling_rotates_an_in_ceiling_key	crates/busbar/src/tests/admin_application/admin_rotate_pool_ceilings.rs	kept; red until auth-oidc is native	kept		
+filtered_credential_flush_uses_actual_admin_and_data_caches	crates/busbar/src/tests/admin_application/admin_credential_cache.rs	kept; red until auth-oidc is native	kept		
+(helper app: the 17 tests of the file)	crates/busbar/src/tests/admin_application/admin_custody_outcomes.rs	kept; red until auth-oidc is native	kept		
+test_admin_v1_named_map_rejects_an_under_scoped_caller	crates/busbar/src/tests/admin_application/admin_named_map_scope.rs	kept; red until auth-oidc is native	kept		
+test_admin_v1_overlay_reset_groups_reverts_to_base	crates/busbar/src/tests/admin_application/admin_overlay_boundaries.rs	kept; red until auth-oidc is native	kept		
+test_admin_v1_config_settings_round_trip_survives_reload	crates/busbar/src/tests/admin_application/admin_settings_persistence.rs	kept; red until auth-oidc is native	kept		
+auto_provision_stops_at_the_group_ceiling	crates/busbar/src/tests/admin_application/custody_provision.rs	kept; red until auth-oidc is native	kept		
+(helper served: the 3 tests of the file)	crates/busbar/src/tests/admin_application/grammar_admin_tests.rs	kept; red until auth-oidc is native	kept		
+catalog_repeat_gets_reuse_the_cached_scan	crates/busbar/src/tests/admin_application/service_plugin_integration.rs	kept; red until the BUSBAR_TEST_MYSQL_CDYLIB store is a MIN-3 image	kept		
+install_catalog_remove_roundtrip	crates/busbar/src/tests/admin_application/service_plugin_integration.rs	kept; red until the BUSBAR_TEST_MYSQL_CDYLIB store is a MIN-3 image	kept		
+install_filesystem_failures_are_internal_errors	crates/busbar/src/tests/admin_application/service_plugin_integration.rs	kept; red until the BUSBAR_TEST_MYSQL_CDYLIB store is a MIN-3 image	kept		
+safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin	crates/busbar/src/tests/admin_application/service_bootstrap_rollback.rs	kept; red until the BUSBAR_TEST_MYSQL_CDYLIB store is a MIN-3 image	kept		
+admitted_initial_store_build_retains_its_resolver_and_runtime_requires_a_candidate	crates/busbar/src/root/tests/fixture_bootstrap.rs	kept, repaired	kept		
+(helper stage_image: every test of the file)	crates/busbar/src/root/tests/native_export_lifecycle.rs	kept, door branch removed	kept		
+(helper stage: the 5 tests of the file)	dist/default/tests/product/decisions_hooks.rs	kept; red until busbar-hook-webrequest is a MIN-3 image	kept		
+reservation_uses_the_request_class_and_unwinds_before_effects	crates/busbar/src/root/plane_node/terminal_book_tests.rs	deleted	none-named		
+unbound_terminal_storage_refuses_before_effects	crates/busbar/src/root/plane_node/terminal_book_tests.rs	deleted	none-named		
+saturated_data_terminal_storage_keeps_operator_reservations	crates/busbar/src/root/plane_node/terminal_book_tests.rs	deleted	native-present	replacement_needs_full_overlap_and_does_not_borrow_operator_reserve	
+a_lane_name_reaches_the_interner_once_however_often_it_is_resolved	crates/busbar/src/root/tests/plane_node.rs	deleted	native-present	the_nodes_interner_leaks_a_lane_name_once	
+live_tick_reopens_admission_after_store_pressure_without_another_unit	crates/busbar/src/root/tests/journal_live_retry.rs	kept; waits for unit-gate	kept		
+live_tick_does_not_duplicate_a_batch_with_an_unknown_store_commit	crates/busbar/src/root/tests/journal_live_retry.rs	kept; waits for unit-gate	kept		
+actual_ticket_preflight_preserves_unspent_custody_and_invalid_prefix_refusal	crates/busbar/src/tests/kernel_application/central2_inbound_tickets.rs	deleted (file removed; SECURITY-OWED)	none-named		
+actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier_custody	crates/busbar/src/tests/kernel_application/central2_inbound_keys.rs	deleted (file removed; SECURITY-OWED)	none-named		
+actual_inbound_generation_keeps_only_original_request_authority	crates/busbar/src/tests/kernel_application/central2_inbound_generations.rs	deleted (file removed; SECURITY-OWED)	none-named		
+actual_inbound_foreign_binding_and_session_custody	crates/busbar/src/tests/kernel_application/central2_inbound_custody.rs	deleted (file removed; SECURITY-OWED)	none-named		
+actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real_sink_events	crates/busbar/src/tests/kernel_application/central2_inbound_refusals.rs	deleted (file removed; SECURITY-OWED)	none-named		
+install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op	crates/busbar/src/root/tests/admin_plugin_admission.rs	deleted	none-named		
+install_of_a_linked_plugin_at_another_version_is_refused	crates/busbar/src/root/tests/admin_plugin_admission.rs	deleted	none-named		
+install_of_a_linked_plugin_stating_no_version_is_refused	crates/busbar/src/root/tests/admin_plugin_admission.rs	deleted	none-named		
+install_judges_trust_before_the_one_version_rule	crates/busbar/src/root/tests/admin_plugin_admission.rs	deleted	none-named		
+a_plugin_declaring_a_catalogued_host_family_is_refused	crates/busbar/src/tests/catalogue_tests.rs	deleted	none-named		
+plugin_configuration_actual_linked_plane_and_transport_reads_never_call_doors	crates/busbar/src/tests/admin_application/installed_schema.rs	deleted	none-named		
+test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op	crates/busbar/src/root/tests/admin_plugin_admission.rs	deleted	native-present	test_admin_v1_plugin_install_list_reload_remove	
+the_fallback_decl_reads_the_protocol_registry	dist/default/tests/product/registry_cross_plane.rs	kept, trimmed	kept		
+test_admin_v1_config_versions_rollback_and_diff	busbar-hook-webrequest@4a91545 tests/admin_application/admin_config_history_and_overlay.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_config_plane_golden_path	busbar-hook-webrequest@4a91545 tests/admin_application/admin_config_history_and_overlay.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_config_apply_preserves_the_persisted_overlay	busbar-hook-webrequest@4a91545 tests/admin_application/admin_config_history_and_overlay.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_register_hook_takes_effect_live	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_crud_contracts.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_audit_records_mutations	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_crud_contracts.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_delete_hook_takes_effect_live	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_crud_contracts.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_base_hook_is_read_only_via_api	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_crud_contracts.rs	unmounted (root-min3e)	none-named		
+base_hook_delete_conflict_outranks_a_stale_if_match	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_crud_contracts.rs	unmounted (root-min3e)	none-named		
+limit_zero_does_not_produce_a_self_referential_cursor	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_crud_contracts.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_hook_register_persists_to_overlay	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_crud_contracts.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_overlay_reset_hooks_reverts_to_base	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_overlay_reset.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_hooks_read_surface	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_read_metadata.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_plugins_catalog_by_type	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_read_metadata.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_config_effective_snapshot_no_secrets	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_read_metadata.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_put_hook_replaces_live_with_guards	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_replacement.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_hook_settings_patch_commit_on_ack_and_schema	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_settings_ack.rs	unmounted (root-min3e)	none-named		
+timeout_only_admin_put_refreshes_the_actual_policy_atomically	busbar-hook-webrequest@4a91545 tests/admin_application/admin_hook_timeout.rs	unmounted (root-min3e)	none-named		
+test_admin_v1_scope_ladder_e2e_with_group_mapped_principals	busbar-hook-webrequest@4a91545 tests/admin_application/admin_scope_ladder.rs	unmounted (root-min3e)	none-named		
+oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect	dist/default/tests/product/plane_integration.rs	deleted	none-named		
+a_mount_claims_its_own_segment_and_not_its_sibling	dist/default/tests/product/plane_integration.rs	deleted	none-named		
+an_audience_bound_token_is_confined_to_its_door_plane	dist/default/tests/product/plane_integration.rs	deleted	none-named		
+rejected_file_hook_mutations_keep_actual_native_callers_and_behavior	dist/default/tests/product/decisions_hooks.rs	deleted	none-named		
+a_global_gate_refuses_a_decisions_request_before_its_dial	dist/default/tests/product/decisions_hooks.rs	deleted	none-named		
+a_decisions_hooks_rewrite_alters_the_request_the_provider_receives	dist/default/tests/product/decisions_hooks.rs	deleted	none-named		
+a_gate_named_in_decisions_hooks_refuses_the_unit	dist/default/tests/product/decisions_hooks.rs	deleted	none-named		
+with_no_hook_bound_the_provider_receives_the_callers_bytes	dist/default/tests/product/decisions_hooks.rs	deleted	none-named		
+a_symlinked_1_5_5_key_file_converts_and_serves_after_the_restart	dist/default/tests/jwt_bearer_key_file_1_5_5.rs	deleted	none-named		
+a_1_5_5_key_file_name_with_spaces_is_kept_verbatim_and_serves	dist/default/tests/jwt_bearer_key_file_1_5_5.rs	deleted	none-named		
+a_1_5_5_key_file_that_is_a_directory_is_refused_at_the_write_back	dist/default/tests/jwt_bearer_key_file_1_5_5.rs	deleted	none-named		
+a_1_5_5_key_file_that_is_a_device_is_refused_at_the_write_back	dist/default/tests/jwt_bearer_key_file_1_5_5.rs	deleted	none-named		
+a_1_5_5_key_file_over_the_secret_file_bound_is_refused_after_the_restart	dist/default/tests/jwt_bearer_key_file_1_5_5.rs	deleted	none-named		
+a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_own	dist/default/tests/law7_served_surface.rs	deleted	none-named		
+the_agent_trust_verbs_refuse_a_caller_holding_no_admin_token_or_the_wrong_one	dist/default/tests/law7_served_surface.rs	deleted	none-named		
+a_1_5_5_config_boot_prints_nothing_from_an_unconfigured_plane	dist/default/tests/law7_served_surface.rs	deleted	none-named		
+a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_restart	dist/default/tests/law7_unloaded_plane_apply.rs	deleted	none-named		
+a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_as_1_5_5_did	dist/default/tests/metrics_routes_across_export_reload.rs	deleted	none-named		
+test_metrics_requires_auth_in_chain_mode	dist/default/tests/metrics_routes_across_export_reload.rs	deleted	none-named		
+actual_signed_reader_preserves_credential_body_gate_and_revocation_custody	crates/busbar/src/tests/kernel_application/central2_inbound_signed.rs	deleted	none-named		
+the_process_has_one_connector_and_every_path_takes_it	crates/busbar/src/root/tests/connector.rs	repaired	kept		
+every_linked_auth_plugins_outbound_need_is_refused_without_selected_route_authority	crates/busbar/src/root/tests/connector.rs	deleted	none-named		
+a_program_need_is_dialled_through_the_linked_line_framing_door	crates/busbar/src/root/tests/connector.rs	deleted	none-named		
+declared_codes_do_not_collide_with_the_registry	crates/busbar/src/tests/catalogue_tests.rs	deleted	native-present	every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues	
+page::committed_markdown_matches_registry + page::committed_json_matches_registry	crates/busbar/src/tests/catalogue_tests.rs	repaired	kept		
+every_linked_planes_claims_are_its_declared_claims + every_cross_plane_overlap_is_one_family_or_the_other_and_the_seal_resolves_them_all + every_remaining_path_overlap_is_a_shape_and_not_a_gap + every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses + the_sealed_order_is_most_specific_first_and_stable	crates/busbar/src/root/tests/registry.rs	repaired	kept		
+no_shipped_transport_names_a_layer	crates/busbar/src/root/tests/registry.rs	deleted	none-named		
+validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before	dist/default/tests/cli_validate.rs	deleted	none-named		
+validate_lane (helper) + validate_refuses_a_malformed_oauth_client_credential_as_boot_does + validate_accepts_a_well_formed_oauth_client_credential + validate_refuses_a_malformed_jwt_bearer_service_account_as_boot_does + validate_refuses_an_unmigrated_jwt_bearer_filename_credential	dist/default/tests/cli_validate.rs	deleted	none-named		
