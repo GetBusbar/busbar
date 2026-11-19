@@ -65,7 +65,9 @@ struct Shared {
     sched: Mutex<Sched>,
     timers: Mutex<Vec<Weak<Mutex<Slot>>>>,
     now_ns: AtomicU64,
-    /// The anchor `std::time::Instant` deadlines (hyper's timer API) are measured from.
+    /// The `Instant` that stands for zero on the clock `run` is given: `MemTimer::now` answers
+    /// `base + now_ns`, and a deadline `Instant` (hyper's timer API) is read back as its distance
+    /// from `base`. Only an anchor: no time is ever read from it.
     base: Instant,
 }
 
@@ -382,11 +384,26 @@ impl MemTimer {
             slot,
         })
     }
+    /// A deadline `Instant` as nanoseconds on the clock `run` is given: its distance from `base`.
     fn offset(&self, at: Instant) -> u64 {
         u64::try_from(at.saturating_duration_since(self.shared.base).as_nanos()).unwrap_or(u64::MAX)
     }
+    /// The `Instant` that names `ns` on the clock `run` is given: the inverse of `offset`. An
+    /// `Instant` reaches far more than 2^64 nanoseconds (585 years) past any `base` on every std
+    /// target, so the add does not fail; `base` only stands in for a time no `Instant` can name.
+    fn instant_at(&self, ns: u64) -> Instant {
+        self.shared
+            .base
+            .checked_add(Duration::from_nanos(ns))
+            .unwrap_or(self.shared.base)
+    }
 }
 impl hyper::rt::Timer for MemTimer {
+    /// The time `run` was last given, never the OS clock: hyper states its deadlines as
+    /// `now() + d`, so each one lands on the one clock `run` compares with and WAKE_AT names.
+    fn now(&self) -> Instant {
+        self.instant_at(self.shared.now_ns.load(Ordering::Acquire))
+    }
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn hyper::rt::Sleep>> {
         let add = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
         self.sleep_at(
