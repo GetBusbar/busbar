@@ -44,8 +44,6 @@ percent-encoding = { workspace = true }
 sseer = { workspace = true }
 subtle = { workspace = true }
 tracing = { workspace = true }
-tracing-core = { workspace = true }
-tracing-log = { workspace = true }
 
 [dev-dependencies]
 busbar-secure = { path = "../busbar-secure", features = ["test-support"] }
