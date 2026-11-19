@@ -303,7 +303,7 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<json::Value, St
             let owner = busbar_kernel::persistence::scoped::ScopedStore::host_private(
                 writer.store.clone(),
                 "busbar.fixture.principal-creation",
-                [SCHEMA.into()],
+                [SCHEMA],
             )
             .expect("private creation-witness owner");
             assert_eq!(

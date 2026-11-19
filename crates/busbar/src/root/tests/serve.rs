@@ -246,6 +246,7 @@ fn kernel(blocked: &[&str]) -> KernelServices {
     let d = busbar_kernel::config::Destinations {
         block_private_addresses: true,
         blocked: blocked.iter().map(|h| (*h).to_string()).collect(),
+        listens: Vec::new(),
     };
     kernel_services(crate::root::connector::guard_for(&d).expect("the guard"))
 }
