@@ -11,17 +11,20 @@
 
 use std::collections::BTreeSet;
 
+use busbar_contract::json::JsonContainerTrait as _;
+
 use super::*;
 
 const SNAPSHOT: &str = include_str!("../config-schema.snapshot.json");
 
 fn snapshot_keys(type_name: &str) -> BTreeSet<String> {
-    let snapshot: serde_json::Value = serde_json::from_str(SNAPSHOT).expect("the snapshot parses");
+    let snapshot: busbar_contract::json::Value =
+        busbar_contract::json::parse_str(SNAPSHOT).expect("the snapshot parses");
     snapshot["types"][type_name]["fields"]
         .as_object()
         .unwrap_or_else(|| panic!("the snapshot has no struct {type_name}"))
-        .keys()
-        .cloned()
+        .iter()
+        .map(|(key, _)| key.to_string())
         .collect()
 }
 
