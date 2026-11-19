@@ -2322,10 +2322,8 @@ pub(crate) async fn auth_middleware(
     let carrier = req
         .extensions_mut()
         .remove::<crate::inbound::native::AdminPhysicalRequest>();
-    let returned = crate::inbound::native::AdminDenialReturn::default();
-    let physical_pending =
-        crate::inbound::native::HeldAdminPending::take_from(carrier, returned.clone())
-            .map_err(|_| admin_unauthorized_response())?;
+    let (physical_pending, returned) = crate::inbound::native::HeldAdminPending::take_from(carrier)
+        .map_err(|_| admin_unauthorized_response())?;
     let mut answered = auth_middleware_held(
         current,
         handle,
@@ -2339,9 +2337,11 @@ pub(crate) async fn auth_middleware(
     // A native request refused here still holds its pending physical owner: it rides the refusing
     // answer back to root, which records the refusal and only then makes it the answer's output
     // authority. Without it the native listener holds an answer with no authority and writes
-    // nothing to the caller.
-    match &mut answered {
-        Ok(response) | Err(response) => returned.ride(response),
+    // nothing to the caller. Only a native admin request has a return cell.
+    if let Some(returned) = &returned {
+        match &mut answered {
+            Ok(response) | Err(response) => returned.ride(response),
+        }
     }
     answered
 }

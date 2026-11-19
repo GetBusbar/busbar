@@ -716,8 +716,8 @@ fn native_physical_admin_owner_refused_by_the_middleware_returns_unspent_with_it
     let (request, _owner) = arrive(&f, &conn, 1);
     let carrier = complete_input(request).into_admin().unwrap();
     let binding = carrier.binding().clone();
-    let returned = AdminDenialReturn::default();
-    let held = HeldAdminPending::take_from(Some(carrier), returned.clone()).unwrap();
+    let (held, returned) = HeldAdminPending::take_from(Some(carrier)).unwrap();
+    let returned = returned.expect("a native request has a return cell");
     assert!(held.is_some());
     assert!(
         returned.take().is_none(),
@@ -752,8 +752,8 @@ fn native_physical_admin_owner_spent_by_the_middleware_returns_nothing() {
     let (request, _owner) = arrive(&f, &conn, 1);
     let carrier = complete_input(request).into_admin().unwrap();
     let binding = carrier.binding().clone();
-    let returned = AdminDenialReturn::default();
-    let mut held = HeldAdminPending::take_from(Some(carrier), returned.clone()).unwrap();
+    let (mut held, returned) = HeldAdminPending::take_from(Some(carrier)).unwrap();
+    let returned = returned.expect("a native request has a return cell");
     let spent = held.take().expect("the middleware holds the owner");
     drop(held);
     assert!(returned.take().is_none());
@@ -761,11 +761,12 @@ fn native_physical_admin_owner_spent_by_the_middleware_returns_nothing() {
     drop(spent);
     assert_eq!(binding.check_live(), Err(ArrivalRefusal::Cancelled));
 
-    let none = AdminDenialReturn::default();
-    let absent = HeldAdminPending::take_from(None, none.clone()).unwrap();
+    let (absent, no_cell) = HeldAdminPending::take_from(None).unwrap();
     assert!(absent.is_none());
-    drop(absent);
-    assert!(none.take().is_none());
+    assert!(
+        no_cell.is_none(),
+        "a request with no pending owner allocates no return cell"
+    );
 }
 
 fn complete_input(request: PhysicalRequest) -> CompletingPhysicalRequest {

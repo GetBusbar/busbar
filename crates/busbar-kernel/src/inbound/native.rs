@@ -1138,27 +1138,32 @@ impl AdminDenialReturn {
 /// The admin middleware's hold on a native request's pending owner. It reads as the
 /// `Option<CompletingPhysicalRequest>` it holds. Dropped with the owner still unspent (every
 /// refusing return of the middleware), it moves owner and carrier into its [`AdminDenialReturn`]
-/// instead of dropping, and so cancelling, the request.
+/// instead of dropping, and so cancelling, the request. A request that carries no pending owner (every
+/// request that is not a native admin one) has no return cell: nothing is allocated for it.
 pub(crate) struct HeldAdminPending {
     pending: Option<CompletingPhysicalRequest>,
     carrier: Option<AdminPhysicalRequest>,
-    back: AdminDenialReturn,
+    back: Option<AdminDenialReturn>,
 }
 impl HeldAdminPending {
-    /// Take the pending owner out of `carrier`, if the request carries one.
+    /// Take the pending owner out of `carrier`, if the request carries one, with the cell an
+    /// unspent owner returns in.
     pub(crate) fn take_from(
         carrier: Option<AdminPhysicalRequest>,
-        back: AdminDenialReturn,
-    ) -> Result<Self, ArrivalRefusal> {
+    ) -> Result<(Self, Option<AdminDenialReturn>), ArrivalRefusal> {
         let pending = carrier
             .as_ref()
             .map(AdminPhysicalRequest::take)
             .transpose()?;
-        Ok(Self {
-            pending,
-            carrier,
+        let back = pending.as_ref().map(|_| AdminDenialReturn::default());
+        Ok((
+            Self {
+                pending,
+                carrier,
+                back: back.clone(),
+            },
             back,
-        })
+        ))
     }
 }
 impl std::ops::Deref for HeldAdminPending {
@@ -1174,12 +1179,10 @@ impl std::ops::DerefMut for HeldAdminPending {
 }
 impl Drop for HeldAdminPending {
     fn drop(&mut self) {
-        if let (Some(pending), Some(carrier)) = (self.pending.take(), self.carrier.take()) {
-            *self
-                .back
-                .held
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some((pending, carrier));
+        if let (Some(pending), Some(carrier), Some(back)) =
+            (self.pending.take(), self.carrier.take(), self.back.as_ref())
+        {
+            *back.held.lock().unwrap_or_else(PoisonError::into_inner) = Some((pending, carrier));
         }
     }
 }
