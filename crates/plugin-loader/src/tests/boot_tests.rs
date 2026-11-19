@@ -123,8 +123,9 @@ fn a_module_of_another_kind_selects_nothing_and_the_first_candidate_answers() {
     );
 }
 
-#[test]
-fn a_candidate_reads_its_facts_off_its_rendering() {
+/// The rendering of a secret plugin `the-plugin` 1.0.0 with one alias rewrite, one sugar rewrite, a
+/// declaring section `verb` and a consumed section `read-only`.
+fn the_plugin_rendering() -> Vec<u8> {
     const REWRITES: &[busbar_contract::abi::mechanism::door::Rewrite] = &[
         busbar_contract::abi::mechanism::door::Rewrite {
             class: busbar_contract::plugin_settings::sugar_words::REWRITE_ALIAS,
@@ -160,9 +161,13 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
         ..statement("the-plugin", "1.0.0", 1)
     };
     // SAFETY: the lists are `'static` arrays of their stated counts.
-    let stated = unsafe { render(&st) }.unwrap();
+    unsafe { render(&st) }.unwrap()
+}
+
+#[test]
+fn a_candidate_reads_its_facts_off_its_rendering() {
     let c = Candidate::from_rendering(
-        stated,
+        the_plugin_rendering(),
         Some("manifest-alias"),
         Origin::Dropped {
             file: "f".into(),
@@ -236,12 +241,7 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
 #[test]
 fn a_rendering_stamped_with_another_mechanism_is_refused_and_core_is_admitted() {
     use busbar_plugin_abi::versions::CORE;
-    let st = busbar_contract::abi::mechanism::door::Statement {
-        kind: KindCode::Secret as u32,
-        ..statement("the-plugin", "1.0.0", 1)
-    };
-    // SAFETY: a Statement with no lists.
-    let stated = unsafe { render(&st) }.unwrap();
+    let stated = the_plugin_rendering();
     assert_eq!(
         stated[8..12],
         CORE.to_le_bytes(),

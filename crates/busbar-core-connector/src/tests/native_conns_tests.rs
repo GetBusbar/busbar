@@ -480,7 +480,7 @@ impl Pending {
 /// A connector judging through `judge`, carrying `http` on a port no session is begun on.
 fn judged_by(judge: &Arc<Pending>) -> Connector {
     let judge = Arc::clone(judge);
-    let connector = Connector::serving(
+    Connector::serving(
         Arc::new(
             move |dest: &str, _: u32, done: Judged| -> Option<Result<SocketAddr, Verdict>> {
                 judge.asked.lock().unwrap().push(dest.to_owned());
@@ -496,8 +496,7 @@ fn judged_by(judge: &Arc<Pending>) -> Connector {
         ),
         None,
         Arc::new(|_, _| {}),
-    );
-    connector
+    )
 }
 
 /// A read of `conn` that does not wait: `Pending` while the judgement or the dial has not answered.

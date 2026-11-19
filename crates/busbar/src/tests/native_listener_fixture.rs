@@ -178,9 +178,9 @@ where
     if let Some(rotation) = rotation {
         rotation.await;
     }
-    // The admission budget `tests/native_listener.rs` serves its listener under. The node's
-    // terminal book is funded from it before anything enters, as the boot funds it from its own.
-    let budget = ProcessAdmission::with_limits(4, 32 * 1024 * 1024, 32 * 1024 * 1024);
+    // The boot's one request admission (`limits.max_inbound_concurrent`): the node's terminal book
+    // is funded from it before anything enters, and the listener admits under it, as at boot.
+    let budget = ProcessAdmission::new(cfg.limits.max_inbound_concurrent);
     let node = Arc::new(root::plane_node::Node::new());
     node.rebind_terminal_storage(&budget);
     node.bind_book(Arc::clone(&book.durability));
