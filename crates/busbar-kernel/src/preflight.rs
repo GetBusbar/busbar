@@ -157,9 +157,6 @@ pub struct RootInstall {
     /// Whether a linked auth door's Statement declares an INBOUND auth-chain module.
     /// `None` = no linked row is an auth-chain module.
     pub auth_chain_module: Option<AuthChainModule>,
-    /// Whether the process's off-crossing latch has tripped (the plugin dispatch is halted).
-    /// `None` = it never trips.
-    pub dispatch_latched: Option<fn() -> bool>,
     /// The root's auth-axis opener ([`AuthAxisOpener`]): every build's auth rows, opened on the
     /// process's one dispatcher. `None` = no auth row answers anything.
     pub auth_axis: Option<AuthAxisOpener>,
