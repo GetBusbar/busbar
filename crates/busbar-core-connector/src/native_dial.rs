@@ -632,6 +632,19 @@ impl NativeConnection {
         }
     }
 
+    /// Whether the next read of `stream` will not pend: a piece is waiting, or the connection failed or
+    /// ended. Otherwise the connection is moved as far as it goes and `cx`'s waker is kept on its socket
+    /// and its timer, so a wait over several connections names the one that answered.
+    pub fn poll_ready(&mut self, cx: &mut Context<'_>, stream: u64) -> bool {
+        if self.take_piece_ready(stream) || self.cause.is_some() {
+            return true;
+        }
+        match self.progress(cx) {
+            Err(_) => true,
+            Ok(_) => self.take_piece_ready(stream) || self.eof || self.phase == Phase::Closed,
+        }
+    }
+
     /// Everything queued for the socket is on it.
     pub fn poll_flushed(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), NativeFailure>> {
         if let Err(failure) = self.progress(cx) {

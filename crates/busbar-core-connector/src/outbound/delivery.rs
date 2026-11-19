@@ -103,6 +103,37 @@ pub(crate) struct Delivery {
     pub(crate) body_bytes: u64,
 }
 
+impl Delivery {
+    /// The record as the root's settlement and audit read it today
+    /// ([`busbar_contract::response_delivery::DeliverySnapshot`]): `whole` is the complete terminal;
+    /// `part` and `none` are a failed terminal, told apart by whether a body byte was accepted. The
+    /// audit's finish is then Complete, Partial or Error as before; `reason` and `body_bytes` are
+    /// what the record gains.
+    pub(crate) fn snapshot(&self) -> busbar_contract::response_delivery::DeliverySnapshot {
+        use busbar_contract::response_delivery::{
+            DeliverySnapshot, DeliveryTerminal, ResponseStop,
+        };
+        let stop = match self.reason {
+            Some(Reason::Deadline) => ResponseStop::Deadline,
+            Some(Reason::Cancelled) => ResponseStop::Cancelled,
+            Some(Reason::Protocol) => ResponseStop::Protocol,
+            Some(Reason::TransportFault) => ResponseStop::Integrity,
+            Some(Reason::CallerGone | Reason::Shutdown) | None => ResponseStop::CarrierRetired,
+        };
+        DeliverySnapshot {
+            first_payload_written: match self.state {
+                State::Whole => self.body_bytes > 0,
+                State::Part => true,
+                State::None => false,
+            },
+            terminal: Some(match self.state {
+                State::Whole => DeliveryTerminal::Complete,
+                State::Part | State::None => DeliveryTerminal::Failed(stop),
+            }),
+        }
+    }
+}
+
 /// Which side of the engine the stream is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Role {
@@ -1076,5 +1107,62 @@ mod tests {
         assert_eq!(ledger.verdict(1), None);
         ledger.accepted(10);
         assert_eq!(ledger.take(1).map(|d| d.state), Some(State::Whole));
+    }
+
+    #[test]
+    fn the_record_maps_onto_todays_snapshot_with_no_loss() {
+        use busbar_contract::response_delivery::{DeliveryTerminal, ResponseStop};
+        let record = |state, reason, body_bytes| Delivery {
+            state,
+            reason,
+            body_bytes,
+        };
+        let whole = record(State::Whole, None, 100).snapshot();
+        assert_eq!(whole.terminal, Some(DeliveryTerminal::Complete));
+        assert!(whole.first_payload_written);
+        assert!(
+            !record(State::Whole, None, 0)
+                .snapshot()
+                .first_payload_written
+        );
+        let part = record(State::Part, Some(Reason::Deadline), 100).snapshot();
+        assert_eq!(
+            part.terminal,
+            Some(DeliveryTerminal::Failed(ResponseStop::Deadline))
+        );
+        assert!(part.first_payload_written);
+        let none = record(State::None, Some(Reason::TransportFault), 0).snapshot();
+        assert_eq!(
+            none.terminal,
+            Some(DeliveryTerminal::Failed(ResponseStop::Integrity))
+        );
+        assert!(!none.first_payload_written);
+    }
+
+    #[test]
+    fn the_words_of_the_record_are_fixed() {
+        assert_eq!(
+            [State::Whole, State::Part, State::None].map(State::as_str),
+            ["whole", "part", "none"]
+        );
+        assert_eq!(
+            [
+                Reason::CallerGone,
+                Reason::Deadline,
+                Reason::Cancelled,
+                Reason::Protocol,
+                Reason::TransportFault,
+                Reason::Shutdown
+            ]
+            .map(Reason::as_str),
+            [
+                "caller_gone",
+                "deadline",
+                "cancelled",
+                "protocol",
+                "transport_fault",
+                "shutdown"
+            ]
+        );
     }
 }

@@ -179,6 +179,25 @@ impl NativeHeld {
         }
     }
 
+    /// Whether the entry's next read will not pend, for a wait over several connections. While another call
+    /// has the exchange out the answer is no, and `waker` is woken when it is back. An exchange that is not
+    /// yet reading an answer (judging, dialling, sending) is named ready, as before: its read is what drives
+    /// it, and that read pends with the waker kept.
+    pub(crate) fn ready(&self, waker: &Waker) -> bool {
+        let Some(mut exchange) = self.begin(waker) else {
+            // Out with another call: not ready, and that call's end wakes `waker`. Gone for good (the entry
+            // is closing): its read answers at once.
+            let slot = self
+                .slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            return !slot.out;
+        };
+        let ready = exchange.read_ready(&mut Context::from_waker(waker));
+        self.end(exchange);
+        ready
+    }
+
     /// The exchange for good (the entry is closing); `None` while a call has it out (that call's exchange is
     /// dropped with the entry).
     pub(crate) fn take(&self) -> Option<Exchange> {
@@ -262,6 +281,17 @@ impl Exchange {
         self.failed = Some(error);
         self.cause = Some(failure.cause.clone());
         error
+    }
+
+    /// Whether the next read will not pend ([`NativeHeld::ready`]).
+    fn read_ready(&mut self, cx: &mut Context<'_>) -> bool {
+        if self.failed.is_some() || self.ended {
+            return true;
+        }
+        match (&mut self.state, self.stream) {
+            (State::Dialled(conn), Some(stream)) => conn.poll_ready(cx, stream),
+            _ => true,
+        }
     }
 
     /// Drive the judgement and the dial until a connection exists. `Pending` with `cx`'s waker kept.

@@ -4787,10 +4787,14 @@ impl Conns for Connector {
                 }
                 continue;
             }
-            // A native entry has no look-ahead of its answer: it is named ready, and its read answers Pending (with
-            // the ticket's waker kept) when nothing has arrived.
-            if held.native.is_some() {
-                return Ok(at);
+            // A native entry is named only when its next read will not pend (a piece waiting, ended or failed);
+            // otherwise the ticket's waker is kept on its connection and the next entry is looked at, so the
+            // wait names the connection that answered, not the first of the set.
+            if let Some(native) = held.native.as_ref() {
+                if native.ready(&waker) {
+                    return Ok(at);
+                }
+                continue;
             }
             if held.rest.lock().expect("rest").piece.is_some() {
                 return Ok(at);
