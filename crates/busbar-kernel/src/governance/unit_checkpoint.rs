@@ -95,9 +95,9 @@ impl std::fmt::Debug for AuditFacts {
 }
 
 impl Serialize for AuditFacts {
-    /// The byte slice's own encoding, as `Vec<u8>` writes it.
+    /// The held `Vec<u8>`'s own encoding.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.as_slice().serialize(serializer)
+        Vec::<u8>::serialize(&self.0, serializer)
     }
 }
 
