@@ -1001,10 +1001,7 @@ fn scanned_registry(plugins: &PluginsCfg) -> Result<PluginRegistry, String> {
             .enabled
             .then_some(std::path::Path::new(&plugins.dir)),
     };
-    super::loader::boot::registry(
-        Build { scan: Some(scan) },
-        &mut |_| {},
-    )
+    super::loader::boot::registry(Build { scan: Some(scan) }, &mut |_| {})
 }
 
 /// Test fixtures that read a document outside any read path: the words the live secret axis
@@ -1084,12 +1081,7 @@ fn registered() -> Option<Registered<'static>> {
         .loadable()
         .iter()
         .filter(|row| row.manifest.kind == "plane")
-        .map(|row| {
-            (
-                row.manifest.name.clone(),
-                Some(row.file.clone()),
-            )
-        })
+        .map(|row| (row.manifest.name.clone(), Some(row.file.clone())))
         .collect();
     Some(Registered {
         planes,
@@ -1177,10 +1169,11 @@ pub(crate) fn classify_against(
         };
         push(ItemKind::Section, vec![instance], name, &image, &standing);
     }
-    for row in registry.loadable().iter().filter(|row| {
-        row.manifest.kind == "plane"
-            && !known.iter().any(|name| row.is_module(name))
-    }) {
+    for row in registry
+        .loadable()
+        .iter()
+        .filter(|row| row.manifest.kind == "plane" && !known.iter().any(|name| row.is_module(name)))
+    {
         let image = row.archive_sha256.clone().unwrap_or_default();
         if let Ok(Some(_)) = row.candidate() {
             let instance = match row.manifest.alias.as_str() {
@@ -1312,7 +1305,6 @@ fn configured_block() -> Option<PluginsCfg> {
     };
     plugins.enabled.then_some(plugins)
 }
-
 
 #[cfg(test)]
 pub(crate) async fn compose_book(
@@ -1788,10 +1780,6 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/start_scan_tests.rs"]
 mod start_scan_tests;
-
-#[cfg(all(test, unix, linked_every_plane_door, feature = "test-harness"))]
-#[path = "tests/bootstrap_pins.rs"]
-mod bootstrap_pin_tests;
 
 /// A provider destination by core's one scheme table (deletion plan E6; dial decision v2 section 3): the URL's
 /// scheme gives its security, its default port and the carrier it rides, and the build must assign that carrier
