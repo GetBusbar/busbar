@@ -2384,6 +2384,71 @@ mod tests {
         assert_eq!(describe(&r, p::ALL, 0), refused);
     }
 
+    /// A webhook route core verifies by signature alone binds its verifier by the header the
+    /// sender signs in (Standard Webhooks: `webhook-signature`), so it states that header.
+    #[test]
+    fn a_signed_ingress_only_route_states_its_signature_header() {
+        let mut r = Reply::new();
+        route(
+            &mut r,
+            1,
+            POST,
+            0,
+            p::AUTH_SIGNED_INGRESS,
+            "/webhooks/openai",
+        );
+        cred(&mut r, 1, "webhook-signature");
+        let d = describe(&r, p::ALL, 0).unwrap();
+        assert_eq!(
+            d.routes[0].cred_header.as_deref(),
+            Some("webhook-signature")
+        );
+    }
+
+    /// The loader admits a credential header exactly where the kernel's route record does
+    /// (`RecordRefused::CredHeader`): a mask holding PRINCIPAL, or exactly OPTIONAL, or exactly
+    /// SIGNED_INGRESS. Anything else names nobody whose credential a header could carry.
+    #[test]
+    fn a_cred_header_off_principal_optional_or_signed_ingress_only_is_refused() {
+        let admitted = [
+            p::AUTH_PRINCIPAL,
+            p::AUTH_PRINCIPAL | p::AUTH_TICKET,
+            p::AUTH_PRINCIPAL | p::AUTH_OPTIONAL,
+            p::AUTH_OPTIONAL,
+            p::AUTH_SIGNED_INGRESS,
+        ];
+        let refused = [
+            p::AUTH_PUBLIC,
+            p::AUTH_TICKET,
+            p::AUTH_OPERATOR,
+            p::AUTH_OPTIONAL | p::AUTH_PUBLIC,
+            p::AUTH_OPTIONAL | p::AUTH_TICKET,
+            p::AUTH_OPTIONAL | p::AUTH_SIGNED_INGRESS,
+            p::AUTH_SIGNED_INGRESS | p::AUTH_PUBLIC,
+            p::AUTH_SIGNED_INGRESS | p::AUTH_TICKET,
+        ];
+        let stating = |auth: u32| {
+            let mut r = Reply::new();
+            route(&mut r, 1, POST, 0, auth, "/hook");
+            cred(&mut r, 1, "webhook-signature");
+            describe(&r, p::ALL, 0)
+        };
+        for auth in admitted {
+            let d = stating(auth).unwrap_or_else(|e| panic!("auth {auth:#x}: {e:?}"));
+            assert_eq!(
+                d.routes[0].cred_header.as_deref(),
+                Some("webhook-signature")
+            );
+        }
+        for auth in refused {
+            assert_eq!(
+                stating(auth),
+                Err(DescribeInvalid("describe.route_cred_header")),
+                "auth {auth:#x}"
+            );
+        }
+    }
+
     #[test]
     fn a_local_answer_reaches_the_sink_in_order() {
         let mut r = Reply::new();

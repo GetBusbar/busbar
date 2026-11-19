@@ -295,7 +295,7 @@ mod admitted {
     }
 
     /// A host with no store: an admin route here states no intent.
-    struct NoIntents;
+    pub(super) struct NoIntents;
 
     impl IntentHost for NoIntents {
         fn lookup<'a>(
