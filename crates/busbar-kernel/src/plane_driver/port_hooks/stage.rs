@@ -575,4 +575,77 @@ mod tests {
             "a tag with nothing to trim is moved, never copied"
         );
     }
+
+    /// ci/owed/cut-root SECURITY-OWED `a_global_gate_refuses_a_decisions_request_before_its_dial`
+    /// and MONEY-OWED `a_screened_veto_through_the_node_admits_nothing`, the decision half: a
+    /// gate hook's REJECT ends the stage as the caller's refusal (`SessionError::HookRefused`,
+    /// which the port serves as a refusal and never as a dial: `port.rs`, `Served::Refused`). The
+    /// refusal is core's policy refusal at the hook's own status when that is a client status,
+    /// and 403 otherwise: a hook cannot make core answer success, a redirect or a server fault.
+    /// Its message reaches the caller only when the operator exposed that hook by name.
+    #[test]
+    fn a_rejecting_gate_ends_the_stage_as_the_callers_policy_refusal() {
+        use super::rejected;
+        use crate::config::{PromptAccess, UserAccess};
+        use crate::plane_driver::port_session::SessionError;
+        use crate::refusal::CoreRefusals;
+        use busbar_plugin_abi::fail::refused::R_POLICY;
+        use busbar_plugin_abi::kinds::hook::hook as abi;
+        use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
+        use std::sync::Arc;
+
+        struct Silent;
+        impl HookPort for Silent {
+            fn points(&self) -> u32 {
+                1 << abi::POINT_ROUTE
+            }
+            fn facts(&self) -> u64 {
+                0
+            }
+            fn on<'a>(
+                &'a self,
+                _: busbar_ports::CallCx,
+                _: u32,
+                _: &'a HookView<'a>,
+            ) -> HookCall<'a> {
+                unreachable!("the refusal is built from the answer; the hook is not called again")
+            }
+        }
+        let call = crate::plane_driver::port_hooks::tests::configured(
+            Arc::new(Silent),
+            PromptAccess::No,
+            UserAccess::No,
+        );
+        let refusals = CoreRefusals::new();
+        let reject = |status: Option<u16>| HookAnswer {
+            verb: abi::VERB_REJECT,
+            reject_status: status,
+            order: Vec::new(),
+            restrict: Vec::new(),
+            message: Some("the hook's own words".into()),
+            rewrite: None,
+        };
+        for (asked, served) in [
+            (Some(409), 409),
+            (Some(403), 403),
+            (Some(451), 451),
+            (None, 403),
+            (Some(200), 403),
+            (Some(302), 403),
+            (Some(500), 403),
+            (Some(599), 403),
+        ] {
+            let SessionError::HookRefused(refusal) =
+                rejected(&call, &reject(asked), 7, &refusals, None)
+            else {
+                panic!("a REJECT is the caller's refusal (asked {asked:?})");
+            };
+            assert_eq!(refusal.status, served, "asked {asked:?}");
+            assert_eq!(refusal.code, R_POLICY, "asked {asked:?}");
+            assert_eq!(
+                refusal.text, "the request was refused by policy",
+                "a hook the operator did not expose adds nothing to core's text (asked {asked:?})"
+            );
+        }
+    }
 }
