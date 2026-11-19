@@ -57,7 +57,7 @@ pub struct HookDefCfg {
     #[serde(default)]
     pub prompt: Option<PromptAccess>,
     /// Explicitly requested typed signals; omission grants no additional signal.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "busbar_contract::signal::configured")]
     pub signals: Vec<busbar_contract::signal::Signal>,
     /// Caller-identity access grant (`no` | `ro`).
     #[serde(default)]
@@ -343,7 +343,7 @@ pub struct HookCfg {
     /// the canonical name of that constant rather than a free-typed string a human could misspell
     /// undetected. The native binding of this hook carries these signals as its call's `RequestedSignals`;
     /// declaring a signal here is necessary AND sufficient for it to be projected to this hook.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "busbar_contract::signal::configured")]
     pub signals: Vec<busbar_contract::signal::Signal>,
     /// Fire on EVERY request — inline sugar for adding this name to `global_hooks:`. Default false.
     #[serde(default)]

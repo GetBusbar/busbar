@@ -19,7 +19,7 @@ use crate::host_services::{
 use crate::plane_driver::native_hook_bindings::Bindings;
 use crate::plane_driver::port_admission::Pending;
 use crate::plane_driver::port_hooks::tests::configured;
-use crate::plane_driver::port_hooks::{Call, Invocation, Selected, Taps};
+use crate::plane_driver::port_hooks::{Call, HookRecords, Invocation, Selected, Taps};
 use crate::plane_driver::port_serve::Ran;
 use crate::plane_driver::request_admission::{RequestAllocation, RequestRoutes};
 use crate::refusal::ClientRefusal;
@@ -247,16 +247,27 @@ async fn serve(
     request: &Request,
     binder: Option<Arc<Bindings>>,
 ) -> Result<Ran, SessionError> {
+    serve_keeping(plane, request, binder, None).await
+}
+
+/// [`serve`], with the custody a refusal's hook records are handed to (`records`), as the
+/// native path gives its session one for each request.
+async fn serve_keeping(
+    plane: &Plane,
+    request: &Request,
+    binder: Option<Arc<Bindings>>,
+    records: Option<Arc<HookRecords>>,
+) -> Result<Ran, SessionError> {
     let effects = Admitting {
         pending: &request.pending,
         hooks: binder.map(|binder| Invocation {
             binder,
             principal: None,
-            identity: None,
             now_s: 1,
             classes: Arc::default(),
             journal: None,
             unit: UnitKey::new(41),
+            records,
         }),
     };
     let store = Store;
@@ -602,4 +613,400 @@ async fn a_route_with_no_hook_asks_its_money_once_and_calls_no_hook() {
         ["money"],
         "a hook bound to another route is not called for this one"
     );
+}
+
+/// What a refusal's custody was handed: each record's hook, its head, and whether it failed.
+fn kept(records: &HookRecords) -> Vec<(String, busbar_kernel_audit::HookHead, bool)> {
+    records
+        .rows()
+        .iter()
+        .map(|row| (row.hook.as_str().to_owned(), row.head, row.failed))
+        .collect()
+}
+
+/// RED before the refusal's custody took the stage's records: a hook that refused before the
+/// money left no record naming it (the stage held its records for a unit that never opened and
+/// dropped them with the request).
+///
+/// The refusal's own custody is handed the records of every hook that ran, in the order they
+/// ran, the refusing hook's among them with the head `veto`. No unit is needed to hold them:
+/// none was opened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hook_refusal_before_the_money_hands_its_records_to_the_refusal() {
+    let order = Order::default();
+    let request = request(&order);
+    let allowing = configured(
+        Arc::new(Hook::answering(
+            "first",
+            &order,
+            Ok(verdict(abi::VERB_ABSTAIN, None)),
+        )),
+        PromptAccess::No,
+        UserAccess::No,
+    );
+    let refusing = gate(Hook::answering(
+        "gate",
+        &order,
+        Ok(verdict(abi::VERB_REJECT, Some(409))),
+    ));
+    let records = Arc::new(HookRecords::default());
+    // A rewrite is asked before the gates: `first` runs, then `gate` refuses.
+    let result = serve_keeping(
+        &answering_locally(),
+        &request,
+        Some(bindings(
+            &selecting(vec![allowing], vec![refusing], Vec::new()),
+            gov_state().await,
+        )),
+        Some(Arc::clone(&records)),
+    )
+    .await;
+    assert!(
+        matches!(&result, Err(SessionError::HookRefused(refusal)) if refusal.status == 409),
+        "{result:?}"
+    );
+    assert!(request.pending.admitted().is_none(), "no unit was opened");
+    assert_eq!(ordered(&order), ["first", "gate"]);
+    assert_eq!(
+        kept(&records),
+        [
+            (
+                "first".to_owned(),
+                busbar_kernel_audit::HookHead::Pass,
+                false
+            ),
+            (
+                "gate".to_owned(),
+                busbar_kernel_audit::HookHead::Veto,
+                false
+            ),
+        ],
+        "the refusal names the hook that refused"
+    );
+    assert_eq!(
+        records.refused_by().as_deref(),
+        Some("gate"),
+        "the hook that refused, by its configured name"
+    );
+}
+
+/// RED before, for the same reason: a request its hooks allowed and its money then refused
+/// kept no record of the hooks that ran for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_money_refusal_after_the_hooks_keeps_the_records_of_the_hooks_that_ran() {
+    let order = Order::default();
+    let request = request(&order);
+    let allowing = gate(Hook::answering(
+        "gate",
+        &order,
+        Ok(verdict(abi::VERB_ABSTAIN, None)),
+    ));
+    let records = Arc::new(HookRecords::default());
+    let result = serve_keeping(
+        &answering_locally(),
+        &request,
+        Some(bindings(
+            &selecting(Vec::new(), vec![allowing], Vec::new()),
+            gov_state().await,
+        )),
+        Some(Arc::clone(&records)),
+    )
+    .await;
+    assert!(
+        matches!(&result, Err(SessionError::AdmissionRefused(refusal)) if refusal.status == 402),
+        "{result:?}"
+    );
+    assert_eq!(ordered(&order), ["gate", "money"]);
+    assert_eq!(
+        kept(&records),
+        [(
+            "gate".to_owned(),
+            busbar_kernel_audit::HookHead::Pass,
+            false
+        )]
+    );
+    assert_eq!(records.refused_by(), None, "no hook refused: the money did");
+}
+
+/// One verified request on a route that opens no unit (its record says money none): registered
+/// under its verified key, with no admission to resolve and no money to ask.
+struct Unbilled {
+    context: InvocationContext,
+    records: Arc<HookRecords>,
+    _admission: NativeInvocationAdmission,
+}
+
+fn unbilled_request(unit: u64) -> Unbilled {
+    let core = Arc::new(KernelServices::new().with_pool(Arc::new(BlockingPool::new(
+        tokio::runtime::Handle::current(),
+        16,
+    ))));
+    let caller = busbar_contract::services::Caller::for_test(
+        Arc::from("seat"),
+        busbar_contract::kinds::codes::KindCode::Plane,
+    );
+    let admission = core.admit_native_invocation(&caller).unwrap();
+    assert!(
+        core.units()
+            .admitted_unbilled(
+                unit,
+                &caller,
+                crate::host_units::UnitRecord {
+                    principal: Some(Arc::new(busbar_contract::records::VirtualKey {
+                        id: "caller".into(),
+                        enabled: true,
+                        ..Default::default()
+                    })),
+                    depth: 0,
+                },
+                None,
+            )
+            .is_some(),
+        "a verified request with no unit is registered once"
+    );
+    let context = InvocationContext::new(
+        Arc::new(ServingGeneration::new(core, Arc::new(NoChildren))),
+        caller,
+        unit,
+    )
+    .unwrap();
+    Unbilled {
+        context,
+        records: Arc::new(HookRecords::default()),
+        _admission: admission,
+    }
+}
+
+/// The session's effects on a route that opens no unit: no pending admission, the request's
+/// invocation, and the route's hooks when it has any.
+struct Unpaid<'a> {
+    context: Option<&'a InvocationContext>,
+    hooks: Option<Invocation>,
+}
+impl Effects for Unpaid<'_> {
+    fn invocation(&self) -> Option<&InvocationContext> {
+        self.context
+    }
+    fn hooks(&self) -> Option<&Invocation> {
+        self.hooks.as_ref()
+    }
+    fn emit(&self, _: u64, _: &[u8]) {
+        panic!("a request with no unit emits nothing to a line")
+    }
+}
+
+/// The books of a session with no unit: nothing is billed.
+struct NoBooks;
+impl Books for NoBooks {
+    fn ended(&self, _: Ending, _: &SessionUsage) {}
+    fn audit(&self, _: &AuditRow) {}
+}
+
+/// One session of `plane` on a route that opens no unit. `request`: the verified request and
+/// its invocation, `None` for a route with no hook (the listener hands such a route none).
+async fn serve_unbilled(
+    plane: &Plane,
+    request: Option<&Unbilled>,
+    binder: Option<Arc<Bindings>>,
+) -> Result<Ran, SessionError> {
+    let effects = Unpaid {
+        context: request.map(|request| &request.context),
+        hooks: binder.zip(request).map(|(binder, request)| Invocation {
+            binder,
+            principal: None,
+            now_s: 1,
+            classes: Arc::default(),
+            journal: None,
+            unit: UnitKey::new(request.context.unit()),
+            records: Some(Arc::clone(&request.records)),
+        }),
+    };
+    let store = Store;
+    let resolver = Resolver::new(&store, None);
+    let refusals = CoreRefusals::new();
+    let drive: Drive<'_> = Drive {
+        resolver: &resolver,
+        members: None,
+        send: None,
+        dialect: "test",
+        refusals: &refusals,
+        effects: &effects,
+        books: &NoBooks,
+        carrier: None,
+    };
+    crate::plane_driver::port_serve::run_session(plane, &req(), b"{}", drive).await
+}
+
+/// RED before a route that opens no unit ran its hooks: such a route with a hook bound was
+/// left unmounted (its session was handed no invocation to call a hook under), so it could not
+/// be served at all.
+///
+/// A refusing hook refuses at its own status, in core's words, and nothing runs after it: the
+/// hook after it is not asked, the plane's answer is not released, and no effect is allowed.
+/// The refusal names the hook that refused, with no unit to hold the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusing_hook_on_a_route_that_opens_no_unit_refuses_and_nothing_runs_after_it() {
+    let order = Order::default();
+    let request = unbilled_request(51);
+    assert!(
+        request.context.hooks_allowed(),
+        "a verified request with no unit is shown to its route's hooks"
+    );
+    assert!(
+        !request.context.effects_allowed(),
+        "and is given no effect: it opened no unit"
+    );
+    // A rewrite is asked before the gates: the refusing hook is first, the other after it.
+    let refusing = configured(
+        Arc::new(Hook::answering(
+            "gate",
+            &order,
+            Ok(verdict(abi::VERB_REJECT, Some(409))),
+        )),
+        PromptAccess::No,
+        UserAccess::No,
+    );
+    let after = gate(Hook::answering(
+        "after",
+        &order,
+        Ok(verdict(abi::VERB_ABSTAIN, None)),
+    ));
+    let result = serve_unbilled(
+        &answering_locally(),
+        Some(&request),
+        Some(bindings(
+            &selecting(vec![refusing], vec![after], Vec::new()),
+            gov_state().await,
+        )),
+    )
+    .await;
+    match result {
+        Err(SessionError::HookRefused(refusal)) => {
+            assert_eq!(refusal.status, 409, "the hook's own status");
+            assert_eq!(refusal.text, "the request was refused by policy");
+        }
+        other => panic!("a refusing hook is the caller's refusal: {other:?}"),
+    }
+    assert_eq!(
+        ordered(&order),
+        ["gate"],
+        "the hook after the refusal was never asked"
+    );
+    assert!(!request.context.effects_allowed());
+    assert_eq!(
+        kept(&request.records),
+        [(
+            "gate".to_owned(),
+            busbar_kernel_audit::HookHead::Veto,
+            false
+        )],
+        "the refusal's record names the hook, with no unit to hold it"
+    );
+    assert_eq!(request.records.refused_by().as_deref(), Some("gate"));
+}
+
+/// RED before, for the same reason. A hook that allows is heard, in the order a billed route
+/// hears its hooks (each rewrite, then the gates), the plane then answers, and still no effect
+/// is allowed and no money is asked: there is none to ask.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_route_that_opens_no_unit_hears_its_hooks_in_the_billed_order_and_is_served() {
+    let order = Order::default();
+    let request = unbilled_request(52);
+    let rewrite = configured(
+        Arc::new(Hook::answering(
+            "rewrite",
+            &order,
+            Ok(verdict(abi::VERB_ABSTAIN, None)),
+        )),
+        PromptAccess::No,
+        UserAccess::No,
+    );
+    let allowing = gate(Hook::answering(
+        "gate",
+        &order,
+        Ok(verdict(abi::VERB_ABSTAIN, None)),
+    ));
+    let result = serve_unbilled(
+        &answering_locally(),
+        Some(&request),
+        Some(bindings(
+            &selecting(vec![rewrite], vec![allowing], Vec::new()),
+            gov_state().await,
+        )),
+    )
+    .await;
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert_eq!(ordered(&order), ["rewrite", "gate"]);
+    assert!(!request.context.effects_allowed(), "it opened no unit");
+    assert_eq!(
+        kept(&request.records),
+        [
+            (
+                "rewrite".to_owned(),
+                busbar_kernel_audit::HookHead::Pass,
+                false
+            ),
+            (
+                "gate".to_owned(),
+                busbar_kernel_audit::HookHead::Pass,
+                false
+            ),
+        ]
+    );
+    assert_eq!(request.records.refused_by(), None);
+}
+
+/// A request with no unit can never be given one: no monetary allocation is built from its
+/// invocation, so nothing can be charged or admitted under it; and its end closes it to hooks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_that_opens_no_unit_can_never_be_charged() {
+    let request = unbilled_request(53);
+    assert!(request.context.opens_no_unit());
+    assert!(
+        RequestAllocation::new(
+            request.context.clone(),
+            Arc::new(crate::cost::CostModel::resolve_parts(
+                None,
+                0,
+                &Default::default(),
+            )),
+            100,
+        )
+        .is_err(),
+        "no money is asked under a request that opens no unit"
+    );
+    assert!(request.context.hooks_allowed());
+    assert!(!request.context.effects_allowed());
+    request.context.retire();
+    assert!(!request.context.hooks_allowed());
+}
+
+/// Green before and after: a route that opens no unit and has no hook bound pays nothing for
+/// the feature. Its session is handed no invocation, no stage is built and no hook is called;
+/// the same holds on a seat whose hooks are bound to another route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_route_that_opens_no_unit_and_has_no_hook_pays_nothing() {
+    let result = serve_unbilled(&answering_locally(), None, None).await;
+    assert!(result.is_ok(), "{:?}", result.err());
+
+    let order = Order::default();
+    let elsewhere = gate(Hook::answering(
+        "gate",
+        &order,
+        Ok(verdict(abi::VERB_REJECT, Some(409))),
+    ));
+    let binder = Arc::new(Bindings::selecting(
+        vec![req().route + 1],
+        "pool",
+        &selecting(Vec::new(), vec![elsewhere], Vec::new()),
+        gov_state().await,
+    ));
+    let request = unbilled_request(54);
+    let result = serve_unbilled(&answering_locally(), Some(&request), Some(binder)).await;
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert!(
+        ordered(&order).is_empty(),
+        "a hook bound to another route is not called for this one"
+    );
+    assert!(request.records.rows().is_empty());
 }

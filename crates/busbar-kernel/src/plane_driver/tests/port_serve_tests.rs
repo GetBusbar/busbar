@@ -1005,11 +1005,11 @@ fn a_native_hook_cannot_run_without_its_admitted_invocation() {
     let effects = Hooked(Invocation {
         binder: bindings(&chosen, governance()),
         principal: None,
-        identity: None,
         now_s: 1,
         classes: Arc::default(),
         journal: None,
         unit: UnitKey::new(1),
+        records: None,
     });
     let plane = Plane {
         request: vec![It::Respond(200), It::End],
@@ -1113,11 +1113,11 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
         invocation: Invocation {
             binder: bindings(&selected, gov_state().await),
             principal: None,
-            identity: None,
             now_s: 1,
             classes: Arc::default(),
             journal: None,
             unit: UnitKey::new(7),
+            records: None,
         },
         context: fixture.context.clone(),
     };
@@ -1366,11 +1366,11 @@ async fn route_policy_selections_and_rejections_counters_move() {
                     invocation: Invocation {
                         binder: bindings(&selected, Arc::clone(&governance)),
                         principal: None,
-                        identity: None,
                         now_s: 1,
                         classes: Arc::default(),
                         journal: None,
                         unit: UnitKey::new(7),
+                        records: None,
                     },
                     context: context.clone(),
                 };

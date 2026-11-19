@@ -388,6 +388,11 @@ impl PortDriver {
                         .admission
                         .as_ref()
                         .is_none_or(|pending| !pending.context().same_unit(context))
+                    // A verified request on a route that opens no unit owns neither: it is
+                    // there for the route's hooks to run under, and for nothing else.
+                    && !context.opens_no_unit()
+                // Such a request is never a unit to bill and never a pending admission.
+                || context.opens_no_unit() && (input.unit.is_some() || input.admission.is_some())
             {
                 return Err(ServeError::Invocation(
                     "the invocation does not own this native unit",
@@ -1158,6 +1163,15 @@ impl NativeTaskRetirement {
             .is_some_and(|custody| custody.matches(binding))
             && Arc::ptr_eq(self.pending.binding(), binding)
     }
+    /// The hooks that ran for the refused request, in the order they ran, the refusing hook's
+    /// record among them (head `veto`): what the refusal's audit record names its hook from.
+    /// Empty before [`Self::refuse`] took the refusal, and for a request no hook ran for.
+    pub fn refused_hooks(&self) -> &[busbar_kernel_audit::record::HookApplied] {
+        match &self.refusal {
+            Some(custody) => custody.hooks(),
+            None => &[],
+        }
+    }
     pub fn refuse(
         mut self,
     ) -> Result<crate::inbound::native::PhysicalRefusal, crate::auth::native_data::DataRefused>
@@ -1238,8 +1252,14 @@ async fn serve_session(
     // A catalog renders core's list and runs no session: no hook is bound to a listing, so it
     // needs none of what a hook runs under (`NativeDataRoute::hooks_run`).
     let hook_binder = hook_binder.filter(|binder| binder.active(route.route) && !route.catalog);
+    // A verified request on a route that opens no unit is handed its own invocation
+    // (`NativeDataRoute::hook_invocation`): the route's hooks run under the request itself.
+    let no_unit = invocation
+        .as_ref()
+        .filter(|context| context.opens_no_unit());
     if hook_binder.is_some()
-        && (invocation.is_none() || (unit.is_none() && pending_admission.is_none()))
+        && (invocation.is_none()
+            || (unit.is_none() && pending_admission.is_none() && no_unit.is_none()))
     {
         return Err(ServeError::Invocation(
             "native hooks need the admitted unit and generation",
@@ -1255,22 +1275,28 @@ async fn serve_session(
                     pending.journal(),
                 )
             })
-        });
+        })
+        // No unit and no journal: the number the request's invocation is registered under.
+        .or_else(|| no_unit.map(|context| (busbar_contract::UnitKey::new(context.unit()), None)));
+    // Where the hooks' records go when no open unit holds them: a native request's refusal
+    // custody, or the custody of a request that opens no unit.
+    let hook_records = match &admission {
+        ServingAdmission::Data(data) => Some(data.refusal_records()),
+        ServingAdmission::Credentials(_) => invocation
+            .as_ref()
+            .and_then(|context| context.hook_records()),
+    };
     let hooks =
         hook_binder
             .zip(hook_unit)
             .map(|(binder, (unit, journal))| super::port_hooks::Invocation {
                 binder,
                 principal: principal.clone(),
-                identity: match &admission {
-                    ServingAdmission::Data(data) => Some(data.identity().clone()),
-                    ServingAdmission::Credentials(Ok(admitted)) => admitted.identity.clone(),
-                    ServingAdmission::Credentials(Err(_)) => None,
-                },
                 now_s,
                 classes: Arc::clone(&classes),
                 journal,
                 unit,
+                records: hook_records,
             });
     let effects = ServeEffects {
         data: match &admission {

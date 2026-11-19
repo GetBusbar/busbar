@@ -198,6 +198,39 @@ impl UnitRecords {
         Some(record)
     }
 
+    /// Register a verified request on a route that opens no unit, so the route's hooks have an
+    /// invocation to run under. Its phase is the one that hears hooks and allows nothing else
+    /// (`AdmissionPhase::unbilled`): no effect, no nested unit, and no monetary allocation can be
+    /// made from it. `gate`: the physical request whose liveness and deadline its hooks are
+    /// judged by; `None` only where there is no physical request (a kernel test). A verified
+    /// key is required, and an existing entry is never replaced.
+    pub(crate) fn admitted_unbilled(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: UnitRecord,
+        gate: Option<Arc<crate::auth::native_data::NativeDataEffectGate>>,
+    ) -> Option<Arc<UnitRecord>> {
+        if unit == 0 || record.principal.is_none() {
+            return None;
+        }
+        let mut units = self.lock(unit);
+        let std::collections::hash_map::Entry::Vacant(slot) = units.entry(unit) else {
+            return None;
+        };
+        let record = Arc::new(record);
+        slot.insert(UnitEntry {
+            invocation_owner: Some(caller.incarnation().clone()),
+            admission_phase: Some(Arc::new(
+                crate::plane_driver::request_admission::AdmissionPhase::unbilled(),
+            )),
+            record: Some(record.clone()),
+            data_gate: gate,
+            ..Default::default()
+        });
+        Some(record)
+    }
+
     pub(crate) fn invocation_data_gate(
         &self,
         unit: u64,
