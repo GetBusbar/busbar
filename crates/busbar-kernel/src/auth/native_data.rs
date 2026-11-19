@@ -219,11 +219,10 @@ impl NativeDataRoute {
     /// store (`native_keys::as_standing`). A token core itself signed is verified by the chain's
     /// built-in member `keys` (`native_keys::judge`) where the chain names it, and refused by
     /// [`refuse_bound_carriers`] where it does not; it is never accepted unverified. A
-    /// DPoP-bound token is refused: this path verifies no proof. A route with a hook bound is NOT admitted here yet:
-    /// the session refuses to run a hook without the admitted unit and its invocation
-    /// (`plane_driver::port::serve_session`: "native hooks need the admitted unit and
-    /// generation"), and the native path does not hand it either. Such a route stays unmounted
-    /// and says so; serving it unhooked would skip a policy the operator configured.
+    /// DPoP-bound token is refused: this path verifies no proof. A route with a hook bound is
+    /// admitted exactly where its hooks run ([`Self::hooks_run`]): a unit-bearing route that
+    /// selects no resource, and a catalog. Any other stays unmounted and says so; serving it
+    /// unhooked would skip a policy the operator configured.
     pub fn admits(_app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
         let record = &mounted.record;
         match admission_of(record) {
@@ -248,7 +247,7 @@ impl NativeDataRoute {
         // `select_resources` for a selecting route is the loader's rule (the record could not be
         // declared otherwise); plane 2.0 retired the fact bit that restated it.
         if seat.driver.has_hooks(mounted.route) {
-            return Err("the native data path does not run route hooks");
+            Self::hooks_run(record)?;
         }
         // The route's 401 must carry the challenge its protocol requires. A challenge that names
         // the public URL where the operator configured none cannot be written: the route is not
@@ -257,6 +256,35 @@ impl NativeDataRoute {
             return Err(NotMounted::NoPublicUrlForItsChallenge.reason());
         }
         Ok(())
+    }
+
+    /// Whether a route with a hook bound is served WITH its hook, by what its record says a served
+    /// request is built from. Err names why it stays unmounted: a hook-bound route is never served
+    /// unhooked.
+    ///
+    /// A request that opens a unit and selects no resource runs its hooks inside the session,
+    /// after the key's grant of the walk is judged and before its money is asked
+    /// (`plane_driver::port_serve`): a refusing hook has spoken before any unit is opened. A
+    /// catalog runs no session and reaches no upstream: no hook is bound to a listing (v1.5.5
+    /// listed models with hooks configured), and it is served as it is without one.
+    pub fn hooks_run(record: &RouteRecord) -> Result<(), &'static str> {
+        use super::admission_table::{plan, Authority};
+        let admission = admission_of(record);
+        match plan(admission, record.money).map(|sequence| sequence.serves) {
+            // A selected request runs under its descriptor's authority alone
+            // (`NativeDataEffectGate::hooks_allowed`): its hooks would never be called.
+            Some(Authority::Billed) if admission == Admission::Selected => Err(
+                "a route with a hook bound whose plane selects resources is not served: a selected request runs no hook",
+            ),
+            Some(Authority::Walk | Authority::Billed | Authority::Catalog) => Ok(()),
+            // No unit: the session is handed no invocation to call a hook under.
+            Some(Authority::Unbilled | Authority::Public) => Err(
+                "a route with a hook bound that opens no unit is not served: its hooks have no admitted request to run under",
+            ),
+            Some(Authority::Upgrade | Authority::Operator) | None => {
+                Err("a route with a hook bound is not served by the native data path")
+            }
+        }
     }
 
     pub fn bind(
@@ -1049,19 +1077,38 @@ pub(crate) struct NativeDataEffectGate {
     binding: Arc<RequestBinding>,
     ready: AtomicBool,
     deadline: Instant,
+    /// The request selected no resource. One that did runs under its descriptor's authority
+    /// alone: no hook is run for it, before its money or after.
+    hooks: bool,
 }
 impl NativeDataEffectGate {
-    fn new(binding: Arc<RequestBinding>, deadline: Instant) -> Self {
+    fn new(binding: Arc<RequestBinding>, deadline: Instant, hooks: bool) -> Self {
         Self {
             binding,
             deadline,
             ready: AtomicBool::new(false),
+            hooks,
         }
     }
     pub(crate) fn effects_allowed(&self) -> bool {
         self.ready.load(Ordering::Acquire)
             && Instant::now() < self.deadline
             && self.binding.check_executing().is_ok()
+    }
+    /// Whether core may call the route's hooks for this request
+    /// ([`InvocationContext::hooks_allowed`], which has already judged the request's phase).
+    /// `before_money`: the walk is resolved and the money not yet asked, so the physical
+    /// execution transition has not happened: the request must still be live and inside its
+    /// deadline. After money, a hook is heard exactly while effects are.
+    pub(crate) fn hooks_allowed(&self, before_money: bool) -> bool {
+        self.hooks
+            && if before_money {
+                self.binding
+                    .check_live_now()
+                    .is_ok_and(|live_at| live_at < self.deadline)
+            } else {
+                self.effects_allowed()
+            }
     }
 }
 
@@ -1099,6 +1146,7 @@ impl NativeDataAllocation {
         let gate = Arc::new(NativeDataEffectGate::new(
             authorization.binding.clone(),
             authorization.deadline,
+            authorization.selected.is_none(),
         ));
         let units = plan.owners.generation.core().units();
         let record = units
@@ -1593,3 +1641,7 @@ pub async fn verify_core_key(
 #[cfg(test)]
 #[path = "tests/native_data_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/native_data_hooks_tests.rs"]
+mod hooks_tests;

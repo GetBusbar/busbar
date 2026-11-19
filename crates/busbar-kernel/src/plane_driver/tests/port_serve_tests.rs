@@ -123,6 +123,8 @@ struct Plane {
     end: Vec<It>,
     fault_pieces: bool,
     piece_log: PieceLog,
+    /// The conversations the plane was asked to rewrite its request to, one entry per call.
+    rewrites: Mutex<Vec<Vec<u8>>>,
 }
 
 fn nope() -> PortError {
@@ -182,9 +184,10 @@ impl Calls for Plane {
     fn rewrite(
         &self,
         _: &mut Live,
-        _: &[u8],
+        conversation: &[u8],
         _: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
+        self.rewrites.lock().unwrap().push(conversation.to_vec());
         Ok(())
     }
 
@@ -1448,3 +1451,6 @@ async fn route_policy_selections_and_rejections_counters_move() {
         "a strategy is never counted under its instance name"
     );
 }
+
+#[path = "port_serve_money_hooks.rs"]
+mod money_hooks;

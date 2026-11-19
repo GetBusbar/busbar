@@ -372,7 +372,7 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
     mut drive: Drive<'_, M, S>,
     pending: &super::port_admission::Pending,
 ) -> Result<Ran, SessionError> {
-    use super::port_hooks::stage::{self, Buffered, Observed};
+    use super::port_hooks::stage::{self, Buffered, Observed, When};
     let buffered = Buffered::new(drive.effects);
     let (mut task, first) = Task::begin(calls, req, body, &buffered)?;
     let outcome = async {
@@ -383,22 +383,54 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
             .iter()
             .find_map(|answer| answer.forward.as_ref())
             .map(|forward| Wants::from_facts(&forward.wants));
-        pending.admit(
+        // The request's one admission, in three steps and in this order. (1) Its walk is
+        // resolved and the key's grant of it judged: a key that may not take the walk is
+        // refused here and no hook is shown its request. (2) The route's hooks, when it has
+        // any: a hook that refuses has spoken before any unit is opened and before anything is
+        // charged, and its refusal drops `resolved` with the monetary callback never run.
+        // (3) The money: the unit is opened and held. A route with no hook goes from (1) to (3)
+        // with nothing between them: no stage is built, nothing is allocated, no hook is called.
+        let resolved = pending.resolve_walk(
             drive.members.as_deref_mut(),
             wants.as_ref(),
             task.request_declaration()?,
         )?;
-        task.bind_admission(pending)?;
-        if let Some(user) = answers.iter().find_map(end_user_of) {
-            drive.books.end_user(user);
-        }
-        if let Some(hooks) = drive
+        let stage = match drive
             .effects
             .hooks()
             .filter(|hooks| hooks.binder.active(req.route))
         {
-            let stage =
-                stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered).await?;
+            Some(hooks) => Some(
+                stage::enforce(
+                    hooks,
+                    &mut task,
+                    &mut answers,
+                    req,
+                    &mut drive,
+                    &buffered,
+                    When::BeforeMoney,
+                )
+                .await?,
+            ),
+            None => None,
+        };
+        // Taken before the money is asked: a money refusal ends the request's admission.
+        let completion = stage.as_ref().and_then(|stage| stage.completion());
+        if let Err(error) = pending.admit_money(drive.members.as_deref_mut(), resolved) {
+            if let (Some(stage), SessionError::AdmissionRefused(refusal)) = (&stage, &error) {
+                stage.money_refused(refusal.status, completion.as_ref());
+            }
+            return Err(error);
+        }
+        task.bind_admission(pending)?;
+        if let Some(stage) = &stage {
+            // The unit is open: the records its hooks made reach its journal now.
+            stage.unit_opened();
+        }
+        if let Some(user) = answers.iter().find_map(end_user_of) {
+            drive.books.end_user(user);
+        }
+        if let Some(stage) = stage {
             let observed = Observed::new(drive.effects, stage);
             buffered.release();
             let mut resolved = None;
@@ -451,7 +483,7 @@ async fn run_hook_session<K: Calls + ?Sized, M: Members, S: UpSend>(
     mut drive: Drive<'_, M, S>,
     hooks: &super::port_hooks::Invocation,
 ) -> Result<Ran, SessionError> {
-    use super::port_hooks::stage::{self, Buffered, Observed};
+    use super::port_hooks::stage::{self, Buffered, Observed, When};
     drive
         .effects
         .invocation()
@@ -468,8 +500,17 @@ async fn run_hook_session<K: Calls + ?Sized, M: Members, S: UpSend>(
         } else {
             task.resolve(first, drive.resolver, &buffered).await?
         };
-        let stage =
-            stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered).await?;
+        // This request's unit was open before its session began (it is not a pending admission).
+        let stage = stage::enforce(
+            hooks,
+            &mut task,
+            &mut answers,
+            req,
+            &mut drive,
+            &buffered,
+            When::UnitOpen,
+        )
+        .await?;
         let observed = Observed::new(drive.effects, stage);
         buffered.release();
         let mut resolved = None;

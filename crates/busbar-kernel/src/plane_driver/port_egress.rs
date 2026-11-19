@@ -180,6 +180,19 @@ impl<F: FarEnd> Shared<'_, F> {
         Some(self.far.get_or_init(|| (self.make)(wants, None)))
     }
 
+    /// The far end a hook stage inspects and constrains. On a request's own walk it is the one
+    /// `select_request` built from the request's resolved walk (the key's grant of it is already
+    /// judged), and it is read BEFORE the request's money is asked: a hook that refuses must
+    /// have spoken before any unit is opened. It is never built here, and nothing is picked or
+    /// sent through it: every pick and send goes through [`Self::far`], which still needs the
+    /// admitted request.
+    fn inspected(&self, wants: &Wants) -> Option<&F> {
+        if self.request_walk.is_some() {
+            return self.far.get();
+        }
+        Some(self.far.get_or_init(|| (self.make)(wants, None)))
+    }
+
     /// The far end's request for `exchange` as the member in hand, at the walk's attempt number.
     fn request(&self, exchange: UpExchange) -> Option<OutboundRequest> {
         let picks = self.picks.get();
@@ -439,22 +452,22 @@ impl<F: FarEnd + Send> Members for WalkMembers<'_, '_, F> {
     }
 
     fn hook_candidates(&mut self, wants: &Wants) -> Option<super::hooks::Candidates> {
-        let far = self.0.far(wants)?;
+        let far = self.0.inspected(wants)?;
         far.candidates(self.0.token)
     }
 
     fn hook_scope(&mut self, wants: &Wants) -> Option<super::RoutedScope> {
-        let far = self.0.far(wants)?;
+        let far = self.0.inspected(wants)?;
         far.scope(self.0.token)
     }
 
     fn hook_lane(&mut self, wants: &Wants, index: usize) -> Option<String> {
-        let far = self.0.far(wants)?;
+        let far = self.0.inspected(wants)?;
         far.candidate_lane(self.0.token, index)
     }
 
     fn hook_constrain(&mut self, wants: &Wants, constraint: super::hooks::Constraint) -> bool {
-        let Some(far) = self.0.far(wants) else {
+        let Some(far) = self.0.inspected(wants) else {
             return false;
         };
         if far.candidates(self.0.token).is_none() {

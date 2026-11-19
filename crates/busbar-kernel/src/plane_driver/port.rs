@@ -1235,7 +1235,9 @@ async fn serve_session(
         classes,
         now_s,
     } = serving;
-    let hook_binder = hook_binder.filter(|binder| binder.active(route.route));
+    // A catalog renders core's list and runs no session: no hook is bound to a listing, so it
+    // needs none of what a hook runs under (`NativeDataRoute::hooks_run`).
+    let hook_binder = hook_binder.filter(|binder| binder.active(route.route) && !route.catalog);
     if hook_binder.is_some()
         && (invocation.is_none() || (unit.is_none() && pending_admission.is_none()))
     {

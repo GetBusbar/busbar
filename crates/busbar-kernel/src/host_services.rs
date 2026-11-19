@@ -30,6 +30,7 @@ pub const QUEUE_FULL: &str = "the record write queue is full";
 
 #[path = "invocation.rs"]
 mod invocation;
+pub(crate) use invocation::HookGrant;
 pub use invocation::{InvocationContext, NativeInvocationAdmission, ServingGeneration};
 
 #[cfg(test)]

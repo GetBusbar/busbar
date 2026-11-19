@@ -46,6 +46,11 @@ impl AdmissionPhase {
     pub(crate) fn effects_allowed(&self) -> bool {
         self.0.load(Ordering::Acquire) == ADMITTED
     }
+    /// The request's walk is resolved (the key's grant of it is judged) and its money has not
+    /// been asked: where a hook that may refuse is heard.
+    pub(crate) fn before_money(&self) -> bool {
+        self.at(READY)
+    }
     pub(crate) fn end(&self) {
         self.0.store(ENDED, Ordering::Release);
     }
