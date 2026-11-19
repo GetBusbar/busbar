@@ -362,7 +362,7 @@
           },
           "per_request_fee": {
             "default": null,
-            "description": "The corrected flat per-request fee. Never negative.",
+            "description": "The corrected flat per-request fee, in minor units (hundredths of the cost unit), as a JSON\ninteger. Never negative.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -1831,7 +1831,7 @@
         "description": "One plane-declared class's consumption on a usage row: its raw count and its cost.\n\nNEW IN 1.6.0 (1.5.5's usage rows carried the token split alone, and 1.5.5 served no plane that\ndeclares a class of its own): ledgered by the FLIP-A2A ruling. `cost` is in the same MICRO-units\nas [`UsageBreakdown::spend_micros`], priced by the same card in force at the row's instant, and is\npart of that row's `spend_micros`, never added to it a second time.",
         "properties": {
           "cost": {
-            "description": "What the card in force priced that count at, in micro-units.",
+            "description": "What the card in force priced that count at, in micro-units (1e-6 of the cost unit), as a\nJSON integer truncated toward zero from this class's own exact sum.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -4284,6 +4284,7 @@
         "description": "One `(window, pool?)` enforcement bucket's usage vs caps inside a [`GroupUsageView`].",
         "properties": {
           "budget_cap": {
+            "description": "The budget cap, in minor units (hundredths of the cost unit), as configured; compared with\n`spend_cents`.",
             "format": "int64",
             "type": [
               "integer",
@@ -4296,7 +4297,7 @@
             }
           },
           "budget_remaining_cents": {
-            "description": "Cents left under `budget_cap` (floored at 0); absent when no budget cap is set.",
+            "description": "Minor units left under `budget_cap` (floored at 0); absent when no budget cap is set.",
             "format": "int64",
             "type": [
               "integer",
@@ -4341,7 +4342,7 @@
             }
           },
           "spend_cents": {
-            "description": "Spend derived at read time (tokens x current rate card), abstract cents.",
+            "description": "Spend derived at read time from the ledger's counts, each priced at the rate card in force\nwhen it was earned, in minor units (hundredths of the cost unit), as a JSON integer\ntruncated toward zero from the exact sum.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -5290,6 +5291,7 @@
             }
           },
           "spend_cents": {
+            "description": "The key's spend, derived at read time from its ledger counts (each priced at the rate card\nin force when it was earned, plus the flat per-request fee), in minor units (hundredths of\nthe cost unit), as a JSON integer truncated toward zero from the exact sum.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -5446,7 +5448,7 @@
             }
           },
           "spend_micros": {
-            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the raw token\nsplit x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate\ncard's numbers are whatever unit the operator priced in; display/denomination is entirely\nthe consumer's concern. A consumer with its own per-model catalog recomputes from the raw\ntoken split instead.",
+            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the counts x\nthe dated rate-card history (each row priced at the card in force at its own instant, plus\nthe flat per-request fee). A JSON integer, truncated toward zero from the exact sum of the\nrows this object covers (so the figures of `total`, `by_model[]` and `by_key[]` are each\ntruncated apart). Busbar attaches no currency - the rate card's numbers are whatever unit\nthe operator priced in; display/denomination is entirely the consumer's concern. A consumer\nwith its own per-model catalog recomputes from the raw token split instead.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -6173,15 +6175,15 @@
         "properties": {
           "accounted": {
             "$ref": "#/components/schemas/Amount",
-            "description": "Where the value the ledger drew is now."
+            "description": "Where the value the ledger drew is now, in nano-units of the cost unit, as a decimal\ninteger string. This node never serves a discrepancy."
           },
           "amount": {
             "$ref": "#/components/schemas/Amount",
-            "description": "`accounted` minus `drawn`. Zero is the good answer; the sign says which side is missing the\ndifference."
+            "description": "`accounted` minus `drawn`, in nano-units of the cost unit, as a decimal integer string.\nZero is the good answer; the sign says which side is missing the difference."
           },
           "drawn": {
             "$ref": "#/components/schemas/Amount",
-            "description": "What the previous release's row records as taken."
+            "description": "What the previous release's row records as taken, in nano-units of the cost unit, as a\ndecimal integer string."
           }
         },
         "required": [
@@ -6216,28 +6218,33 @@
         "type": "object"
       },
       "LedgerTotalsCell": {
-        "description": "One sealed balance, as the checkpoint holds it. Every money figure is an [`Amount`].",
+        "description": "One sealed balance, as the checkpoint holds it. Every money figure is an [`Amount`]: a decimal\ninteger string, in the unit the cell's `dimension` names (`nano-units`, 1e-9 of the cost unit,\nis the only money dimension this node names). This node never serves a checkpoint:\n`GET /ledger/checkpoints` always answers an empty list.",
         "properties": {
           "adjustments": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "bucket": {
             "type": "string"
           },
           "budget": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "cross_window_transfers": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "dimension": {
             "type": "string"
           },
           "disputed": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "drawn": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "oldest_dispute_age_secs": {
             "format": "uint64",
@@ -6270,28 +6277,35 @@
             }
           },
           "open_holds": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "open_slice_remainders": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "overdraft_carried_in": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "overdraft_carried_out": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "released": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "scope": {
             "type": "string"
           },
           "settled": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "unreconciled": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "window": {
             "description": "The window's opening instant, in whole seconds.",
@@ -6363,11 +6377,11 @@
           },
           "priced_micros": {
             "$ref": "#/components/schemas/Amount",
-            "description": "The same figure in micro-units: ONE truncating divide over the summed nano-units, never a\nsum of per-line divides."
+            "description": "The same figure in MICRO-units of the cost unit (1e-6 of it), as a decimal integer string:\nthe bucket's exact sum truncated once toward zero, never a sum of per-line truncations."
           },
           "priced_nanos": {
             "$ref": "#/components/schemas/Amount",
-            "description": "The summed priced amount of the row's lines in nano-units, each line priced against the\nrate card in force at its own arrival instant."
+            "description": "The priced amount of the row, in NANO-units of the cost unit (1e-9 of it), as a decimal\ninteger string: each line priced against the rate card in force at its own arrival\ninstant. This node derives it from the bucket's micro-unit figure times 1000, so it is\nalways a multiple of 1000."
           },
           "provider": {
             "description": "The serving lane's provider (empty where the node keeps no finer width).",
@@ -6389,7 +6403,7 @@
         "description": "One limit inside a `GroupView`: an explicit `{ metric, amount, per, pool }` projection of a\nconfig `LimitCfg`. The config file's compact `{ budget: 3000, per: month }` form is\ndeserialize-only sugar; the read API projects it explicitly so a consumer never has to know\nthe metric is the map key. `per` is `None` only for `concurrent` (an instantaneous gauge, no\nwindow); `pool` is present only on a pool-scoped limit.",
         "properties": {
           "amount": {
-            "description": "The cap amount (requests/tokens/cents, or the in-flight gauge for `concurrent`).",
+            "description": "The cap amount (requests, tokens, minor units of the cost unit for `budget`, or the\nin-flight gauge for `concurrent`).",
             "format": "uint64",
             "minimum": 0,
             "type": "integer",
@@ -6537,7 +6551,7 @@
             }
           },
           "spend_micros": {
-            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the raw token\nsplit x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate\ncard's numbers are whatever unit the operator priced in; display/denomination is entirely\nthe consumer's concern. A consumer with its own per-model catalog recomputes from the raw\ntoken split instead.",
+            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the counts x\nthe dated rate-card history (each row priced at the card in force at its own instant, plus\nthe flat per-request fee). A JSON integer, truncated toward zero from the exact sum of the\nrows this object covers (so the figures of `total`, `by_model[]` and `by_key[]` are each\ntruncated apart). Busbar attaches no currency - the rate card's numbers are whatever unit\nthe operator priced in; display/denomination is entirely the consumer's concern. A consumer\nwith its own per-model catalog recomputes from the raw token split instead.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -6719,7 +6733,7 @@
             "type": "string"
           },
           "spend_micros": {
-            "description": "Committed spend in micro-units, as an exact decimal string (up to three fractional places).",
+            "description": "Committed spend in micro-units (1e-6 of the cost unit), as an exact decimal string (up to\nthree fractional places: whole nano-units). Never repriced.",
             "type": "string"
           }
         },
@@ -9015,7 +9029,7 @@
             "type": "string"
           },
           "spend_micros": {
-            "description": "The unit's spend in micro-units, priced at read by the rule `/usage` uses, as exact\ndecimal text (at most three fractional places); null when unpriced.",
+            "description": "The unit's spend in micro-units (1e-6 of the cost unit), priced at read by the rule\n`/usage` uses, as exact decimal text (at most three fractional places): the exact sum of\nthe unit's lines and fee, truncated once to whole nano-units. Null when unpriced (a class\nthe card holds unpriced, or no card entry found).",
             "type": [
               "string",
               "null"
@@ -9228,7 +9242,7 @@
             }
           },
           "spend_micros": {
-            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the raw token\nsplit x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate\ncard's numbers are whatever unit the operator priced in; display/denomination is entirely\nthe consumer's concern. A consumer with its own per-model catalog recomputes from the raw\ntoken split instead.",
+            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the counts x\nthe dated rate-card history (each row priced at the card in force at its own instant, plus\nthe flat per-request fee). A JSON integer, truncated toward zero from the exact sum of the\nrows this object covers (so the figures of `total`, `by_model[]` and `by_key[]` are each\ntruncated apart). Busbar attaches no currency - the rate card's numbers are whatever unit\nthe operator priced in; display/denomination is entirely the consumer's concern. A consumer\nwith its own per-model catalog recomputes from the raw token split instead.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {

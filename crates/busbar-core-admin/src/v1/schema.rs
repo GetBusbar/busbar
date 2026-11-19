@@ -207,6 +207,9 @@ pub struct KeyMeteringView {
     pub as_of: u64,
     /// The bound `groups:` entry (`null` = unlimited key).
     pub group: Option<String>,
+    /// The key's spend, derived at read time from its ledger counts (each priced at the rate card
+    /// in force when it was earned, plus the flat per-request fee), in minor units (hundredths of
+    /// the cost unit), as a JSON integer truncated toward zero from the exact sum.
     pub spend_cents: i64,
     /// Exact scale-6 decimal quantity, serialized as a JSON number.
     #[schemars(with = "f64", extend("x-busbar-count-scale" = 6))]
