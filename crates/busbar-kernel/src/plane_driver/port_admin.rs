@@ -11,7 +11,7 @@
 use busbar_contract::route::{method_bit, path_matches, PATH_PATTERN};
 
 use super::port::{HttpHead, HttpIn, PortSeat, ServeIn, Served};
-use super::port_auth::{Credentials, Principal};
+use super::port_auth::{Credentials, Principal, Subject};
 use super::port_routes::Mounted;
 use super::port_session::ToClient;
 use super::HeadFields;
@@ -84,8 +84,8 @@ pub struct AdminRequest {
 /// The head fields under which an admin credential travels: the bearer the operator chain judges,
 /// a proxy's own credential, the browser session of an admin login, and the 1.5 carrier that 1.6
 /// no longer reads but an old client may still send its admin secret in. A plane's admin route is
-/// never handed any of them. This is the floor: the admin listener also strips every carrier its
-/// gate consumed (`auth::ConsumedCredentials`) before it builds the request.
+/// never handed any of them. This is the floor: [`answer`] also strips every carrier the admin
+/// gate consumed ([`AdminRequest::consumed`]) before the head is copied for the plane.
 const ADMIN_CREDENTIAL_FIELDS: [&str; 4] = [
     "authorization",
     "proxy-authorization",
@@ -95,7 +95,8 @@ const ADMIN_CREDENTIAL_FIELDS: [&str; 4] = [
 
 /// The head fields a plane's admin route is handed: everything the request carried except the
 /// admin credential, in the order it arrived. The gate has judged the credential already and the
-/// plane is told only that the caller is the operator (`Credentials::operator`); the secret itself
+/// plane is told only that the caller is the operator (`Credentials::operator`) and who the gate
+/// admitted ([`AdminRequest::principal`]); the secret itself
 /// never crosses to the plane (the data path's rule is `auth::native_data::withheld_carriers`).
 pub(crate) fn plane_headers(mut headers: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
     headers.retain(|(name, _)| {
@@ -121,17 +122,28 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
         method,
         path,
         query,
-        headers,
-        consumed: _,
-        principal: _,
+        mut headers,
+        consumed,
+        principal,
         body,
         request_id,
         now_s,
     } = request;
+    // Every carrier the gate consumed is withheld, then the gate's hold on the caller credential
+    // is released: neither crosses to the plane.
+    if let Some(consumed) = consumed {
+        consumed.strip(&mut headers);
+    }
     let headers = headers
         .iter()
         .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
         .collect();
+    // The plane's admin route is served as the principal the admin gate admitted: the subject its
+    // identity records and every audit row it states name.
+    let principal = match principal.0 {
+        Some(admitted) => Principal::Verified(Subject::Principal(std::sync::Arc::new(admitted))),
+        None => Principal::Anonymous,
+    };
     let input = ServeIn {
         request,
         admission: None,
@@ -149,7 +161,7 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
         ),
         creds: Credentials {
             bearer: None,
-            principal: Principal::Anonymous,
+            principal,
             operator: true,
             signed: None,
         },

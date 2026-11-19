@@ -3343,6 +3343,10 @@ mod no_axis_tests;
 mod acceptance_1_5_5_tests;
 
 #[cfg(test)]
+#[path = "tests/native_admin_permit_tests.rs"]
+mod native_admin_permit_tests;
+
+#[cfg(test)]
 #[path = "tests/ticket_admission_policy.rs"]
 mod ticket_admission_policy;
 
