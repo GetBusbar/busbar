@@ -161,7 +161,6 @@ busbar-export-otlp = { workspace = true }
 # The transports. Composition is an edge that does not exist as a Cargo dependency — a transport may
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
-busbar-transport-tcp = { workspace = true }
 # The http transport is a MIN-3 image (its logic crate's `PLUGIN` header) on `min3-images`: it declares the `listen`
 # and `admin_listen` slots and carries the `http` dial carrier (deletion plan E3).
 busbar-transport-http = { workspace = true }
@@ -170,7 +169,6 @@ busbar-transport-http = { workspace = true }
 busbar-transport-grpc = { workspace = true }
 # WebSocket: the streaming plane's edge, always linked.
 busbar-transport-ws = { workspace = true }
-busbar-transport-stdio = { workspace = true }
 # WebRTC: a MIN-3 image (its logic crate's `PLUGIN` header) in the datagram role (ICE, SRTP, SCTP), on
 # `min3-images`; it carries the `rtc` carrier (deletion plan E10). Always linked.
 busbar-transport-webrtc = { workspace = true }
@@ -241,7 +239,6 @@ plane-mcp-door = "busbar-plane-mcp"
 plane-a2a-door = "busbar-plane-a2a"
 plane-streaming = "busbar-plane-streaming"
 plane-decisions = "busbar-plane-decisions"
-transport-tcp = "busbar-transport-tcp"
 transport-ws = "busbar-transport-ws"
 transport-webrtc = "busbar-transport-webrtc"
 auth-admin-tokens = "busbar-auth-admin-tokens"
@@ -299,11 +296,9 @@ secret-file = "busbar-secret-file"
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. ONE ENTRY PER PLUGIN: a row is one crate's one entry, and the seal
 # registers every scheme its door's Statement claims (`sse` is the http entry's).
-transport-tcp = "busbar-transport-tcp"
 transport-http = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
 transport-grpc = "busbar-transport-grpc"
-transport-stdio = "busbar-transport-stdio"
 transport-webrtc = "busbar-transport-webrtc"
 # THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
 # loader's one load beside the dropped-in plane doors.
@@ -338,7 +333,6 @@ auth-header = "min3-images"
 auth-sigv4 = "min3-images"
 auth-oauth = "min3-images"
 auth-webhook-signature = "auths"
-transport-tcp = "transport transport-door"
 # Every transport row is a door row (`transport-door`): the seal folds it from its door's Statement,
 # every door is opened on the root's one Connector, and no transport names another (on this old path
 # the carrier is the connector's choice from the target's scheme).
@@ -346,7 +340,6 @@ transport-tcp = "transport transport-door"
 transport-http = "min3-images"
 transport-ws = "transport transport-door"
 transport-grpc = "transport transport-door"
-transport-stdio = "transport transport-door"
 # The webrtc transport is a MIN-3 image in the datagram role, admitted as one transport instance.
 transport-webrtc = "min3-images"
 plane-decisions = "min3-images"
@@ -494,9 +487,7 @@ ranking_hook = "busbar-hook-ranking"
 source_file = "busbar-secret-file"
 
 [package.metadata.busbar.test-source-contexts]
-root_stdio = "busbar-transport-stdio"
 listener_session = "busbar-transport-ws"
-listener_carrier = "busbar-transport-tcp"
 admin_application = "busbar-hook-webrequest"
 linked_auth = "busbar-auth-webhook-signature"
 migration_table_hook = "busbar-hook-webrequest"
@@ -587,11 +578,6 @@ serde_json = { workspace = true }
 # both-doors conformance lives in its repo (GetBusbar/busbar-export-file, `tests/conformance.rs`).
 # Built with its `dropped-in` feature: only then does the cdylib export `busbar_plugin_door`.
 busbar-export-file-plugin = { workspace = true, features = ["dropped-in"] }
-# The dropped-in transport proofs (`tests/transport_dropped_in_serves.rs`, the tcp-less boot in
-# `tests/linked_export_sinks_boot_as_their_own_kind.rs`): the old tcp carrier plugin's cdylib crate at the
-# SAME pinned rev as the linked `busbar-transport-tcp` edge above, found in this target dir under
-# `deps/` (hashed) by the door it loads as. The wire's own both-doors conformance lives in its repo.
-busbar-transport-tcp-plugin = { workspace = true }
 # The scrape role's first-party proof (`tests/export_scrape_is_first_party.rs`): the scrape sink's
 # repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-prometheus` edge above —
 # the library a tarball of the sink carries, found in this target dir by what it loads as. The
@@ -779,11 +765,6 @@ busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-g
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
 busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "21ab18eb964d2819857dacc62d52c66e940bbd7b" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "06a8ade187e1cd961b348d45face2f2b2a1add27" }
-# THE OLD-INTERFACE TCP CARRIER PLUGIN (busbar-transport-tcp, kind: transport on the old interface): one
-# pin for the logic crate the root links and the cdylib crate the loader's both-ways proof builds. Same
-# repo, same rev, one resolved copy. TCP is a core carrier; this row goes at the deletion plan's H1.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "213adb20132938ce6f4575ea691a9f620f9e55f0" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "213adb20132938ce6f4575ea691a9f620f9e55f0" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (row `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
@@ -818,12 +799,6 @@ busbar-auth-webhook-signature = { git = "https://github.com/GetBusbar/busbar-aut
 # `linked_hook_ranking` tests prove the double states what this door states.
 busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "0e2337f63338bd806c44d9554deb356f3b7d5cfc" }
 busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-complexity", rev = "372b3a6f618fbe387d343d4fbac10956b02932e4" }
-# THE OLD-INTERFACE STDIO CARRIER PLUGIN (busbar-transport-stdio, kind: transport on the old
-# interface): a spawned program's pipes, pulled at a pinned rev; the logic crate the root links on the
-# transport-door axis. Stdio is a core carrier; this row goes at the deletion plan's H1.
-# c599ed8 (house/oss-green): its root test builds the dispatcher over the serving Services (LateServices is
-# gone, 395b97f138); the crate source differs from 725ccf6 only in test plumbing (tests moved out of src/).
-busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "c599ed8ea52b09bedd1ff10c63f8b045be5fe2d4" }
 # THE WEBRTC TRANSPORT (kind: transport), a MIN-3 image in the datagram role (ICE, SRTP, SCTP), pulled at a
 # pinned rev; the logic crate whose `PLUGIN` header the root admits. The pin is its dev head a9d7912 (house/oss-green
 # merged: the image declares its alias `webrtc` as a former name). Its dropped-in cdylib twin and its gates live in
