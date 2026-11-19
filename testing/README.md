@@ -6,8 +6,7 @@ and what CI runs, is in [docs/testing.md](../docs/testing.md) and [docs/ci.md](.
 
 | Directory | What it is |
 |---|---|
-| `shadow-oracle/` | The upgrade oracle's corpus: `cells.json`, the golden outputs recorded from the published 1.5.5 binary, and the signed `accepted-differences.json` and `accepted-gaps.json` that say which 1.6.0 differences the owner has accepted. |
-| `oracle/` | The black-box package that runs the corpus against a built `busbar` binary, with the bundled plugins loaded from packages and never compiled in. It reports differences and gates nothing. |
+| `shadow-oracle/` | The upgrade tests' corpus: `cells.json`, its fixtures and script drivers, and the outputs recorded from the published 1.5.5 binary (`golden/1.5.5`) that the upgrade tests' expectations were taken from. The tests themselves are busbar-release `crates/busbar-release-upgrade`. |
 | `conformance/` | The conformance check every repository runs (`run.sh`, `suites.tsv`): each official suite against the assembled host, one verdict file per suite. |
 | `h2-conformance/` | The `h2` suite: h2spec over TLS against the HTTP/2 listener, with a known-good third-party server as the control leg. |
 | `tls-conformance/` | The `tls` suite: testssl.sh and tlsfuzzer against the listener, judged by named assertions and never by a letter grade. |

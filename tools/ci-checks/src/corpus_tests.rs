@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `testing/shadow-oracle/cells.json` is the corpus's source of truth (#439: there is no generator; the
-//! Python enumerator and the inventories it read were retired, and the file has been edited by hand since).
-//! This is its validator: schema, unique ids, every reference a cell makes resolves, every recording belongs to
-//! a cell, and the counts the file states are the counts of its cells. It reads the checked-in files, so a hand
-//! edit that breaks one of these fails CI.
+//! `testing/shadow-oracle/cells.json` is the upgrade tests' corpus and its source of truth (#439: there is no
+//! generator; the file is edited by hand). This is its validator: schema, unique ids, every reference a cell
+//! makes resolves, every 1.5.5 recording belongs to a cell, and the counts the file states are the counts of its
+//! cells. It reads the checked-in files, so a hand edit that breaks one of these fails CI.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use super::Node;
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait, Value};
+
 use crate::repo_root;
 
 const PLANES: [&str; 4] = ["a2a", "core", "llm", "mcp"];
@@ -21,22 +21,23 @@ fn data() -> PathBuf {
     repo_root().join("testing/shadow-oracle")
 }
 
-fn read(path: &Path) -> Node {
+fn read(path: &Path) -> Value {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    Node::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    json::parse_value(text.as_bytes()).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-fn cells(root: &Node) -> &Vec<Node> {
+fn cells(root: &Value) -> &[Value] {
     root.get("cells")
-        .and_then(Node::as_array)
+        .and_then(|c| c.as_array())
+        .map(|a| a.as_slice())
         .expect("cells.json has a `cells` array")
 }
 
-fn text<'a>(cell: &'a Node, key: &str) -> Option<&'a str> {
-    cell.get(key).and_then(Node::as_str)
+fn text<'a>(cell: &'a Value, key: &str) -> Option<&'a str> {
+    cell.get(key).and_then(|v| v.as_str())
 }
 
-fn id(cell: &Node) -> &str {
+fn id(cell: &Value) -> &str {
     text(cell, "id").expect("every cell has a string id")
 }
 
@@ -54,11 +55,9 @@ fn stem(id: &str) -> String {
         .collect()
 }
 
-fn count_of(node: Option<&Node>) -> Option<usize> {
-    match node {
-        Some(Node::Number(n)) => n.parse().ok(),
-        _ => None,
-    }
+fn count_of(node: Option<&Value>) -> Option<usize> {
+    node.and_then(|n| n.as_u64())
+        .and_then(|n| usize::try_from(n).ok())
 }
 
 #[test]
@@ -86,12 +85,12 @@ fn every_cell_has_the_required_fields_and_a_known_plane_and_driver() {
             let exec = cell.get("exec");
             if exec
                 .and_then(|e| e.get("args"))
-                .and_then(Node::as_array)
+                .and_then(|a| a.as_array())
                 .is_none()
             {
                 bad.push(format!("{id}: an exec cell carries `exec.args`"));
             }
-            match exec.and_then(|e| e.get("mode")).and_then(Node::as_str) {
+            match exec.and_then(|e| e.get("mode")).and_then(|m| m.as_str()) {
                 Some(mode) if MODES.contains(&mode) => {}
                 other => bad.push(format!("{id}: exec.mode {other:?} is not one of {MODES:?}")),
             }
@@ -126,7 +125,7 @@ fn every_reference_a_cell_makes_resolves() {
     let root = read(&data.join("cells.json"));
     let mutations: BTreeSet<String> = read(&data.join("fixtures/boot-mutations.json"))
         .get("mutations")
-        .and_then(Node::as_array)
+        .and_then(|m| m.as_array())
         .expect("boot-mutations.json has `mutations`")
         .iter()
         .filter_map(|m| text(m, "id").map(str::to_owned))
@@ -167,23 +166,19 @@ fn every_recording_belongs_to_a_cell() {
     let data = data();
     let root = read(&data.join("cells.json"));
     let stems: BTreeSet<String> = cells(&root).iter().map(|c| stem(id(c))).collect();
+    let dir = data.join("golden/1.5.5/cells");
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
     let mut bad = Vec::new();
-    for line in ["1.5.5", "1.6.0-pre"] {
-        let dir = data.join("golden").join(line).join("cells");
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(stem) = name.strip_suffix(".json") else {
             continue;
         };
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(stem) = name.strip_suffix(".json") else {
-                continue;
-            };
-            if !stems.contains(stem) {
-                bad.push(format!(
-                    "{}: no cell has this id",
-                    dir.join(&name).display()
-                ));
-            }
+        if !stems.contains(stem) {
+            bad.push(format!(
+                "{}: no cell has this id",
+                dir.join(&name).display()
+            ));
         }
     }
     assert!(bad.is_empty(), "orphan recordings:\n{}", bad.join("\n"));
@@ -210,12 +205,13 @@ fn the_counts_the_file_states_are_the_counts_of_its_cells() {
             .or_default() += 1;
     }
     for (name, want) in [("by_plane", &by_plane), ("by_family", &by_family)] {
-        let Some(Node::Object(stated)) = counts.get(name) else {
-            panic!("counts.{name} is an object");
-        };
+        let stated = counts
+            .get(name)
+            .and_then(|o| o.as_object())
+            .unwrap_or_else(|| panic!("counts.{name} is an object"));
         let stated: BTreeMap<&str, usize> = stated
             .iter()
-            .map(|(k, v)| (k.as_str(), count_of(Some(v)).expect("a count")))
+            .map(|(k, v)| (k, count_of(Some(v)).expect("a count")))
             .collect();
         assert_eq!(&stated, want, "counts.{name}");
     }

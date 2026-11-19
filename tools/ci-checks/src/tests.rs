@@ -256,14 +256,13 @@ const SEAL_HOLDERS: [&str; 2] = ["busbar-contract", "busbar-kernel"];
 
 /// The packages that may list `busbar-kernel`. The kernel's `seal` module is public, so each of these can
 /// obtain a seal; every other crate cannot name one.
-const KERNEL_DEPENDENTS: [&str; 8] = [
+const KERNEL_DEPENDENTS: [&str; 7] = [
     "busbar",
     "busbar-core-admin",
     "busbar-core-connector",
     "busbar-core-oauth2",
     "busbar-default",
     "busbar-migrate",
-    "busbar-oracle-blackbox",
     "busbar-plugin-test",
 ];
 

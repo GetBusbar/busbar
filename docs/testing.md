@@ -26,9 +26,11 @@ exact list is in [What CI checks](ci.md).
   production code.
 - **Root and distribution tests** exercise the `busbar` binary: the `busbar` crate's own tests and
   `dist/default/tests`.
-- **The upgrade oracle** judges a 1.6.0 build against recordings of the published 1.5.5 binary.
-  Its corpus and the signed accepted differences are in [testing/shadow-oracle](../testing/shadow-oracle);
-  the [migration guide](migration-1.6.md) describes the differences an operator sees.
+- **The upgrade tests** judge a 1.6.0 build as a customer sees it: one plain Rust test per corpus cell
+  (busbar-release `crates/busbar-release-upgrade`), driven against the built binary. The corpus and
+  the 1.5.5 recordings the expectations were taken from are in
+  [testing/shadow-oracle](../testing/shadow-oracle); each difference is an owner decision, and the
+  [migration guide](migration-1.6.md) describes the differences an operator sees.
 - **Conformance and evidence rigs** run official third-party suites against a built binary, with a
   known-good control leg beside the subject leg. [testing/README.md](../testing/README.md) lists them.
 - **Plugins** test themselves in their own repositories against a published core, never against

@@ -237,7 +237,6 @@ fn main() {
     )
     .expect("write context_test_sources.rs");
     println!("cargo:rustc-env=BUSBAR_DOOR_BLACKBOX={cells_files}");
-    println!("cargo::rustc-check-cfg=cfg(oracle_lookup)");
 
     let out =
         std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("test_linked.rs");
