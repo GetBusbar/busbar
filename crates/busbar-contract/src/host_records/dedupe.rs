@@ -103,5 +103,5 @@ impl Dedupe {
 }
 
 #[cfg(test)]
-#[path = "../abi/sdk/tests/store_dedupe_tests.rs"]
+#[path = "tests/dedupe_tests.rs"]
 mod tests;

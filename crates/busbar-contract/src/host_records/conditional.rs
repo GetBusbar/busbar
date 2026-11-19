@@ -516,5 +516,5 @@ impl<'a> Reader<'a> {
 }
 
 #[cfg(test)]
-#[path = "../abi/sdk/tests/store_conditional_tests.rs"]
+#[path = "tests/conditional_tests.rs"]
 mod tests;
