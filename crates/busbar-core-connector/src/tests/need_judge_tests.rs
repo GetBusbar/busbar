@@ -255,14 +255,11 @@ async fn proxy_local_dns_pins_the_target_and_checks_proxy_own_node() {
 /// address (the shipped default's shape, `0.0.0.0:8080`), the admin surface on one configured
 /// address.
 fn own_doors_deployment(block_private: bool) -> busbar_kernel::config::RootCfg {
-    let deploy: busbar_kernel::config::DeployCfg = serde_json::from_value(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "listen": "0.0.0.0:18080",
-        "admin_listen": "10.20.30.40:18081",
-        "admin_require_mtls": false,
-        "advanced": {"block_private_addresses": block_private},
-    }))
+    let deploy: busbar_kernel::config::DeployCfg = busbar_contract::yaml::from_str(&format!(
+        "providers: {{}}\nmodels: {{}}\nlisten: \"0.0.0.0:18080\"\n\
+         admin_listen: \"10.20.30.40:18081\"\nadmin_require_mtls: false\n\
+         advanced: {{block_private_addresses: {block_private}}}\n"
+    ))
     .expect("the deployment parses");
     busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
         .unwrap_or_else(|errors| panic!("the deployment resolves: {errors:?}"))
