@@ -90,6 +90,9 @@ struct Backend {
     hold_cut: AtomicBool,
     cut_entered: tokio::sync::Notify,
     release_cut: tokio::sync::Notify,
+    /// Refuse any read whose answer would exceed this many bytes, as a store's per-read byte
+    /// limit does (0: no limit).
+    read_byte_limit: std::sync::atomic::AtomicUsize,
 }
 impl PersistenceBackend for Backend {
     fn info(&self) -> BackendInfo {
@@ -112,16 +115,26 @@ impl PersistenceBackend for Backend {
         }
         Box::pin(async move {
             let state = self.state.lock().unwrap();
+            let values: Vec<_> = request
+                .addresses
+                .iter()
+                .map(|address| row(&state, address))
+                .collect();
+            let limit = self.read_byte_limit.load(Ordering::SeqCst);
+            let bytes: usize = values
+                .iter()
+                .flatten()
+                .map(|value| value.expose(&crate::seal::lend()).len())
+                .sum();
+            if limit != 0 && bytes > limit {
+                return Err(Failure::Refused);
+            }
             Ok(ReadResult::Values {
                 observed_at: ClockObservation {
                     authority: [3; 16],
                     unix_seconds: 10,
                 },
-                values: request
-                    .addresses
-                    .iter()
-                    .map(|address| row(&state, address))
-                    .collect(),
+                values,
             })
         })
     }
@@ -1392,6 +1405,51 @@ async fn replay_pins_old_prefix_across_append_and_detects_missing_tail() {
     let mut cursor = journal.replay().await.unwrap();
     cursor.next().await.unwrap();
     assert!(matches!(cursor.next().await, Err(Error::Corrupt)));
+}
+
+/// The read-ahead window is sized from the previous batch's largest original. After small
+/// originals it asks for many rows in one read, and a run of large originals then exceeds the
+/// store's per-read byte limit. The replay still completes: a refused multi-row read is retried
+/// as a one-row read before the replay fails.
+#[tokio::test]
+async fn replay_completes_when_a_read_ahead_window_exceeds_the_store_read_limit() {
+    let backend = Arc::new(Backend::default());
+    let store = attach(backend.clone(), 4).await;
+    let journal = StoreJournal::new(&store, 7).unwrap();
+    let mut previous = [0; 32];
+    let mut records = Vec::new();
+    for seq in 1..=16u64 {
+        let fill = u8::try_from(seq).unwrap();
+        let body = if seq <= 8 {
+            vec![fill]
+        } else {
+            vec![fill; 16 * 1024]
+        };
+        let next = record(seq, previous, body);
+        previous = hash(&next);
+        records.push(next);
+    }
+    for group in records.chunks(4) {
+        applied(
+            journal
+                .append(&verified(&journal).await, group)
+                .await
+                .unwrap(),
+        );
+    }
+    // Every original fits one read; eight of the large ones together do not.
+    backend.read_byte_limit.store(64 * 1024, Ordering::SeqCst);
+    let mut replay = journal.replay().await.unwrap();
+    let mut seen = 0u64;
+    loop {
+        match replay.next().await {
+            Ok(Some(_)) => seen += 1,
+            Ok(None) => break,
+            Err(error) => panic!("replay failed after {seen} originals: {error:?}"),
+        }
+    }
+    assert_eq!(seen, 16);
+    assert_eq!(replay.finish().unwrap().sequence(), 16);
 }
 
 #[tokio::test]
