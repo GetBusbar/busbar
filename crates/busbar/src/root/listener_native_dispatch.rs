@@ -45,8 +45,8 @@ impl Prepared {
             .as_ref()
             .and_then(data::DataSettlement::native_node_handle)
     }
-    pub(super) async fn send(self, feeds: &mpsc::Sender<Feed>, node: &Node) -> CompletedResponse {
-        let mut completed = self.registered.send_http(self.response, feeds, node).await;
+    pub(super) async fn send(self, feeds: &mpsc::Sender<Feed>) -> CompletedResponse {
+        let mut completed = self.registered.send_http(self.response, feeds).await;
         // The completion keeps the original physical execution and input retirement guard until
         // the same Task's selected monetary terminal has consumed the genuine delivery receipt.
         if let Some(settlement) = self.settlement {
@@ -87,7 +87,8 @@ pub(super) async fn prepare(
                 // Lend the same HEAD-created physical owner to Node before Task admission.
                 // Node retains it independently through registration and audit failures.
                 let prepared =
-                    data::prepare(ready.request, slot, node, ready.owner.clone()).await?;
+                    data::prepare(ready.request, slot, Arc::clone(&node), ready.owner.clone())
+                        .await?;
                 (
                     prepared.response,
                     match prepared.authority {
@@ -155,6 +156,7 @@ pub(super) async fn prepare(
             authority,
             ready.owner,
             deadline,
+            &node,
         )
         .await
         {

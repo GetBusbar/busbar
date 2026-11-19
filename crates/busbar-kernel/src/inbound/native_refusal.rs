@@ -112,6 +112,7 @@ enum RefusalProvenance {
     /// The route's chain denied an upgrade request (credential, policy or replay).
     UpgradeDenied {
         _denied: DataPreparationDenied,
+        reason: crate::auth::native_data::DataRefused,
     },
     /// No route of this listener matched the head: answered as an unauthenticated request is, so
     /// the answer does not tell a caller whether a route exists.
@@ -134,23 +135,14 @@ impl PhysicalRefusal {
         busbar_contract::caps::StepName,
         busbar_contract::caps::ReasonCode,
     )> {
-        use crate::auth::native_data::DataRefused;
         use busbar_contract::caps::{ReasonCode, StepName};
         match &self._provenance {
-            RefusalProvenance::Data { _denied } => Some(match _denied.decision() {
-                DataRefused::Credential => (StepName::Authenticate, ReasonCode::Unauthenticated),
-                DataRefused::Policy => (StepName::Approve, ReasonCode::ScopeDenied),
-                DataRefused::Replay => (StepName::Authenticate, ReasonCode::Replayed),
-                DataRefused::Capacity => (StepName::Arrival, ReasonCode::InFlightCap),
-                DataRefused::Unavailable => (StepName::Arrival, ReasonCode::DurabilityUnavailable),
-                DataRefused::Unsupported
-                | DataRefused::Binding
-                | DataRefused::Cancelled
-                | DataRefused::Unit => (StepName::Decode, ReasonCode::DecodeFailed),
-            }),
+            RefusalProvenance::Data { _denied } => Some(counted_denial(_denied.decision())),
+            RefusalProvenance::UpgradeDenied { reason, .. } => Some(counted_denial(*reason)),
             RefusalProvenance::Upgrade { .. } => {
                 Some((StepName::Decode, ReasonCode::MethodNotAllowed))
             }
+            RefusalProvenance::Unrouted => Some((StepName::Route, ReasonCode::NoDestination)),
             RefusalProvenance::Unavailable => {
                 Some((StepName::Arrival, ReasonCode::DurabilityUnavailable))
             }
@@ -164,8 +156,31 @@ impl PhysicalRefusal {
             | RefusalProvenance::Data { .. }
             | RefusalProvenance::Upgrade { .. }
             | RefusalProvenance::UpgradeDenied { .. }
-            | RefusalProvenance::Unrouted => None,
+            | RefusalProvenance::Unrouted
+            | RefusalProvenance::Unavailable => None,
         }
+    }
+}
+
+/// The (step, reason) a data or upgrade denial is counted under.
+fn counted_denial(
+    decision: crate::auth::native_data::DataRefused,
+) -> (
+    busbar_contract::caps::StepName,
+    busbar_contract::caps::ReasonCode,
+) {
+    use crate::auth::native_data::DataRefused;
+    use busbar_contract::caps::{ReasonCode, StepName};
+    match decision {
+        DataRefused::Credential => (StepName::Authenticate, ReasonCode::Unauthenticated),
+        DataRefused::Policy => (StepName::Approve, ReasonCode::ScopeDenied),
+        DataRefused::Replay => (StepName::Authenticate, ReasonCode::Replayed),
+        DataRefused::Capacity => (StepName::Arrival, ReasonCode::InFlightCap),
+        DataRefused::Unavailable => (StepName::Arrival, ReasonCode::DurabilityUnavailable),
+        DataRefused::Unsupported
+        | DataRefused::Binding
+        | DataRefused::Cancelled
+        | DataRefused::Unit => (StepName::Decode, ReasonCode::DecodeFailed),
     }
 }
 impl Drop for PhysicalRefusal {
@@ -325,7 +340,11 @@ impl CompletingPhysicalRequest {
         mut self,
         refused: UpgradeRefused,
     ) -> Result<PhysicalRefusal, ArrivalRefusal> {
-        let UpgradeRefused::Denied { preparation, .. } = refused else {
+        let UpgradeRefused::Denied {
+            preparation,
+            reason,
+        } = refused
+        else {
             return Err(ArrivalRefusal::Cancelled);
         };
         if !Arc::ptr_eq(&self.binding, preparation.binding()) {
@@ -337,6 +356,7 @@ impl CompletingPhysicalRequest {
             binding: self.binding.clone(),
             _provenance: RefusalProvenance::UpgradeDenied {
                 _denied: preparation,
+                reason,
             },
         })
     }

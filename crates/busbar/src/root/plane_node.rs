@@ -67,7 +67,6 @@ pub(crate) const REFUSALS_OP_CLASS: &str = "refusals";
 pub(crate) const RESPONSE_OP_CLASS: &str = "response";
 
 struct ResponseIntentOwner {
-    store: Arc<busbar_kernel::persistence::facade::CoreStore>,
     service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
 }
 
@@ -432,7 +431,7 @@ impl Node {
             return Err("response intent owner differs from the admitted node journal");
         }
         self.response_intent
-            .set(ResponseIntentOwner { store, service })
+            .set(ResponseIntentOwner { service })
             .map_err(|_| "response intent owner already installed")
     }
 
@@ -442,31 +441,6 @@ impl Node {
         self.response_intent
             .get()
             .map(|owner| Arc::clone(&owner.service))
-    }
-
-    pub(crate) fn response_intent_stamp(
-        &self,
-        journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
-    ) -> Result<busbar_kernel_audit::response_intent::ResponseIntentStamp, String> {
-        let owner = self
-            .response_intent
-            .get()
-            .ok_or("response intent owner unavailable")?;
-        if !Arc::ptr_eq(journal, owner.service.journal()) || !journal.is_bound_to(&owner.store) {
-            return Err("response intent journal differs from the retained attachment".into());
-        }
-        let authority = owner
-            .store
-            .authority()
-            .map_err(|error| format!("response intent writer: {error:?}"))?;
-        let history = crate::root::kernel::ROOT_CARD.pin();
-        let captured = self.checked_arrived()?;
-        Ok(busbar_kernel_audit::response_intent::ResponseIntentStamp {
-            lease_epoch: authority.writer_epoch,
-            policy_epoch: policy_in_force(history.as_ref(), captured.ms()),
-            wall: captured.secs(),
-            mono: captured.mono(),
-        })
     }
 
     /// THE NODE-QUALIFIED ID of `unit` (ADMIN-API-1.6 §3.4): the one string its sealed record's
@@ -547,15 +521,26 @@ impl Node {
         };
         let (from_ms, to_ms) = self.cores.interval(self.clock.now());
         let mut pulled = self.cores.pull();
-        if let Some(why) = journal.refuses_money() {
+        // Judged without this flusher's own stall report, which must never stop its recovery.
+        if let Some(why) = journal.refuses_staging() {
             self.cores.carry(pulled);
             return Err(why);
         }
         let refusals = std::mem::take(&mut pulled.refusals);
+        // A stage refused after `refuses_staging` passed is the journal's custody failing: the
+        // refused line is lost (said loudly below); every line after it is kept, in order, and
+        // nothing of this pull is settled, so no waiter is released for a line not committed.
         let mut lost = 0usize;
+        let mut unstaged = Vec::new();
         {
-            let mut held = book.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (_core, inputs) in std::mem::take(&mut pulled.lines) {
+            let mut held = book
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (core, inputs) in std::mem::take(&mut pulled.lines) {
+                if lost != 0 {
+                    unstaged.push((core, inputs));
+                    continue;
+                }
                 let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
                 if held
                     .stage_line(inputs, pass, &self.durability_token)
@@ -565,29 +550,37 @@ impl Node {
                 }
             }
             for count in refusals {
-                let Ok(mono) = self.checked_mono() else {
-                    lost += 1;
-                    continue;
-                };
-                let inputs = self.refusal_line(&count, from_ms, to_ms, mono);
-                let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
-                if held
-                    .stage_line(inputs, pass, &self.durability_token)
-                    .is_err()
-                {
-                    lost += 1;
+                let staged = lost == 0
+                    && self.checked_mono().is_ok_and(|mono| {
+                        let inputs = self.refusal_line(&count, from_ms, to_ms, mono);
+                        let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
+                        held.stage_line(inputs, pass, &self.durability_token)
+                            .is_ok()
+                    });
+                if !staged {
+                    pulled.refusals.push(count);
                 }
             }
         }
-        if lost != 0 {
-            busbar_kernel::diag_error!(
-                busbar_kernel::diagnostics::DURABILITY_STALLED,
-                reason = "stage",
-                lines = lost,
-                "audit lines handed over by requests could not be staged and are lost"
-            );
+        let flushed = journal.flush().await;
+        if lost != 0 || !pulled.refusals.is_empty() {
+            if lost != 0 {
+                busbar_kernel::diag_error!(
+                    busbar_kernel::diagnostics::DURABILITY_STALLED,
+                    reason = "stage",
+                    lines = lost,
+                    "the journal refused an audit line; it is lost and nothing of this flush is \
+                     settled"
+                );
+            }
+            let kept = unstaged.len();
+            pulled.lines = unstaged;
+            self.cores.carry(pulled);
+            return Err(format!(
+                "audit staging refused ({lost} lost, {kept} kept for the next flush)"
+            ));
         }
-        match journal.flush().await {
+        match flushed {
             Ok(()) => {
                 for (core, through) in pulled.cores {
                     core.records().settled(through);
@@ -731,6 +724,9 @@ impl Node {
             };
             match self.flush_cores().await {
                 Ok(()) => {
+                    if let Some(journal) = self.lane.get() {
+                        journal.set_flusher_stalled(false);
+                    }
                     if failing {
                         tracing::info!("audit flusher committed again; durable service resumed");
                     }
@@ -741,7 +737,14 @@ impl Node {
                         tracing::warn!(reason = %why, "audit flusher could not commit; retrying each tick");
                     }
                     failing = true;
-                    if !reported && self.cores.stalled(tokio::time::Instant::now()) {
+                    let stalled = self.cores.stalled(tokio::time::Instant::now());
+                    if stalled {
+                        // The one flag the billable open's gate reads (`refuses_money`).
+                        if let Some(journal) = self.lane.get() {
+                            journal.set_flusher_stalled(true);
+                        }
+                    }
+                    if !reported && stalled {
                         busbar_kernel::diag_error!(
                             busbar_kernel::diagnostics::DURABILITY_STALLED,
                             reason = %why,

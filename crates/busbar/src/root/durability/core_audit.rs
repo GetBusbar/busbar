@@ -12,7 +12,7 @@
 //! A core's state is made when its listener loop starts and released when that loop ends.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use busbar_contract::caps::{ReasonCode, StepName};
@@ -96,7 +96,8 @@ impl CoreAudit {
         std::mem::take(&mut *self.refused.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
-    /// Counts held, not yet pulled (tests and the readiness report).
+    /// Counts held, not yet pulled.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn refusals_held(&self) -> Vec<RefusalCount> {
         self.refused
@@ -121,7 +122,8 @@ pub(crate) struct Pulled {
 /// metered request under `advanced.wait_for_commit`), and the age of its last good flush.
 pub(crate) struct CoreFlusher {
     wake: Arc<Notify>,
-    cores: Mutex<Vec<Weak<CoreAudit>>>,
+    /// Every core's state; a core is released by the first pull after its loop let it go.
+    cores: Mutex<Vec<Arc<CoreAudit>>>,
     /// Pulled but not yet committed, carried to the next pull.
     carry: Mutex<Pulled>,
     epoch: Instant,
@@ -154,9 +156,10 @@ impl CoreFlusher {
     /// A new core's state, pulled by this flusher while the core's listener loop holds it.
     pub(crate) fn core(&self) -> Arc<CoreAudit> {
         let core = Arc::new(CoreAudit::new(Arc::clone(&self.wake)));
-        let mut cores = self.cores.lock().unwrap_or_else(PoisonError::into_inner);
-        cores.retain(|held| held.strong_count() > 0);
-        cores.push(Arc::downgrade(&core));
+        self.cores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arc::clone(&core));
         core
     }
 
@@ -165,16 +168,20 @@ impl CoreFlusher {
         &self.wake
     }
 
-    /// Take everything held: the carry from a flush that did not commit, then every live core.
+    /// Take everything held: the carry from a flush that did not commit, then every core. A core
+    /// whose listener loop and connections have all let go is drained one last time and released
+    /// here, so nothing it was handed is lost when its loop ends before the flush.
     pub(crate) fn pull(&self) -> Pulled {
-        let mut pulled = std::mem::take(&mut *self.carry.lock().unwrap_or_else(PoisonError::into_inner));
-        let cores: Vec<Arc<CoreAudit>> = {
-            let mut held = self.cores.lock().unwrap_or_else(PoisonError::into_inner);
-            held.retain(|core| core.strong_count() > 0);
-            held.iter().filter_map(Weak::upgrade).collect()
-        };
+        let mut pulled =
+            std::mem::take(&mut *self.carry.lock().unwrap_or_else(PoisonError::into_inner));
+        let cores = std::mem::take(&mut *self.cores.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut kept = Vec::with_capacity(cores.len());
         for core in cores {
             let drained = core.records.drain();
+            // Only this pull holds a released core: nothing can append to it after this drain.
+            if Arc::strong_count(&core) > 1 {
+                kept.push(Arc::clone(&core));
+            }
             for count in core.drain_refusals() {
                 match pulled.refusals.iter_mut().find(|seen| {
                     seen.step == count.step
@@ -197,6 +204,10 @@ impl CoreFlusher {
             );
             pulled.cores.push((core, drained.through));
         }
+        self.cores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(kept);
         // One merged order for the node: its monotonic readings; a stable sort keeps each core's
         // own order and the cores' pull order on a tie.
         pulled.lines.sort_by_key(|(_, inputs)| inputs.mono);

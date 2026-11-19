@@ -81,7 +81,10 @@ async fn an_admin_record_stamps_the_node_monotonic_reading_not_its_unit_key() {
         .iter()
         .find(|record| record.what.unit_key.get() == unit)
         .expect("the admin unit sealed its record");
-    assert_ne!(record.mono, unit, "the record's monotonic stamp is its unit key");
+    assert_ne!(
+        record.mono, unit,
+        "the record's monotonic stamp is its unit key"
+    );
     assert!(
         before < record.mono && record.mono < after,
         "the record's mono {} is not the node's reading between {before} and {after}",

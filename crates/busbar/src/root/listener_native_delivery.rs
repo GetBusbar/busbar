@@ -58,7 +58,8 @@ impl ResponseAuthority {
                 },
                 None => ResponseRecord::Nothing,
             },
-            (Self::Data(_), Some(admission)) if busbar_kernel::limits::wait_for_commit() => {
+            // The flag is a field of the generation this request was admitted under.
+            (Self::Data(owner), Some(admission)) if owner.binding().app().wait_for_commit() => {
                 ResponseRecord::Committed(Box::new(
                     node.response_line(admission)
                         .map_err(|_| InputError::Capacity)?,
@@ -210,7 +211,6 @@ impl RegisteredResponse {
         self,
         response: axum::response::Response,
         feeds: &mpsc::Sender<Feed>,
-        node: &Node,
     ) -> CompletedResponse {
         let Self {
             delivery,

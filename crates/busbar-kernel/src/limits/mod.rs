@@ -50,13 +50,6 @@ pub fn usage_flush_interval_ms() -> u64 {
         .unwrap_or(DEFAULT_USAGE_FLUSH_INTERVAL_MS)
 }
 
-/// `advanced.wait_for_commit` as live: whether a request that writes a record answers only after
-/// the group commit that holds it. Off when no configuration is installed.
-#[must_use]
-pub fn wait_for_commit() -> bool {
-    get().is_some_and(|l| l.wait_for_commit)
-}
-
 pub(crate) fn default_policy_timeout_ms() -> u64 {
     get()
         .map(|l| l.default_policy_timeout_ms)

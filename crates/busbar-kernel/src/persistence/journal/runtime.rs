@@ -10,7 +10,7 @@ use super::base::Pins;
 use super::*;
 use busbar_kernel_wal::{Entry, RecordClass};
 use std::collections::VecDeque;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 #[path = "conditional.rs"]
@@ -216,6 +216,9 @@ pub struct RuntimeJournal {
     cut_taken: AtomicBool,
     /// Lookups of a live original that fell below the replay base; a pin invariant violation.
     locate_truncated: std::sync::atomic::AtomicU64,
+    /// The root's audit flusher has not committed for longer than its stall limit (design 2, A8):
+    /// set and cleared only by that flusher; read by [`RuntimeJournal::refuses_money`].
+    flusher_stalled: AtomicBool,
     /// Test probe: acquisitions of the publication driver, the journal lane (SHUTDOWN-HANG 8.3).
     #[cfg(test)]
     lane_holds: std::sync::atomic::AtomicU64,
@@ -297,9 +300,17 @@ impl RuntimeJournal {
             pins: ephemeral.then(|| Arc::new(Pins::default())),
             cut_taken: AtomicBool::new(false),
             locate_truncated: std::sync::atomic::AtomicU64::new(0),
+            flusher_stalled: AtomicBool::new(false),
             #[cfg(test)]
             lane_holds: std::sync::atomic::AtomicU64::new(0),
         }))
+    }
+
+    /// The root's audit flusher reports whether its last good commit is older than its stall
+    /// limit (design 2, A8). While set, [`RuntimeJournal::refuses_money`] refuses: a billable open
+    /// is answered with the "cannot record" refusal instead of growing what cannot be committed.
+    pub fn set_flusher_stalled(&self, stalled: bool) {
+        self.flusher_stalled.store(stalled, Ordering::Release);
     }
 
     /// Mirror `completed` and `failed` to confirm waiters. Called with `state`
@@ -399,6 +410,18 @@ impl RuntimeJournal {
 
     pub fn refuses_money(&self) -> Option<String> {
         // One relaxed load: the store's slot queue is full (STORE_INFLIGHT_EXHAUSTED).
+        if self.store.exhausted() {
+            return Some("store in-flight queue exhausted".into());
+        }
+        if self.flusher_stalled.load(Ordering::Acquire) {
+            return Some("audit records have not been committed within the stall limit".into());
+        }
+        self.refuses_staging()
+    }
+
+    /// Whether this journal refuses to stage now, judged without the flusher's own stall report:
+    /// the flusher asks this before it stages, so its report never stops its own recovery.
+    pub fn refuses_staging(&self) -> Option<String> {
         if self.store.exhausted() {
             return Some("store in-flight queue exhausted".into());
         }

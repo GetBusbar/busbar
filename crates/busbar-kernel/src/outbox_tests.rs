@@ -41,11 +41,17 @@ async fn only_an_asked_append_wakes_the_flusher_and_waits_for_its_commit() {
         async move { outbox.committed(change).await }
     });
     tokio::task::yield_now().await;
-    assert!(!waiting.is_finished(), "nothing is committed before the pull");
+    assert!(
+        !waiting.is_finished(),
+        "nothing is committed before the pull"
+    );
     let drained = outbox.drain();
     outbox.settled(drained.through - 1);
     tokio::task::yield_now().await;
-    assert!(!waiting.is_finished(), "a commit below its ticket does not release it");
+    assert!(
+        !waiting.is_finished(),
+        "a commit below its ticket does not release it"
+    );
     outbox.settled(drained.through);
     tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
         .await

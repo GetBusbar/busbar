@@ -527,6 +527,18 @@ fn snapshot_fields(
 }
 
 impl App {
+    /// `advanced.wait_for_commit` as this generation went live with it: a field of the generation
+    /// the request was admitted under (no lock, no lookup, no clone), so a request never sees it
+    /// change mid-flight; a new value arrives with the next generation. Off for a generation with
+    /// no resolved limits.
+    #[must_use]
+    #[inline]
+    pub fn wait_for_commit(&self) -> bool {
+        self.limits
+            .as_ref()
+            .is_some_and(|limits| limits.wait_for_commit)
+    }
+
     /// Actual predecessor captured by appbuild; never an earlier App or policy history.
     pub fn selected_predecessor(
         &self,
@@ -1436,3 +1448,7 @@ mod state_tests;
 #[cfg(test)]
 #[path = "tests/app_parts_tests.rs"]
 mod app_parts_tests;
+
+#[cfg(test)]
+#[path = "tests/wait_for_commit_flag.rs"]
+mod wait_for_commit_flag;

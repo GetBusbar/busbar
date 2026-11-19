@@ -57,6 +57,10 @@
           "optional": true,
           "type": "u64"
         },
+        "wait_for_commit": {
+          "optional": true,
+          "type": "bool"
+        },
         "worker_threads": {
           "optional": true,
           "type": "usize"

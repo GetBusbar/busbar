@@ -247,13 +247,13 @@ pub struct AdvancedCfg {
     /// graceful shutdown flushes fully. Default 100.
     #[serde(default = "default_usage_flush_interval_ms")]
     pub usage_flush_interval_ms: u64,
-    /// Answer only after the request's records are committed (`advanced.wait_for_commit`). Off by
-    /// default: a request's audit record, ledger and usage entries are committed in groups every
-    /// `usage_flush_interval_ms` after it is answered, so an ungraceful crash can lose the records
-    /// of requests answered in the last unflushed interval. On: a request that writes a record
-    /// releases its last byte only after the group commit that holds it (one store commit of
-    /// latency, shared with every request in that group). Administrative changes wait either way.
-    /// A configuration without the key behaves as `false`.
+    /// Release a metered response only after its audit line is committed
+    /// (`advanced.wait_for_commit`). Off by default: the line goes to the request's core outbox
+    /// and is committed with every core's lines by the flusher every `usage_flush_interval_ms`, so
+    /// an ungraceful crash can lose the lines of the last unflushed interval. On: the response's
+    /// last byte waits for the group commit that holds its line. Money is recorded the same way in
+    /// both modes. Administrative changes wait either way. Read from the generation a request was
+    /// admitted under. A configuration without the key behaves as `false`.
     #[serde(default)]
     pub wait_for_commit: bool,
     /// Tokio worker-thread count (`advanced.worker_threads`, migrated from `BUSBAR_WORKER_THREADS`).

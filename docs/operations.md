@@ -400,6 +400,32 @@ import resumes: a probe that fires during it sends SIGTERM, the owner hands over
 the next process resumes from the records left, so during the import a short budget slows the
 upgrade and loses nothing.
 
+## Audit flusher stall
+
+Each request hands its audit line to its own core's outbox. One flusher commits every core's
+lines to the store as a group, every `advanced.usage_flush_interval_ms` (see
+[configuration.md](configuration.md#advancedwait_for_commit)).
+
+**What you see when it cannot commit** (store unreachable, disk full, the journal's custody failed):
+
+- At the first failed flush, one warning: `audit flusher could not commit; retrying each tick`,
+  with the reason.
+- Once the last good commit is older than 2 seconds: one error `BUSBAR-2060`
+  (`durability-stalled`), "records have not been committed for longer than the stall limit".
+  From then on, new billable requests are refused with the "durability unavailable" refusal (HTTP
+  503) and are not run. Health checks still answer. Requests already admitted finish. Lines
+  already handed over stay in memory and are retried on every tick. None are dropped.
+- If the journal refuses to stage a line after accepting staging (its custody failed), that line is
+  lost and `BUSBAR-2060` says so, with `reason=stage` and the count. Nothing from that flush is
+  reported as committed.
+
+**How to recover:** fix the store (free disk space, restore its reachability). No restart is
+needed. At the next good commit the flusher logs `audit flusher committed again; durable service
+resumed`, the refusal stops, and the lines it held are committed in their original order. If the
+journal's custody itself failed (a `native journal custody failed` reason), restart the engine.
+The restart writes its signed after-restart notice, which marks the interval in which records
+can be missing.
+
 ## Metrics to watch
 
 All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: the data-listener `/metrics` is mounted only when a metrics export instance (an `export:` entry of the Prometheus-exposition kind) is configured. The in-process registry itself is governed by `telemetry.enabled` (default `true`) whatever `export:` holds, and the admin listener always serves its own `GET /metrics` and `GET /metrics/hooks` (admin credential; Prometheus text, OpenMetrics or JSON by `Accept`; `503 telemetry_disabled` when `telemetry.enabled` is `false`). Observations are retained for `telemetry.retention_seconds` (default 300); an export instance's `settings.buffer_seconds` (required for that instance) can only raise that retention. Quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.

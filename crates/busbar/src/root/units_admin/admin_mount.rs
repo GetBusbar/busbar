@@ -36,7 +36,11 @@ impl RetainedAnswer {
                 carrier,
             } => {
                 match record
-                    .and_then(|record| pending.refuse_admin(record).ok())
+                    .and_then(|record| {
+                        pending
+                            .refuse_admin(record.what.unit_key, record.outcome.unit_end)
+                            .ok()
+                    })
                     .and_then(|physical| carrier.retain_refusal(physical).ok())
                 {
                     Some(carrier) => Self::Refused { answer, carrier },

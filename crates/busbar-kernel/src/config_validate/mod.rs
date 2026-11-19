@@ -1291,6 +1291,7 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
+        wait_for_commit: _,
     } = limits;
     let secs = [
         (

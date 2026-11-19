@@ -69,8 +69,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) enum FinalIntentError {
     Integrity,
     Capacity,
-    /// Durability is unavailable: the response's record could not be committed.
-    Journal,
     Cancelled,
     Deadline,
 }
@@ -91,7 +89,6 @@ impl std::fmt::Display for FinalIntentError {
         f.write_str(match self {
             Self::Integrity => "response identity or publication differs",
             Self::Capacity => "response admission capacity exhausted",
-            Self::Journal => "response record durability unavailable",
             Self::Cancelled => "response cancelled",
             Self::Deadline => "response deadline expired",
         })
@@ -169,11 +166,6 @@ pub(crate) struct ResponseConnection {
 }
 
 impl ResponseConnection {
-    /// The audit state of the core this connection runs on.
-    pub(crate) fn core(&self) -> &Arc<CoreAudit> {
-        &self.core
-    }
-
     /// Bind a fresh host stream to its original actual unit, or explicitly admitted no-unit case.
     pub(crate) fn key(
         &self,
@@ -473,7 +465,9 @@ impl ResponseFinalizer {
                     .count_refusal(&listener, step, reason, status);
             }
             Some(ResponseRecord::Committed(mut line)) => {
-                if let ResponseDisposition::End { status: Some(status) }
+                if let ResponseDisposition::End {
+                    status: Some(status),
+                }
                 | ResponseDisposition::Refuse { status, .. } = intent.disposition
                 {
                     line.unit.status = status;

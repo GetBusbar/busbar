@@ -1317,6 +1317,9 @@ async fn run(
                 .unwrap_or_else(|| die("response intent service was not constructed")),
         )
         .unwrap_or_else(|error| die(error));
+    // The one flusher of every core's audit state (design 2, A3): it starts with the bound journal
+    // and before any listener loop makes a core.
+    tokio::spawn(root::plane_node::node().run_core_flusher());
     let book = Some(book);
     // The same durably confirmed generation becomes live before any producer starts.
     boot_limits.keep().notify();

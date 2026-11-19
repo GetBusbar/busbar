@@ -123,8 +123,6 @@ pub(crate) struct Live;
 pub(crate) struct Seal;
 /// The unit checkpoint adapter's handle: checkpoint batches.
 pub(crate) struct Checkpoint;
-/// The sole fixed-domain response intent submitter, approved by owner decision !578.
-pub(crate) struct ResponseIntent;
 
 /// THE ONLY WAY TO A SIGNER THREAD. One per submitter, not `Clone`, minted only by [`spawn`].
 pub(crate) struct SignerHandle<K> {
@@ -141,10 +139,6 @@ enum Inner {
         tx: SyncSender<Job>,
     },
     Checkpoint(CheckpointSubmit),
-    ResponseIntent {
-        submit: CheckpointSubmit,
-        key_id: String,
-    },
 }
 
 struct CheckpointSubmit {
@@ -163,7 +157,6 @@ impl<K> std::fmt::Debug for SignerHandle<K> {
             Inner::Live { .. } => "SignerHandle<Live>",
             Inner::Boot { .. } => "SignerHandle<Seal>",
             Inner::Checkpoint(_) => "SignerHandle<Checkpoint>",
-            Inner::ResponseIntent { .. } => "SignerHandle<ResponseIntent>",
         })
     }
 }
@@ -316,34 +309,6 @@ impl SignerHandle<Checkpoint> {
     }
 }
 
-impl SignerHandle<ResponseIntent> {
-    /// The actual Bootstrap deployment key captured before the signer enters its thread.
-    pub(crate) fn key_id(&self) -> Result<&str, SignFailure> {
-        match &self.inner {
-            Inner::ResponseIntent { key_id, .. } => Ok(key_id),
-            _ => Err(SignFailure::Gone),
-        }
-    }
-
-    /// Sign only the validated fixed response domain under this handle's captured deployment key.
-    pub(crate) async fn sign_response_intent(
-        &self,
-        prepared: &busbar_kernel_audit::response_intent::PreparedResponseIntent,
-    ) -> Result<Vec<u8>, SignFailure> {
-        let Inner::ResponseIntent { submit, key_id } = &self.inner else {
-            return Err(SignFailure::Gone);
-        };
-        if prepared.key_id() != key_id {
-            return Err(SignFailure::Invalid);
-        }
-        let mut signatures = submit.sign(&[prepared.signing_body()]).await?;
-        if signatures.len() != 1 {
-            return Err(SignFailure::Invalid);
-        }
-        signatures.pop().ok_or(SignFailure::Invalid)
-    }
-}
-
 impl CheckpointSubmit {
     fn now_ms(epoch: Instant) -> u64 {
         u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX - 1)
@@ -434,8 +399,6 @@ pub(crate) struct Signers {
     pub(crate) sealer: SignerHandle<Seal>,
     /// The unit checkpoint adapter's.
     pub(crate) checkpoint: SignerHandle<Checkpoint>,
-    /// The single fixed-domain response intent service's.
-    pub(crate) response_intent: SignerHandle<ResponseIntent>,
     /// The threads, for the panic check.
     pub(crate) threads: SignerThreads,
 }
@@ -502,7 +465,7 @@ fn handle<K>(inner: Inner) -> SignerHandle<K> {
     }
 }
 
-/// START THE TWO SIGNER THREADS and mint the five typed handles. `clock` is the slot SHUTDOWN-HANG's drain
+/// START THE TWO SIGNER THREADS and mint the four typed handles. `clock` is the slot SHUTDOWN-HANG's drain
 /// clock is attached to once serving starts (the checkpoint handle's armed check); empty, the
 /// checkpoint handle applies only its hold-off.
 pub(crate) fn spawn(
@@ -510,7 +473,6 @@ pub(crate) fn spawn(
     bootstrap: BootstrapSigner,
     clock: Arc<std::sync::OnceLock<Arc<DrainClock>>>,
 ) -> std::io::Result<Signers> {
-    let response_key_id = bootstrap.key_id().to_owned();
     let busy = Arc::new(AtomicBool::new(false));
     let (live_tx, live_rx) = sync_channel::<LiveJob>(1);
     let (boot_tx, boot_rx) = sync_channel::<Job>(BOOTSTRAP_QUEUE);
@@ -532,20 +494,11 @@ pub(crate) fn spawn(
             tx: boot_tx.clone(),
         }),
         checkpoint: handle::<Checkpoint>(Inner::Checkpoint(CheckpointSubmit {
-            tx: boot_tx.clone(),
+            tx: boot_tx,
             fail_until_ms: AtomicU64::new(0),
             epoch: Instant::now(),
-            clock: Arc::clone(&clock),
+            clock,
         })),
-        response_intent: handle::<ResponseIntent>(Inner::ResponseIntent {
-            submit: CheckpointSubmit {
-                tx: boot_tx,
-                fail_until_ms: AtomicU64::new(0),
-                epoch: Instant::now(),
-                clock,
-            },
-            key_id: response_key_id,
-        }),
         threads: SignerThreads { live, bootstrap },
     })
 }
