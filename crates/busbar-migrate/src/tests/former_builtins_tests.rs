@@ -26,7 +26,11 @@ fn former_builtin_setup_is_carried_and_names_each_plugin_to_install() {
         ("traces", "otlp", "busbar-export-otlp"),
         ("req-log", "request-log-webhook", "busbar-export-webhook"),
         ("req-file", "request-log-file", "busbar-export-file"),
-        ("twilio", "webhook-signature", "busbar-auth-webhook-signature"),
+        (
+            "twilio",
+            "webhook-signature",
+            "busbar-auth-webhook-signature",
+        ),
     ] {
         assert!(
             written.contains(&format!("module: {module}")),
@@ -55,7 +59,12 @@ fn former_builtin_report_never_carries_a_setting_value() {
     let facts = facts();
     let planned = plan(&Inputs::new(&path, &facts, &accept)).unwrap();
     let report = planned.report().join("\n");
-    for value in ["TWILIO_AUTH_TOKEN", "REQ_LOG_URL", "otel.example.com", "edge.example.com"] {
+    for value in [
+        "TWILIO_AUTH_TOKEN",
+        "REQ_LOG_URL",
+        "otel.example.com",
+        "edge.example.com",
+    ] {
         assert!(!report.contains(value), "{value} leaked into the report");
     }
 }

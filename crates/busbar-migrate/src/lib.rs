@@ -31,6 +31,7 @@ mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
 mod files;
+mod former_builtins;
 mod legacy_credentials;
 pub use legacy_credentials::{Mark, MIGRATED};
 mod legacy_markers;
