@@ -162,7 +162,7 @@ hooks-ranking = "hooks"
 secret-env = "secret-doors"
 secret-file = "secret-doors"
 transport-tcp = "transport transport-door"
-transport-http = "transport transport-door"
+transport-http = "min3-images"
 transport-ws = "transport transport-door"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
@@ -223,9 +223,8 @@ auth-oauth = "busbar-auth-oauth"
 [package.metadata.busbar.operator-auth]
 row = "auth-admin-tokens"
 
-# THE OUTBOUND CARRIERS: dist/default states no `[package.metadata.busbar.carriers]` table yet (no
-# transport row is a MIN-3 image), so neither does this copy. The subject here is core with packages,
-# where the build assigns nothing; a dropped-in transport's assignment is a later step.
+# THE OUTBOUND CARRIERS: dist/default assigns `http = "transport-http"`; this copy states no table. The subject
+# here is core with packages, where the build assigns nothing; a dropped-in transport's assignment is a later step.
 
 [package.metadata.busbar.driver-proofs]
 plane-llm-door = "busbar-plane-llm"
