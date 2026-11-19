@@ -1008,7 +1008,7 @@
           },
           "config_generation": {
             "default": null,
-            "description": "The config generation after the change, as a decimal string: on every applied row of a\nconfig-changing request, null otherwise.",
+            "description": "The durable config generation after the change (the `config_generation` `GET /info` and\nthe config ETag report, never the per-process `config_version`), as a decimal string: on\nevery applied row of a config-changing request, null otherwise.",
             "type": [
               "string",
               "null"
