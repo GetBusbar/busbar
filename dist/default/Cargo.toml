@@ -864,6 +864,12 @@ busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 
+# The same SDK, named without the `.git` suffix (plane-llm and transport-webrtc at their line/all heads):
+# cargo keys a patch by the URL spelling, so this spelling resolves to the same core tree too.
+[patch.'https://github.com/GetBusbar/busbar']
+busbar-contract = { path = "../../crates/busbar-contract" }
+busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
+
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]
 # Adopted funded TLS output/ticket storage and actual wire provenance.
