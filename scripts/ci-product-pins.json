@@ -384,7 +384,7 @@
   "c_witness": {
     "repo": "busbar-secret-c",
     "url": "https://github.com/GetBusbar/busbar-secret-c",
-    "commit": "7ed407c89217a479be04fa0e272e059210463a16",
+    "commit": "807614591ed6eec01e58adc909de1f9d2938cfbb",
     "sdk": "de53a7b85b706ff189c5ced07ee224d7924d12fa",
     "kind": "secret",
     "language": "c",
