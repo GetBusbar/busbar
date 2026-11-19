@@ -331,6 +331,52 @@
         ],
         "type": "object"
       },
+      "AgentApproveReq": {
+        "description": "`POST /agents/{name}/approve`: the card fingerprint the operator reviewed.",
+        "properties": {
+          "fingerprint": {
+            "description": "The fingerprint `POST /agents/{name}/connect` reported: 64 lowercase hex digits.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint"
+        ],
+        "type": "object"
+      },
+      "AgentApproveView": {
+        "description": "`POST /agents/{name}/approve`'s answer: the agent's card, approved.",
+        "properties": {
+          "agent": {
+            "description": "The agent, as its registration names it.",
+            "type": "string"
+          },
+          "fingerprint": {
+            "description": "The fingerprint the card is approved at.",
+            "type": "string"
+          },
+          "key": {
+            "description": "The card's trust key, `<instance>/<agent>/card`, as `GET /trust` lists it.",
+            "type": "string"
+          },
+          "state": {
+            "description": "`approved`.",
+            "enum": [
+              "approved"
+            ],
+            "type": "string",
+            "x-busbar-extensible-enum": true
+          }
+        },
+        "required": [
+          "agent",
+          "key",
+          "fingerprint",
+          "state"
+        ],
+        "type": "object"
+      },
       "AmendRateHistoryReq": {
         "description": "`POST /ledger/amend-rate-history`: a back-dated correction to the dated rate-card\nhistory. It out-ranks the entry it corrects and rewrites nothing.",
         "properties": {
@@ -12863,6 +12909,515 @@
         "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must still pass under the NEW chain, else 409). Live until the next reload/restart",
         "x-busbar-required-scope": "full",
         "x-busbar-verb": "put_admin_auth"
+      }
+    },
+    "/api/v1/admin/agents/{name}/approve": {
+      "post": {
+        "description": "The operator's second act on an agent: `POST /agents/{name}/connect` fetches the card, records the sighting and reports its fingerprint, and approves nothing; this approves the agent's card trust key `<instance>/<agent>/card` at that fingerprint, the same decision `POST /trust/approve` makes. The fingerprint must equal the card's current sighting: a card that changed since `connect` is 409 `reviewed_digest_stale`, and nothing changes. A card never sighted is 404 `unknown_resource`; an agent name two plane instances register is 409 `state_conflict` (approve its key through `POST /trust/approve`). The decision is kept durably before the answer; every attempt is audited once, as `trust_approve` naming the key when the trust book decided, else as `agent_approve`. `Idempotency-Key` makes the request replayable exactly as on `POST /trust/approve`, and `x-busbar-trust-effect` classifies every answer: `applied`, `not_applied` or `unknown`.",
+        "operationId": "PostAgentsNameApprove",
+        "parameters": [
+          {
+            "description": "The agent, as its registration names it",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional. 1..128 of `A-Z a-z 0-9 . _ : -`; any other value is 400 `invalid_request`. Scoped to the authenticated principal and kept durably with the decision (echoed as its `operation`): the same key and request bytes answer the original outcome with `idempotent-replayed: true` and never decide again; other bytes are 409 `idempotency_mismatch`, a request still running 409 `idempotency_in_flight`. After a 503 whose outcome is unknown, replay the same key and bytes to resolve it; never retry under a new key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentApproveReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentApproveView"
+                }
+              }
+            },
+            "description": "The agent's card, approved",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              },
+              "x-busbar-trust-effect": {
+                "description": "Host-created classification of this answer's effect: `applied`, `not_applied` (nothing changed) or `unknown` (the decision may still land; replay the same Idempotency-Key). Never derived from a request header.",
+                "schema": {
+                  "enum": [
+                    "applied",
+                    "not_applied",
+                    "unknown"
+                  ],
+                  "x-busbar-extensible-enum": true
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body / unknown field, invalid config; nothing changed, a plugin refused the request in its own words (its text and condition are in `details`)",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              },
+              "x-busbar-trust-effect": {
+                "description": "Host-created classification of this answer's effect: `applied`, `not_applied` (nothing changed) or `unknown` (the decision may still land; replay the same Idempotency-Key). Never derived from a request header.",
+                "schema": {
+                  "enum": [
+                    "applied",
+                    "not_applied",
+                    "unknown"
+                  ],
+                  "x-busbar-extensible-enum": true
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: unknown resource",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              },
+              "x-busbar-trust-effect": {
+                "description": "Host-created classification of this answer's effect: `applied`, `not_applied` (nothing changed) or `unknown` (the decision may still land; replay the same Idempotency-Key). Never derived from a request header.",
+                "schema": {
+                  "enum": [
+                    "applied",
+                    "not_applied",
+                    "unknown"
+                  ],
+                  "x-busbar-extensible-enum": true
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: `reviewed_digest_stale` (the card changed since `connect`), `decision_in_progress`, `action_in_flight`, `state_conflict` (two plane instances register the name, the card has no authenticity root, or its last sighting failed verification), `outcome_not_applied`, `idempotency_mismatch` or `idempotency_in_flight`",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              },
+              "x-busbar-trust-effect": {
+                "description": "Host-created classification of this answer's effect: `applied`, `not_applied` (nothing changed) or `unknown` (the decision may still land; replay the same Idempotency-Key). Never derived from a request header.",
+                "schema": {
+                  "enum": [
+                    "applied",
+                    "not_applied",
+                    "unknown"
+                  ],
+                  "x-busbar-extensible-enum": true
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Admin request exceeds the listener body limit (request_too_large)",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Per-principal administrative budget exhausted (rate_limited)",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: `service_unavailable`: native trust custody is not installed or cannot keep decisions, the store did not apply the decision, or its outcome is unknown (replay the same Idempotency-Key to resolve it). The body is the admin error envelope with code `unavailable`",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              },
+              "x-busbar-trust-effect": {
+                "description": "Host-created classification of this answer's effect: `applied`, `not_applied` (nothing changed) or `unknown` (the decision may still land; replay the same Idempotency-Key). Never derived from a request header.",
+                "schema": {
+                  "enum": [
+                    "applied",
+                    "not_applied",
+                    "unknown"
+                  ],
+                  "x-busbar-extensible-enum": true
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Other typed administrative refusal. Branch on known codes while preserving unknown strings; retry depends on operation semantics.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Approve a registered A2A agent's card at the fingerprint `connect` reported",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0",
+        "x-busbar-verb": "agent_approve"
       }
     },
     "/api/v1/admin/audit": {
@@ -43964,6 +44519,11 @@
       },
       {
         "bound": true,
+        "name": "agent_approve",
+        "scope": "full"
+      },
+      {
+        "bound": true,
         "name": "get_ledger_totals",
         "scope": "read-only"
       },
@@ -47428,6 +47988,7 @@
                       "get_trust",
                       "trust_approve",
                       "trust_revoke",
+                      "agent_approve",
                       "get_ledger_totals",
                       "get_ledger_checkpoints",
                       "get_ledger_reconciliation",
