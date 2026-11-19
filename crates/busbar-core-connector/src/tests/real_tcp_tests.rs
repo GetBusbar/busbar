@@ -45,61 +45,6 @@ fn runtime() -> &'static tokio::runtime::Handle {
     })
 }
 
-fn dispatcher() -> &'static Arc<Dispatcher> {
-    static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
-    DISPATCHER.get_or_init(|| {
-        let dispatcher = Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        );
-        dispatcher.install_runtime(runtime().clone());
-        dispatcher.install_io(crate::hostio::process());
-        Arc::new(dispatcher)
-    })
-}
-
-fn actual_transport(name: &str, row: &LinkedRow) -> Entry {
-    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
-    let dispatcher = dispatcher();
-    let instance = format!("{name}-{}", NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed)).into();
-    let plugin = load_linked::<Transport>(
-        row,
-        Bind {
-            accept: Default::default(),
-            instance,
-            max_inflight_cap: 1024,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
-        },
-    )
-    .expect("the actual transport image loads");
-    let door = Dispatched::open_on(
-        plugin,
-        &TransportSettings::default(),
-        Arc::clone(dispatcher),
-    )
-    .expect("the actual transport opens");
-    Entry {
-        door: Arc::new(door),
-        alpn: Arc::default(),
-    }
-}
-
-fn connector(anchors: &[Vec<u8>], judge: Arc<dyn DialJudge>, http: bool) -> Connector {
-    let mut entries = vec![actual_transport("tcp", &tcp_carrier_double::row())];
-    if http {
-        entries.push(actual_transport("http", &http_framer_double::row()));
-    }
-    let transports = Transports::new(entries).expect("the actual transport claims compose");
-    let trust = EgressTrust {
-        extra_anchors: anchors.to_vec(),
-        ..EgressTrust::default()
-    };
-    let tls = crate::tls::client::build_client_config(&trust).expect("host TLS configuration");
-    Connector::serving(transports, judge, Some(Arc::new(tls)), Arc::new(|_, _| {}))
-}
-
 fn loopback(target: &str, _: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
     Some(
         target

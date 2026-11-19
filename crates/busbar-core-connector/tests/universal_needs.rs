@@ -61,67 +61,6 @@ fn open_door(
     open_stated(path).map(|(door, _)| door)
 }
 
-/// [`open_door`], with what the door states (its claims' sessions and upgrades among it).
-fn open_stated(
-    path: &std::path::Path,
-) -> Option<(
-    std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>,
-    busbar_plugin_loader::dispatch::kinds::transport::TransportFacts,
-)> {
-    use busbar_plugin_loader::dispatch::kinds::transport::Transport;
-    use busbar_plugin_loader::dispatch::{load_dropped, rendering_of_library};
-
-    let rendering = rendering_of_library(path).ok()??;
-    let plugin = load_dropped::<Transport>(path, &rendering, bind()).ok()?;
-    opened(plugin)
-}
-
-/// The one dispatcher every door here is admitted and opened through.
-fn the_dispatcher() -> &'static std::sync::Arc<busbar_plugin_loader::dispatch::Dispatcher> {
-    use busbar_plugin_loader::dispatch::{DispatchConfig, Dispatcher};
-    static ONE: OnceLock<std::sync::Arc<Dispatcher>> = OnceLock::new();
-    ONE.get_or_init(|| {
-        std::sync::Arc::new(Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_contract::services::test_caller_binding(),
-        ))
-    })
-}
-
-/// The binding a door here is loaded under.
-fn bind() -> busbar_plugin_loader::dispatch::Bind {
-    busbar_plugin_loader::dispatch::Bind {
-        accept: Default::default(),
-        instance: std::sync::Arc::from("the-instance"),
-        max_inflight_cap: 64,
-        sink: std::sync::Arc::new(busbar_plugin_loader::dispatch::NoSink),
-        dispatcher: the_dispatcher().adopter(),
-
-        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
-    }
-}
-
-/// A loaded transport opened as a dispatched door, with what it states.
-fn opened(
-    plugin: busbar_plugin_loader::dispatch::Plugin<
-        busbar_plugin_loader::dispatch::kinds::transport::Transport,
-    >,
-) -> Option<(
-    std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>,
-    busbar_plugin_loader::dispatch::kinds::transport::TransportFacts,
-)> {
-    use busbar_plugin_loader::dispatch::kinds::transport::TransportFacts;
-    let on = the_dispatcher();
-    let stated = plugin.context::<TransportFacts>().cloned()?;
-    let door = busbar_core_connector::doors::Dispatched::open_on(
-        plugin,
-        &busbar_contract::transport::TransportSettings::default(),
-        std::sync::Arc::clone(on),
-    )
-    .expect("the dropped transport opens");
-    Some((std::sync::Arc::new(door), stated))
-}
-
 /// THE CONNECTOR DRIVES THE DROPPED-IN HTTP DOOR AGAINST A REAL SERVER: the connector dials the
 #[test]
 fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
@@ -622,21 +561,6 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
             .any(|part| part == SEALED_FIELDS_FIELD.as_bytes()));
         connection.close();
     });
-}
-
-/// THE REQUEST/RESPONSE FRAMER the head tests drive: of the libraries beside this test binary, the
-fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
-    use busbar_contract::transport::codes::ROLE_FRAMER;
-    use busbar_plugin_loader::dispatch::kinds::transport::Transport;
-    let plugin = busbar_plugin_loader::dispatch::load_linked::<Transport>(
-        &http_framer_double::row(),
-        bind(),
-    )
-    .expect("the in-tree HTTP framer double loads through the linked path");
-    let (door, stated) = opened(plugin).expect("the in-tree HTTP framer double opens");
-    assert_eq!(door.facts().role, ROLE_FRAMER);
-    assert!(!stated.sessions.contains(&door.facts().claims[0]));
-    door
 }
 
 /// A response template with its version written as the door's own scheme, upper-cased (`{V}`), so

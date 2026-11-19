@@ -15,36 +15,6 @@ struct LoanHost {
 }
 
 impl AuthHandleHost for LoanHost {
-    fn unit_secret(&self, _: u64, _: u64) -> Option<UnitSecret> {
-        None
-    }
-    fn auth_call(&self, _: AuthCallAsk, _: AuthDone) -> AuthRan {
-        panic!("unexpected auth")
-    }
-    fn hand_in(&self, _: HandInAsk) -> Result<(u32, UnitRef), &'static str> {
-        Err("unexpected hand-in")
-    }
-    fn refuse(&self, _: RefuseAsk) -> Result<RefusalBytes, &'static str> {
-        Err("unexpected refusal")
-    }
-    fn stream_open(
-        &self,
-        _: u64,
-        listener: u64,
-        _: u64,
-        stream: u64,
-    ) -> Result<StreamPolicy, &'static str> {
-        self.live.lock().unwrap().insert(stream);
-        Ok(StreamPolicy {
-            policy: Arc::new(Policy {
-                listener,
-                generation: 3,
-                lines: Vec::new(),
-            }),
-            full: Arc::new(*b"full"),
-            current: Arc::new(*b"current"),
-        })
-    }
     fn stream_ended(&self, _: u64, _: u64, stream: u64) {
         self.live.lock().unwrap().remove(&stream);
     }
@@ -78,26 +48,6 @@ struct LoanDoor {
 }
 
 impl LoanDoor {
-    fn new(loans: Loans, pending_at: Option<usize>, malformed_at: Option<usize>) -> Arc<Self> {
-        let host = Arc::new(LoanHost::default());
-        let erased: Arc<dyn AuthHandleHost> = host.clone();
-        let scope = FramingContext::new(7, 71, 0, Some(Arc::downgrade(&erased))).unwrap();
-        Arc::new(Self {
-            inner: TestDoor::identity("t"),
-            host,
-            scope,
-            loans,
-            pending_at,
-            malformed_at,
-            calls: AtomicUsize::new(0),
-            limit: 70,
-            scratch_until: 0,
-            pending_after: None,
-            timer: false,
-            cancels: AtomicUsize::new(0),
-        })
-    }
-
     fn begin(self: &Arc<Self>) -> Framing {
         Framing::begin_ticketed(
             self.clone(),
