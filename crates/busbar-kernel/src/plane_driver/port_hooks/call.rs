@@ -101,7 +101,10 @@ pub(super) async fn one(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Resu
 }
 
 async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Reply, Failed> {
-    let deadline = Instant::now() + call.timeout;
+    // The node's monotonic clock, read once for this call: the deadline is set from it and the
+    // hook is handed it.
+    let mono_ns = crate::store::monotonic_ns();
+    let deadline = busbar_contract::mono_instant::instant_at(mono_ns) + call.timeout;
     if call.port.points() & (1 << point) == 0 {
         return Err(Failed::Port);
     }
