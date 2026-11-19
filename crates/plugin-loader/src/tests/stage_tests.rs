@@ -285,16 +285,20 @@ fn release((opened, staged): (busbar_ffi::image::Opened, Staged)) {
     drop(staged);
 }
 
-/// The dynamic loader's reason for refusing an open, as a refusal carries it.
+/// The dynamic loader's reason for refusing an open, as a refusal carries it. `S` is what the open staged (none for
+/// an open of a path the test made).
 #[cfg(unix)]
-fn load_reason(what: &str, outcome: Result<(busbar_ffi::image::Opened, Staged), Unopened>) -> String {
+fn load_reason<S>(what: &str, outcome: Result<(busbar_ffi::image::Opened, S), Unopened>) -> String {
     match outcome {
         Err(Unopened::Image(busbar_ffi::image::ImageError::Load(e))) => loader_error(&e),
-        Ok(loaded) => {
-            release(loaded);
+        Ok((opened, staged)) => {
+            close_on_worker(opened);
+            drop(staged);
             panic!("{what}: a file that is not a library opened");
         }
-        Err(other) => panic!("{what}: refused, but not by the dynamic loader: {}", said(&Err(other))),
+        Err(Unopened::Stage(why)) => panic!("{what}: refused while staging, not by the dynamic loader: {why}"),
+        Err(Unopened::Image(e)) => panic!("{what}: refused, but not by the dynamic loader: {e:?}"),
+        Err(Unopened::Panicked) => panic!("{what}: the open panicked"),
     }
 }
 
@@ -478,13 +482,7 @@ fn a_refused_opens_text_is_one_bounded_line() {
     std::fs::write(&forged, NOT_A_LIBRARY).unwrap();
     let reason = load_reason(
         "a crafted path",
-        open_on_worker(forged.as_os_str(), NOT_A_LIBRARY).map(|o| {
-            let staged = Staged::TempFile {
-                path: PathBuf::new(),
-                pin: None,
-            };
-            (o, staged)
-        }),
+        open_on_worker(forged.as_os_str(), NOT_A_LIBRARY).map(|o| (o, ())),
     );
     assert!(
         !reason.chars().any(|c| c.is_control()
@@ -506,13 +504,7 @@ fn a_refused_opens_text_is_one_bounded_line() {
     std::fs::write(&long, NOT_A_LIBRARY).unwrap();
     let reason = load_reason(
         "a long path",
-        open_on_worker(long.as_os_str(), NOT_A_LIBRARY).map(|o| {
-            let staged = Staged::TempFile {
-                path: PathBuf::new(),
-                pin: None,
-            };
-            (o, staged)
-        }),
+        open_on_worker(long.as_os_str(), NOT_A_LIBRARY).map(|o| (o, ())),
     );
     assert_eq!(
         reason.chars().count(),

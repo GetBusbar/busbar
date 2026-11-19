@@ -651,3 +651,202 @@ async fn proxied_ip_literal_verifies_the_origin_address_without_sni() {
     io.write(&mut held.conn, b"hello", BUDGET).await.unwrap();
     task.await.unwrap();
 }
+
+/// What a far end in the clear sends where only the upgraded stream may speak (a STARTTLS
+/// injection): it must never reach the caller as post-upgrade data.
+const FORGED: &[u8] = b"+OK forged in the clear\r\n";
+
+/// A far end that reads `STARTTLS\n` in the clear and answers `OK\n` with [`FORGED`] behind it, in
+/// the same segment (`gap` None) or as a segment of its own `gap` later, then speaks TLS.
+async fn injecting_far_end(l: TcpListener, acceptor: TlsAcceptor, gap: Option<Duration>) {
+    let (mut s, _) = l.accept().await.unwrap();
+    let mut asked = [0_u8; 9];
+    if s.read_exact(&mut asked).await.is_err() || &asked != b"STARTTLS\n" {
+        return;
+    }
+    match gap {
+        None => s.write_all(&[&b"OK\n"[..], FORGED].concat()).await.unwrap(),
+        Some(gap) => {
+            s.write_all(b"OK\n").await.unwrap();
+            s.flush().await.unwrap();
+            tokio::time::sleep(gap).await;
+            s.write_all(FORGED).await.unwrap();
+        }
+    }
+    s.flush().await.unwrap();
+    if let Ok(mut s) = acceptor.accept(s).await {
+        let mut b = [0u8; 5];
+        if s.read_exact(&mut b).await.is_ok() {
+            let _ = s.write_all(&b).await;
+            let _ = s.flush().await;
+        }
+    }
+}
+
+/// Wait until clear bytes sit unread on `conn` (buffered by the conn or parked on the line).
+async fn until_unread(io: &ConnectorIo, conn: &Stream) {
+    let mut spent = 0;
+    while io.healthy(conn) {
+        spent += 1;
+        assert!(spent < 400, "the clear bytes never arrived");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// STARTTLS injection, pipelined: the far end's clear `OK\n` and [`FORGED`] come in one segment and
+/// the plugin reads only the three bytes it asked for; and a tunnel prefix (the bytes a proxy sent
+/// behind its CONNECT answer, held in `Net::prefix`). The upgrade over unread clear bytes fails and
+/// the conn is gone with it: the forged bytes never come back as post-upgrade data.
+#[tokio::test]
+async fn an_upgrade_over_a_short_reads_unread_rest_is_refused_and_the_stream_fails() {
+    // Pipelined behind the clear answer.
+    let (ca, acceptor) = tls_server(&["upstream.test"]);
+    let (l, addr) = listener().await;
+    let far = tokio::spawn(injecting_far_end(l, acceptor, None));
+    let io = test_io();
+    let addrs = [addr];
+    let mut d = io.dial(plain(&addrs)).await.unwrap();
+    assert_eq!(io.write(&mut d.conn, b"STARTTLS\n", BUDGET).await, Ok(9));
+    let mut ok = [0u8; 3];
+    let mut read = 0;
+    while read < ok.len() {
+        let n = io.read(&mut d.conn, &mut ok[read..], BUDGET).await.unwrap();
+        assert_ne!(n, 0, "the far end hung up before its clear answer");
+        read += n;
+    }
+    assert_eq!(&ok, b"OK\n");
+    until_unread(&io, &d.conn).await;
+    let up = io
+        .upgrade(
+            d.conn,
+            plan("upstream.test", Some(anchor(ca)), false),
+            BUDGET,
+        )
+        .await;
+    assert_eq!(
+        up.err(),
+        Some(NeedErr::Tls),
+        "no upgrade over clear bytes still unread"
+    );
+    let _ = far.await;
+
+    // Held as a tunnel prefix behind the proxy's CONNECT answer.
+    let (ca, acceptor) = tls_server(&["upstream.test"]);
+    let (l, addr) = listener().await;
+    let proxy = tokio::spawn(async move {
+        let (mut peer, _) = l.accept().await.unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") {
+            peer.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+        }
+        peer.write_all(&[&b"HTTP/1.1 200 Connected\r\n\r\n"[..], FORGED].concat())
+            .await
+            .unwrap();
+        peer.flush().await.unwrap();
+        let _ = acceptor.accept(peer).await;
+    });
+    let route = super::super::judge::Route {
+        addrs: vec![addr],
+        tunnel: Some(super::super::judge::Tunnel {
+            hop: Arc::new(crate::proxy::ProxyHop::new(
+                addr.ip().to_string(),
+                addr.port(),
+                None,
+            )),
+            target: "93.184.216.34:443".into(),
+        }),
+    };
+    let d = io
+        .dial(Dial {
+            instance: 7,
+            dest: "upstream.test:443",
+            route,
+            unix: None,
+            tls: None,
+            timeout: BUDGET,
+        })
+        .await
+        .unwrap();
+    until_unread(&io, &d.conn).await;
+    let up = io
+        .upgrade(
+            d.conn,
+            plan("upstream.test", Some(anchor(ca)), false),
+            BUDGET,
+        )
+        .await;
+    assert_eq!(
+        up.err(),
+        Some(NeedErr::Tls),
+        "a tunnel prefix is clear bytes too: no upgrade over it"
+    );
+    let _ = proxy.await;
+}
+
+/// STARTTLS injection, parked: [`FORGED`] arrives as a segment of its own after the clear `OK\n`
+/// was read whole. The upgrade over the parked piece fails and the conn is gone with it.
+#[tokio::test]
+async fn an_upgrade_over_a_piece_parked_on_the_line_is_refused_and_the_stream_fails() {
+    let (ca, acceptor) = tls_server(&["upstream.test"]);
+    let (l, addr) = listener().await;
+    let far = tokio::spawn(injecting_far_end(
+        l,
+        acceptor,
+        Some(Duration::from_millis(200)),
+    ));
+    let io = test_io();
+    let addrs = [addr];
+    let mut d = io.dial(plain(&addrs)).await.unwrap();
+    assert_eq!(io.write(&mut d.conn, b"STARTTLS\n", BUDGET).await, Ok(9));
+    let mut ok = [0u8; 16];
+    let n = io.read(&mut d.conn, &mut ok, BUDGET).await.unwrap();
+    assert_eq!(&ok[..n], b"OK\n", "the clear answer came alone");
+    until_unread(&io, &d.conn).await;
+    let up = io
+        .upgrade(
+            d.conn,
+            plan("upstream.test", Some(anchor(ca)), false),
+            BUDGET,
+        )
+        .await;
+    assert_eq!(
+        up.err(),
+        Some(NeedErr::Tls),
+        "a parked clear piece is still unread: no upgrade over it"
+    );
+    let _ = far.await;
+}
+
+/// The upgrade's handshake is bounded by the caller's timeout (need/net.rs `upgrade(.., timeout)`):
+/// a far end that accepts TCP and never answers TLS ends `Timeout` at that bound, whichever it is.
+#[tokio::test]
+async fn security_upgrade_inherits_the_declared_or_per_open_timeout() {
+    for bound in [Duration::from_millis(100), Duration::from_millis(400)] {
+        let (l, addr) = listener().await;
+        let held = tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            tokio::time::sleep(BUDGET).await;
+            drop(s);
+        });
+        let io = test_io();
+        let addrs = [addr];
+        let d = io.dial(plain(&addrs)).await.unwrap();
+        let began = std::time::Instant::now();
+        let up = tokio::time::timeout(
+            BUDGET,
+            io.upgrade(d.conn, plan("upstream.test", None, false), bound),
+        )
+        .await
+        .expect("the caller's bound ends the handshake, not the test's");
+        let took = began.elapsed();
+        assert_eq!(up.err(), Some(NeedErr::Timeout), "{bound:?}");
+        assert!(took >= bound, "ended at {took:?}, before its bound {bound:?}");
+        assert!(
+            took < bound + Duration::from_secs(2),
+            "ended at {took:?}, long past its bound {bound:?}"
+        );
+        held.abort();
+    }
+}
