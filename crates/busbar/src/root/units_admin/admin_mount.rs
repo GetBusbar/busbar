@@ -138,6 +138,79 @@ impl AdminNode {
         answer
     }
 
+    /// RECORD A REFUSAL THE KERNEL'S ADMIN MIDDLEWARE DECIDED for a native request, as that
+    /// request's own admin unit, and make it the request's refusal owner. The middleware judged
+    /// the credential (a verb this node does not serve, or an undeclared path) and handed the
+    /// unspent pending owner back; a refusal is output authority only once it is recorded, and
+    /// only this node records an admin unit. `None`: the record was not confirmed, or the owner
+    /// was cancelled or reached its deadline meanwhile; the caller answers unavailable.
+    async fn record_denial(
+        &self,
+        ended: Outcome,
+        pending: busbar_kernel::inbound::native::CompletingPhysicalRequest,
+        carrier: busbar_kernel::inbound::native::AdminPhysicalRequest,
+    ) -> Option<busbar_kernel::inbound::native::PhysicalRefusalCarrier> {
+        let ((answer, record, _), publication) = busbar_kernel::audit::auditlog::confirmed_request(
+            Box::pin(self.denial_sealed(ended, pending, carrier)),
+        )
+        .await;
+        if publication.is_err() {
+            return None;
+        }
+        match answer.confirm(record.as_ref()) {
+            RetainedAnswer::Refused { carrier, .. } => Some(carrier),
+            _ => None,
+        }
+    }
+
+    async fn denial_sealed(
+        &self,
+        ended: Outcome,
+        pending: busbar_kernel::inbound::native::CompletingPhysicalRequest,
+        carrier: busbar_kernel::inbound::native::AdminPhysicalRequest,
+    ) -> SealedAnswer {
+        let binding = pending.binding().clone();
+        let Ok(snapshot) = binding.snapshot() else {
+            return (
+                RetainedAnswer::NativeFailed(unavailable_answer()),
+                None,
+                None,
+            );
+        };
+        // The unit is the request's own: `refuse_admin` accepts no other.
+        let key = UnitKey::new(binding.invocation().request_id().get());
+        let mono = crate::root::plane_node::node().checked_mono().ok();
+        let facts = match busbar_core_admin::admin_codec::verbs::resolve(
+            snapshot.method(),
+            snapshot.target(),
+        ) {
+            Some(resolved) => busbar_contract::AuditFacts {
+                op_class: resolved.op_class(),
+                finish: super::finish_of(&ended),
+            },
+            None => super::unresolved_facts(Some(snapshot.method()), &ended),
+        };
+        match self
+            .seal(key, snapshot.now_s(), mono, None, facts, ended)
+            .await
+        {
+            Some(record) => (
+                RetainedAnswer::PendingRefusal {
+                    answer: door_answer(),
+                    pending,
+                    carrier,
+                },
+                Some(record),
+                None,
+            ),
+            None => (
+                RetainedAnswer::NativeFailed(unavailable_answer()),
+                None,
+                None,
+            ),
+        }
+    }
+
     async fn answer_confirmed(
         &self,
         request: AdminRequest,
@@ -713,6 +786,77 @@ async fn root_admin_answers_are_never_stored() {
     }
 }
 
+/// The refusal a kernel admin answer states, for the admin unit that records it: the middleware's
+/// credential refusal (401), its scope refusal (403) and its refusals of the request itself (400,
+/// 413). `None` for every other status: an answer that is not a refusal of this request.
+fn denial_outcome(status: axum::http::StatusCode) -> Option<Outcome> {
+    use busbar_contract::caps::StepName;
+    match status.as_u16() {
+        401 => Some(Outcome::Refused(
+            StepName::Authenticate,
+            ReasonCode::Unauthenticated,
+        )),
+        403 => Some(Outcome::Refused(StepName::Approve, ReasonCode::ScopeDenied)),
+        400 | 413 => Some(Outcome::Refused(StepName::Decode, ReasonCode::DecodeFailed)),
+        _ => None,
+    }
+}
+
+/// A REQUEST THE KERNEL'S ROUTER SERVES: a verb this node does not serve itself, or a path no verb
+/// declares. Its admin middleware judges the credential. A native request it refuses comes back
+/// still holding its pending physical owner ([`AdminDenialReturn`]): this node records the
+/// refusal as that request's own unit and only then makes it the answer's output authority, as
+/// it does for a verb it serves. Before this, such an answer reached the native listener with no
+/// authority, and the listener, rightly, wrote nothing: every refused read on the admin listener
+/// (a wrong token, no operator credential) closed with zero bytes and no fault logged.
+///
+/// [`AdminDenialReturn`]: busbar_kernel::inbound::native::AdminDenialReturn
+async fn through_inner(
+    node: &Arc<AdminNode>,
+    inner: axum::Router,
+    req: axum::http::Request<axum::body::Body>,
+) -> axum::response::Response {
+    use tower::ServiceExt;
+
+    let mut response = inner.oneshot(req).await.unwrap_or_else(|e| match e {});
+    let Some((pending, carrier)) = response
+        .extensions_mut()
+        .remove::<busbar_kernel::inbound::native::AdminDenialReturn>()
+        .and_then(|returned| returned.take())
+    else {
+        return response;
+    };
+    let status = response.status();
+    let Some(ended) = denial_outcome(status) else {
+        // Not a refusal this node can record. The owner drops here and cancels its request: the
+        // listener writes nothing, and this line says which layer left it with no authority.
+        tracing::error!(
+            status = status.as_u16(),
+            unit = pending.binding().invocation().request_id().get(),
+            "the admin middleware answered a native request with no physical execution and no \
+             recordable refusal; the answer has no output authority and is not delivered"
+        );
+        return response;
+    };
+    let node = Arc::clone(node);
+    // The record keeps custody through client cancellation, as a served verb's does.
+    let recorded =
+        tokio::spawn(async move { node.record_denial(ended, pending, carrier).await }).await;
+    match recorded {
+        Ok(Some(carrier)) => {
+            response.extensions_mut().insert(carrier);
+            response
+        }
+        _ => {
+            tracing::error!(
+                status = status.as_u16(),
+                "a native admin refusal was not recorded; it is not delivered"
+            );
+            http_response(unavailable_answer())
+        }
+    }
+}
+
 pub(crate) fn mount(
     inner: axum::Router,
     kernel: busbar_kernel::teller::Kernel,
@@ -733,8 +877,6 @@ pub(crate) fn mount(
             let node = Arc::clone(&node);
             let inner = inner.clone();
             async move {
-                use tower::ServiceExt;
-
                 let path = req.uri().path();
                 let claimed = path.starts_with(busbar_contract::surface::ADMIN_PREFIX);
 
@@ -742,7 +884,7 @@ pub(crate) fn mount(
                     busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), path)
                         .is_some_and(|resolved| served_here(&resolved));
                 if !claimed || !declared {
-                    return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
+                    return through_inner(&node, inner, req).await;
                 }
 
                 let declared = req
@@ -756,7 +898,7 @@ pub(crate) fn mount(
                         .get::<busbar_kernel::inbound::native::AdminPhysicalRequest>()
                         .is_none()
                 {
-                    return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
+                    return through_inner(&node, inner, req).await;
                 }
 
                 let (mut parts, body) = req.into_parts();

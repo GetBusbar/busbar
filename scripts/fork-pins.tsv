@@ -1,0 +1,9 @@
+# The fork revisions every repository pins, old to new: the rows house/engine-w2-fork-repins moved in the
+# engine, to be moved in each plugin repository and the Console by scripts/repin-forks.sh.
+# fork<TAB>old revision<TAB>new revision<TAB>fork branch
+http	904f4519b5f27a0424b121a4828640c741efcd95	7e71322105371bae475f8e68d86324e73f4a11c9	busbar/1.5.0
+h2	6bdbf046878247aebe9138f37f32d2665b54bdd9	45b907798147b992b03334e500fdedc8d7e29a40	busbar/0.4.20
+hyper	c140435f43477ca3ffbdb2078a5994e9dfb11969	96fc11745ef61f4b7a37a51f5484836a7807e8eb	busbar/1.12.0
+hyper-util	b4c554c133c7fc83ee55a9ce0271849f7387994d	2abd71badaf5aefcfaf6118a87656e849fbfca64	busbar/0.1.21
+serde-saphyr	a94d2da01a448d348b5d14945e29192e511b8452	34461cdf00e17aea91654dc744aa6ae585458411	busbar/2.2.0
+granit-parser	d31e9292a0be49de7d3a85ee07555bb9d0afce20	6597ae7f5622872c6e242af590342de05300d601	busbar/2.2.0

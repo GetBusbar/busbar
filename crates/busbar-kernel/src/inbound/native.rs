@@ -1101,6 +1101,89 @@ impl AdminPhysicalRequest {
     }
 }
 
+/// A native admin request the kernel's admin middleware refused, on its way back to root.
+///
+/// The middleware takes the request's pending physical owner before it judges the credential. On
+/// a refusal it has no admin unit to record the refusal under, and a refusal is output authority
+/// only once it is recorded ([`CompletingPhysicalRequest::refuse_admin`]). So the unspent owner
+/// and its carrier ride the refusing answer's extensions in this cell; root records the refusal
+/// as the request's own unit and then makes it the answer's authority. Dropped untaken, the owner
+/// cancels its request as it always did.
+#[derive(Clone, Default)]
+pub struct AdminDenialReturn {
+    held: Arc<Mutex<Option<(CompletingPhysicalRequest, AdminPhysicalRequest)>>>,
+}
+impl AdminDenialReturn {
+    /// The unspent owner and its carrier, once.
+    pub fn take(&self) -> Option<(CompletingPhysicalRequest, AdminPhysicalRequest)> {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Put this cell in `response`'s extensions if it holds a refused request's owner.
+    pub(crate) fn ride(&self, response: &mut axum::response::Response) {
+        let holds = self
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some();
+        if holds {
+            response.extensions_mut().insert(self.clone());
+        }
+    }
+}
+
+/// The admin middleware's hold on a native request's pending owner. It reads as the
+/// `Option<CompletingPhysicalRequest>` it holds. Dropped with the owner still unspent (every
+/// refusing return of the middleware), it moves owner and carrier into its [`AdminDenialReturn`]
+/// instead of dropping, and so cancelling, the request.
+pub(crate) struct HeldAdminPending {
+    pending: Option<CompletingPhysicalRequest>,
+    carrier: Option<AdminPhysicalRequest>,
+    back: AdminDenialReturn,
+}
+impl HeldAdminPending {
+    /// Take the pending owner out of `carrier`, if the request carries one.
+    pub(crate) fn take_from(
+        carrier: Option<AdminPhysicalRequest>,
+        back: AdminDenialReturn,
+    ) -> Result<Self, ArrivalRefusal> {
+        let pending = carrier
+            .as_ref()
+            .map(AdminPhysicalRequest::take)
+            .transpose()?;
+        Ok(Self {
+            pending,
+            carrier,
+            back,
+        })
+    }
+}
+impl std::ops::Deref for HeldAdminPending {
+    type Target = Option<CompletingPhysicalRequest>;
+    fn deref(&self) -> &Self::Target {
+        &self.pending
+    }
+}
+impl std::ops::DerefMut for HeldAdminPending {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pending
+    }
+}
+impl Drop for HeldAdminPending {
+    fn drop(&mut self) {
+        if let (Some(pending), Some(carrier)) = (self.pending.take(), self.carrier.take()) {
+            *self
+                .back
+                .held
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some((pending, carrier));
+        }
+    }
+}
+
 /// Actual operator execution custody. Keep an Arc of this owner through handler/response work;
 /// retaining only the projected auth proof does not retain physical execution authority.
 pub struct PhysicalAdminExecution {

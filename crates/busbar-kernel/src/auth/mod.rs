@@ -2311,7 +2311,7 @@ async fn claimed_ticket_verdict(
     reason = "axum middleware answers a response on either side"
 )]
 pub(crate) async fn auth_middleware(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    current: crate::state::CurrentApp,
     handle: std::sync::Arc<crate::state::AppHandle>,
     body_limit: usize,
     core_routes: &crate::core_routes::CoreRouteTable,
@@ -2319,12 +2319,46 @@ pub(crate) async fn auth_middleware(
     next: Next,
 ) -> Result<Response, Response> {
     // Remove the one-shot capability before any body, auth or handler suspension.
-    let mut physical_pending = req
+    let carrier = req
         .extensions_mut()
-        .remove::<crate::inbound::native::AdminPhysicalRequest>()
-        .map(|carrier| carrier.take())
-        .transpose()
-        .map_err(|_| admin_unauthorized_response())?;
+        .remove::<crate::inbound::native::AdminPhysicalRequest>();
+    let returned = crate::inbound::native::AdminDenialReturn::default();
+    let physical_pending =
+        crate::inbound::native::HeldAdminPending::take_from(carrier, returned.clone())
+            .map_err(|_| admin_unauthorized_response())?;
+    let mut answered = auth_middleware_held(
+        current,
+        handle,
+        body_limit,
+        core_routes,
+        req,
+        next,
+        physical_pending,
+    )
+    .await;
+    // A native request refused here still holds its pending physical owner: it rides the refusing
+    // answer back to root, which records the refusal and only then makes it the answer's output
+    // authority. Without it the native listener holds an answer with no authority and writes
+    // nothing to the caller.
+    match &mut answered {
+        Ok(response) | Err(response) => returned.ride(response),
+    }
+    answered
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "axum middleware answers a response on either side"
+)]
+async fn auth_middleware_held(
+    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    handle: std::sync::Arc<crate::state::AppHandle>,
+    body_limit: usize,
+    core_routes: &crate::core_routes::CoreRouteTable,
+    mut req: Request<Body>,
+    next: Next,
+    mut physical_pending: crate::inbound::native::HeldAdminPending,
+) -> Result<Response, Response> {
     let mut physical_execution = req
         .extensions()
         .get::<std::sync::Arc<crate::inbound::native::PhysicalAdminExecution>>()
