@@ -706,6 +706,7 @@ async fn answer(
             let billing = billing.clone();
             let classes = seat.driver.usage_classes();
             let fee_units = seat.driver.fee_units();
+            tracing::info!(?classes, ?fee_units, "EMONEY-DIAG port admission classes");
             let route_id = route.route;
             let retry_after = Arc::clone(&retry_after);
             Some(Arc::new(
