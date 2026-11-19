@@ -30,16 +30,43 @@ const RACERS: usize = 8;
 /// verdict cannot depend on when the OS runs the test thread.
 const PREEMPTED: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// A spawner that hands each racer to `spawn` parked on a start signal, and releases one race's
+/// `racers` together once the last of them is handed over. No racer reaches the harness's
+/// rendezvous gate (whose wait is a budget of polls) while another of its race is still being
+/// handed over, so their overlap does not depend on when the test thread runs. The harness runs
+/// one race at a time, so every `racers` hand-overs are one race.
+fn released_together(
+    racers: usize,
+    spawn: impl Fn(oauth_as::storage_conformance::Task) + Send + Sync + 'static,
+) -> impl Fn(oauth_as::storage_conformance::Task) + Send + Sync + 'static {
+    let start = Arc::new(tokio::sync::Semaphore::new(0));
+    let handed = std::sync::atomic::AtomicUsize::new(0);
+    move |task| {
+        let parked = Arc::clone(&start);
+        spawn(Box::pin(async move {
+            parked
+                .acquire()
+                .await
+                .expect("the start signal is never closed")
+                .forget();
+            task.await;
+        }));
+        if (handed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1) % racers == 0 {
+            start.add_permits(racers);
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_backed_server_holds_the_storage_contract() {
     let violations = oauth_as::storage_conformance::StorageConformance::new(|| async {
         SharedStorage::new(shared(crate::testkit::memory_store().await))
     })
     .racers(RACERS)
-    .with_spawn(|task| {
+    .with_spawn(released_together(RACERS, |task| {
         tokio::spawn(task);
         std::thread::sleep(PREEMPTED);
-    })
+    }))
     .run()
     .await;
     assert!(violations.is_empty(), "{violations:#?}");
