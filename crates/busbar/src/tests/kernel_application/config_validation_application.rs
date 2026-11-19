@@ -4351,7 +4351,6 @@ pub(crate) fn source_path(value: impl AsRef<str>) -> config::SecretRef {
     )
 }
 fn source_role(role: &str, value: impl AsRef<str>) -> config::SecretRef {
-    use busbar_contract::secret::SecretAxis as _;
     crate::dist_root_install::install();
     crate::root::native_secrets::linked_for_tests()
         .sugars()

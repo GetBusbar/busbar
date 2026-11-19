@@ -20,6 +20,7 @@ mod linked {
 }
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::plane_driver::registry::PlaneDecl;
 use std::sync::Arc;

@@ -5,14 +5,7 @@ use foldhash::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-#[cfg(test)]
-use axum::http::StatusCode;
-#[cfg(test)]
-use axum::response::Response;
-
 use busbar_contract::caps::CallId;
-#[cfg(test)]
-use busbar_contract::caps::Route;
 use busbar_contract::caps::{
     Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, VerifiedDestination,
 };
@@ -21,11 +14,7 @@ use busbar_contract::{LaneId, UnitKey};
 use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
 #[path = "plane_node/terminal_book.rs"]
 mod terminal_book;
-#[cfg(test)]
-use busbar_kernel::plane_driver::PlaneAnswer;
 use busbar_kernel::teller::{Ended, UnitCtx};
-#[cfg(test)]
-use busbar_kernel::teller::{RouteLeg, Screen};
 use busbar_kernel::Registration;
 use busbar_kernel_audit::{
     Attempt, AttemptOutcome, AuditInputs, Controls, FinishClass as RecordFinish, HookApplied,

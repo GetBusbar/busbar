@@ -5,8 +5,6 @@ use busbar_contract::json::JsonValueTrait as _;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::root::test_plugins as plugins;
-
 use busbar_contract::json;
 use busbar_contract::persistence::*;
 use std::sync::atomic::{AtomicBool, Ordering};

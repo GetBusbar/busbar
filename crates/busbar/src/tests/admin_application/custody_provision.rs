@@ -240,7 +240,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
 
 #[tokio::test]
 async fn auto_provision_stops_at_the_group_ceiling() {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     const CHILD: &str = "BUSBAR_ADMIN_GROUP_CEILING_CHILD";
     const WITNESS: &str = "actual OIDC group ceiling assertions completed";
     isolated!(CHILD, WITNESS, witness = "usage");

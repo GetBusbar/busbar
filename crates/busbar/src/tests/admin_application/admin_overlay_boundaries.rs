@@ -6,7 +6,6 @@ use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::root::test_plugins as plugins;
 use crate::test_common as common;
 
 const AUDIENCE: &str = "api://admin-overlay-audit";

@@ -19,7 +19,6 @@ fn linked_keys() -> Vec<&'static str> {
         .collect()
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn every_linked_planes_claims_are_its_declared_claims() {
     let claims = linked_claims();
@@ -57,7 +56,6 @@ fn every_linked_planes_claims_are_its_declared_claims() {
     );
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn every_cross_plane_overlap_is_one_family_or_the_other_and_the_seal_resolves_them_all() {
     use busbar_kernel::grammar::family;
@@ -85,7 +83,6 @@ fn every_cross_plane_overlap_is_one_family_or_the_other_and_the_seal_resolves_th
     );
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_contract::grammar::PathSeg;
@@ -118,7 +115,6 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     }
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = linked_claims();
@@ -147,7 +143,6 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn the_sealed_order_is_most_specific_first_and_stable() {
     use busbar_kernel::registry::precedence;
@@ -313,20 +308,6 @@ fn a_planes_own_claims_may_overlap() {
         .clone();
     let doubled = vec![admin.clone(), admin];
     assert!(check_claims(&doubled).is_ok());
-}
-
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn no_shipped_transport_names_a_layer() {
-    // The layers are read off each linked door's Statement (the row stopped carrying them, 040c52e0cc).
-    for (key, door) in crate::LINKED_TRANSPORT_DOORS.iter() {
-        assert!(
-            busbar_core_connector::doors::row_facts(*door)
-                .composes_over
-                .is_empty(),
-            "`{key}` names a layer"
-        );
-    }
 }
 
 #[test]

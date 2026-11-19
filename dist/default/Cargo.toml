@@ -516,10 +516,6 @@ name = "decisions_served"
 path = "tests/decisions_served.rs"
 
 [[test]]
-name = "law7_unloaded_plane_apply"
-path = "tests/law7_unloaded_plane_apply.rs"
-
-[[test]]
 name = "root_listeners_are_the_connectors"
 path = "tests/root_listeners_are_the_connectors.rs"
 
@@ -536,10 +532,6 @@ path = "tests/admin_bound_before_healthz.rs"
 [[test]]
 name = "admin_mtls_refuses_certless_client"
 path = "tests/admin_mtls_refuses_certless_client.rs"
-
-[[test]]
-name = "metrics_routes_across_export_reload"
-path = "tests/metrics_routes_across_export_reload.rs"
 
 # Boots the real binary with an admin token and a Prometheus scrape, and reads both.
 [[test]]

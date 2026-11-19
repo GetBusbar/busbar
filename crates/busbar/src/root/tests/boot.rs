@@ -530,8 +530,6 @@ fn red_the_roots_listeners_head_the_one_list_of_listeners() {
     assert!(report.iter().all(|l| !l.contains("listens:")), "{report:?}");
 }
 
-use busbar_contract::plugin::Kind;
-
 const HARNESS_KEY_VAR: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
 fn first_party_signed_by(

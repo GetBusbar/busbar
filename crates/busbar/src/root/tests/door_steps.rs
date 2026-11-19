@@ -4,7 +4,7 @@
 //! The off-path half's configuration projection (kernel sections, provider numbers), and the
 //! native fixture price binding other root tests share.
 
-use busbar_contract::yaml::{MappingExt, ValueExt};
+use busbar_contract::yaml::ValueExt;
 
 pub(crate) async fn boot_fixture_prices(app: &busbar_kernel::state::App) {
     let store = app

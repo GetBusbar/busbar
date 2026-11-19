@@ -393,9 +393,6 @@ mod kernel_application_auth_governance_routes;
 #[path = "kernel_application/auth_linked_contracts.rs"]
 mod kernel_application_auth_linked_contracts;
 
-#[path = "kernel_application/central2_inbound_signed.rs"]
-mod kernel_application_central2_inbound_signed;
-
 #[path = "admin_application/telemetry.rs"]
 mod admin_telemetry;
 

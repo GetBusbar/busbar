@@ -23,7 +23,7 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-#[cfg(any(linked_axis_body_ingress, linked_section_pools))]
+#[cfg(linked_section_pools)]
 fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-docs-examples-{}-{tag}-{}",
