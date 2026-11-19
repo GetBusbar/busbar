@@ -540,8 +540,12 @@ one = "busbar-first"
 two = "busbar-second"
 
 [package.metadata.busbar.linked-axes]
-one = "plane-door egress"
-two = "plane-door"
+one = "min3-images egress"
+two = "min3-images"
+
+[package.metadata.busbar.linked-section]
+one = "pools"
+two = "tools"
 "#;
     let on = |enabled: &dyn Fn(&str) -> bool, name: &str| {
         generator::build_cfgs(manifest, enabled)
@@ -549,12 +553,13 @@ two = "plane-door"
             .find(|(cfg, _)| cfg == name)
             .map(|(_, on)| on)
     };
-    assert_eq!(on(&|f| f == "one", "linked_axis_plane_door"), Some(true));
-    assert_eq!(on(&|_| false, "linked_axis_plane_door"), Some(false));
-    assert_eq!(on(&|f| f == "one", "linked_every_plane_door"), Some(false));
-    assert_eq!(on(&|_| true, "linked_every_plane_door"), Some(true));
+    assert_eq!(on(&|f| f == "one", "linked_axis_min3_images"), Some(true));
+    assert_eq!(on(&|_| false, "linked_axis_min3_images"), Some(false));
+    assert_eq!(on(&|f| f == "one", "linked_section_pools"), Some(true));
+    assert_eq!(on(&|f| f == "one", "linked_section_tools"), Some(false));
+    assert_eq!(on(&|_| true, "linked_section_tools"), Some(true));
     assert_eq!(on(&|f| f == "one", "linked_egress"), Some(true));
-    let unseamed = manifest.replace("plane-door egress", "plane-door");
+    let unseamed = manifest.replace("min3-images egress", "min3-images");
     assert!(
         !generator::build_cfgs(&unseamed, &|_| true)
             .iter()
