@@ -311,7 +311,8 @@ impl Progress {
         let remaining = gov.map(|g| g.drain_remaining()).unwrap_or_default();
         let kernel = sources.and_then(|s| s.late.kernel());
         let records = kernel.as_ref().map_or(0, |k| k.pending().queued());
-        let open_units = 0_usize;
+        // The kernel's door-era open units are deleted (cut); the native seams are the only producer.
+        let open_units = super::plane_node::node().native_open_unit_count();
         let journal = sources
             .and_then(|s| s.journal.as_ref())
             .map_or(0, |j| j.pending_records());
@@ -1189,7 +1190,7 @@ fn incomplete(
             "completed spend is not in durable custody; listed on stderr as evidence"
         );
     }
-    for line in open_at_exit_lines(gov, late) {
+    for line in open_at_exit_lines(gov, late, &super::plane_node::node()) {
         eprintln!("busbar: shutdown {line}");
     }
     print_exit_snapshot();
@@ -1200,12 +1201,18 @@ fn incomplete(
 /// checkpoint book by checkpoint id (a unit with no checkpoint reads `none`), then the
 /// admissions alive without an open unit (SHUTDOWN-HANG F4 "Running requests at exit"). One
 /// walk, at exit; a running unit never changes the exit code.
-fn open_at_exit_lines(gov: Option<&Arc<GovState>>, _late: &Services) -> Vec<String> {
+fn open_at_exit_lines(
+    gov: Option<&Arc<GovState>>,
+    _late: &Services,
+    node: &super::plane_node::Node,
+) -> Vec<String> {
     use std::fmt::Write as _;
     let Some(gov) = gov else {
         return Vec::new();
     };
-    let exit = gov.open_at_exit(Vec::new());
+    // The native path: the money seams of the serving generations are bound to the Node (the
+    // kernel's door-era open-unit evidence is deleted).
+    let exit = gov.open_at_exit(node.native_open_units());
     let revision = |n: Option<u64>| n.map_or_else(|| "none".to_string(), |n| n.to_string());
     let mut lines = Vec::with_capacity(exit.units.len() + 1);
     for unit in &exit.units {

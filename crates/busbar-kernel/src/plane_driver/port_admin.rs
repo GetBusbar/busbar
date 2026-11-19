@@ -71,6 +71,31 @@ pub struct AdminRequest {
     pub now_s: u64,
 }
 
+/// The head fields under which an admin credential travels: the bearer the operator chain judges,
+/// a proxy's own credential, the browser session of an admin login, and the 1.5 carrier that 1.6
+/// no longer reads but an old client may still send its admin secret in. A plane's admin route is
+/// never handed any of them. This is the floor: the admin listener also strips every carrier its
+/// gate consumed (`auth::ConsumedCredentials`) before it builds the request.
+const ADMIN_CREDENTIAL_FIELDS: [&str; 4] = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "x-admin-token",
+];
+
+/// The head fields a plane's admin route is handed: everything the request carried except the
+/// admin credential, in the order it arrived. The gate has judged the credential already and the
+/// plane is told only that the caller is the operator (`Credentials::operator`); the secret itself
+/// never crosses to the plane (the data path's rule is `auth::native_data::withheld_carriers`).
+pub(crate) fn plane_headers(mut headers: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    headers.retain(|(name, _)| {
+        !ADMIN_CREDENTIAL_FIELDS
+            .iter()
+            .any(|withheld| name.eq_ignore_ascii_case(withheld))
+    });
+    headers
+}
+
 /// A plane's answer: status, head fields, body.
 pub type AdminAnswer = (u16, HeadFields, Vec<u8>);
 
@@ -101,7 +126,7 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
                 method,
                 path,
                 query,
-                headers,
+                headers: plane_headers(headers),
             },
             body,
             request_id,

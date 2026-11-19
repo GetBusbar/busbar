@@ -105,6 +105,55 @@ impl NativeNodeHandle {
 }
 
 impl Node {
+    /// Bind one native serving generation's money seam for the exit walk. Called where the
+    /// generation is composed, before any of its units opens. Binding the same seam again is a
+    /// no-op; seams already destroyed are dropped here, so the list is as long as the generations
+    /// that still hold a unit.
+    pub(crate) fn bind_native_money(&self, money: &Arc<busbar_kernel::plane_driver::PlaneMoney>) {
+        let mut held = self
+            .native_money
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.retain(|seen| seen.strong_count() != 0);
+        if !held
+            .iter()
+            .any(|seen| std::ptr::eq(seen.as_ptr(), Arc::as_ptr(money)))
+        {
+            held.push(Arc::downgrade(money));
+        }
+    }
+
+    /// The bound seams that are still alive, read outside every money lock.
+    fn native_money_live(&self) -> Vec<Arc<busbar_kernel::plane_driver::PlaneMoney>> {
+        self.native_money
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+
+    /// SHUTDOWN-HANG F4 on the native path: every unit still open in a native serving
+    /// generation's money seam, read once at exit, off the request path. Each seam is walked
+    /// once; the evidence shares the unit's money facts and holds a clone of its grant.
+    pub(crate) fn native_open_units(&self) -> Vec<busbar_kernel::plane_driver::OpenUnitEvidence> {
+        let mut out = Vec::new();
+        for money in self.native_money_live() {
+            busbar_kernel::plane_driver::MoneySeam::open_units(money.as_ref(), &mut out);
+        }
+        out
+    }
+
+    /// How many native units are open, for the drain's progress line: a count, no evidence.
+    pub(crate) fn native_open_unit_count(&self) -> usize {
+        self.native_money_live()
+            .iter()
+            .map(|money| money.open_units())
+            .sum()
+    }
+}
+
+impl Node {
     pub(crate) fn native_pending(&self) -> usize {
         self.lost
             .lock()
@@ -374,10 +423,34 @@ pub(crate) fn deliver_original_page(
     PageDelivery::Pending(position)
 }
 
-/// HELD (adopted ordinary receipt r2): the original per-fee Applied producer is unresolved and
-/// under separate review. No checkpoint receipt, FeeAccount completion or global zero may stand
-/// in for it, so an admitted native entry stays installed until that producer exists.
-const ORIGINAL_FEE_APPLIED_PRODUCER: bool = false;
+/// THE MONEY JOIN of one native entry's retirement, read under the entry lock: the facts an
+/// admitted entry must hold before it may leave the Node book. An entry that was never admitted
+/// holds no money and has nothing to join.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MoneyJoin {
+    /// The entry's terminal carries an admission: money was opened for it.
+    pub(super) admitted: bool,
+    /// The ordinary checkpoint's removal was acknowledged by the Store
+    /// (`PortBilling::ordinary_checkpoint_confirmed`).
+    pub(super) checkpoint_confirmed: bool,
+    /// Every original fee target is Applied or honestly CancelledBeforeSend
+    /// (`NativeOrdinaryTerminalSlot::fee_join_complete`, FEE-DEBT r1).
+    pub(super) fee_join_complete: bool,
+}
+
+impl MoneyJoin {
+    /// Whether the money side lets the entry retire.
+    pub(super) fn complete(self) -> bool {
+        if !self.admitted {
+            return true;
+        }
+        // The fee receipt is FEE-DEBT r1's: the budget flusher freezes a capture per original cell,
+        // this Node offers it to each installed entry's observer (`FeeDebtAssociate for Node`) and
+        // the flusher finishes it Applied or CancelledBeforeSend. No checkpoint receipt, FeeAccount
+        // completion or global zero stands in for it.
+        self.checkpoint_confirmed && self.fee_join_complete
+    }
+}
 
 /// The adopted bound on candidates one native pulse examines, irrelevant entries included.
 pub(crate) const NATIVE_PULSE_CANDIDATES: usize = 64;
@@ -655,16 +728,17 @@ impl Node {
             let Some(terminal) = native.terminal.as_ref() else {
                 return false;
             };
-            let money = if terminal.admission().is_some() {
-                native
-                    .billing
-                    .ordinary_checkpoint_confirmed(&native.ordinary)
-                    .unwrap_or(false)
-                    && ORIGINAL_FEE_APPLIED_PRODUCER
-                    && native.ordinary.fee_join_complete()
-            } else {
-                true
-            };
+            let admitted = terminal.admission().is_some();
+            let money = MoneyJoin {
+                admitted,
+                checkpoint_confirmed: admitted
+                    && native
+                        .billing
+                        .ordinary_checkpoint_confirmed(&native.ordinary)
+                        .unwrap_or(false),
+                fee_join_complete: admitted && native.ordinary.fee_join_complete(),
+            }
+            .complete();
             let notary = native
                 .staged
                 .as_ref()
@@ -840,3 +914,11 @@ pub(crate) mod retained_fixture {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "native_retire_tests.rs"]
+mod retire_tests;
+
+#[cfg(test)]
+#[path = "native_open_units_tests.rs"]
+mod open_units_tests;

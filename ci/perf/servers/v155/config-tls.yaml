@@ -1,0 +1,23 @@
+# v1.5.5 (tag v1.5.5, a71b21e9fa), the baseline, over TLS. The configuration of the perf-155 run of
+# 18 Nov 2026, with the run directory, the stub port and the admin token rendered per run.
+listen: "0.0.0.0:18155"
+providers_file: @RUN@/providers.yaml
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+auth:
+  chain: []
+  admin_auth: [admin-tokens]
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+pools:
+  default:
+    members:
+      - model: test-model
+# The same listener terminating TLS with this run's certificate (docs/configuration.md `tls`).
+tls:
+  cert: { file: "@TLS@/leaf.pem" }
+  key: { file: "@TLS@/leaf.key" }

@@ -1626,6 +1626,64 @@ impl GovState {
         Ok(grant)
     }
 
+    /// THE CHILD'S BUDGET READ. A native child shares its parent's admission: it counts no
+    /// request, charges no fee and takes no concurrency hold, so of [`Self::try_admit`]'s checks
+    /// only the budget applies to it. v1.5.5 refused a child nested after its parent's budget was
+    /// spent (429 over_budget) and charged it nothing. This reads the same cells by the same rule
+    /// as admission (the spend has reached the cap, or cannot be derived) with no fee added, in
+    /// the window `now` names, and changes nothing. `None`: the budget is not spent.
+    pub fn budget_spent(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+    ) -> Option<LimitBlocked> {
+        let (_, pool) = split_plane_lane(pool);
+        let chain = match cost.chain_carried(key, None) {
+            Ok(chain) => chain,
+            Err(missing) => {
+                return Some(crate::cold::governance::state::state_missing_group(missing))
+            }
+        };
+        for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
+            let Some(cap) = bucket.budget_cap else {
+                continue;
+            };
+            let window = budget_window(bucket.window, now);
+            let cells = self.budget.read(bucket.bucket_id);
+            let Some(cell) = cells
+                .get(bucket.bucket_id)
+                .filter(|cell| cell.window_start >= window)
+            else {
+                continue;
+            };
+            let derived = cell
+                .spend(cost, true)
+                .and_then(Money::minor_i64)
+                .and_then(|before| match &cell.correction {
+                    Some(branch) => branch
+                        .accepted
+                        .spend(cost, true)
+                        .and_then(Money::minor_i64)
+                        .map(|after| before.max(after)),
+                    None => Ok(before),
+                });
+            // A spend that cannot be derived refuses, as it does at admission.
+            if derived.map_or(true, |spent| spent >= cap) {
+                return Some(crate::cold::governance::state::state_limit_blocked(
+                    bucket.group_name.expect("only group buckets carry caps"),
+                    "budget",
+                    Some(bucket.window),
+                    bucket.scope,
+                    None,
+                    super::window_end(bucket.window, now).map(|end| end.saturating_sub(now).max(1)),
+                ));
+            }
+        }
+        None
+    }
+
     pub fn refund_charge(&self, charge: &FeeCharge) {
         self.refund_charge_observed(charge, None);
     }

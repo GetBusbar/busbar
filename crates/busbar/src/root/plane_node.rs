@@ -118,6 +118,11 @@ pub(crate) struct Node {
 
     mono: AtomicU64,
 
+    /// The money seams of the native serving generations, held weakly: what the exit walk reads
+    /// for its open-units report (SHUTDOWN-HANG F4). A generation that a reload replaced stays
+    /// listed while one of its units is still open and drops out when its seam is destroyed.
+    native_money: Mutex<Vec<std::sync::Weak<busbar_kernel::plane_driver::PlaneMoney>>>,
+
     /// The clock a unit's arrival is read from: once, at the door, and every window it is
     /// admitted and billed in is the one that reading names.
     clock: Arc<dyn busbar_kernel::Clock>,
@@ -175,6 +180,7 @@ impl Node {
             next_key: Arc::default(),
             lost: Arc::new(RetainedBook(Mutex::new(Self::fixture_terminal_book()))),
             mono: AtomicU64::new(0),
+            native_money: Mutex::new(Vec::new()),
             clock: Arc::new(busbar_kernel::WallClock),
         }
     }

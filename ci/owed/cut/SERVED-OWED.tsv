@@ -1,0 +1,3 @@
+plane	method	path	what it does	state
+a2a	POST	<admin ops mount>/connect	fetches the remote agent card, verifies it and reports its fingerprint; approves nothing	not declared by the pinned native image (busbar-plane-a2a 48bf971292 plane-a2a/src/lib.rs:103 ADMIN = [(ADMIN_HEALTH, GET, "/health")] only); not served today either: the image exports no door and LINKED.plane_doors is empty (dist/default/Cargo.toml:487-488)
+a2a	POST	<admin ops mount>/approve	the operator approves the fingerprint connect reported (used by plane-a2a-plugin/examples/a2a_conformance/main.rs:567-597)	same as connect: not declared natively, not served today

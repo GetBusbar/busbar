@@ -21,6 +21,8 @@ use super::{DispatchSnapshot, NEST_INPUT_FULL, NEST_PARENT_GONE, NEST_REPLY_MAX,
 
 const CONSTRAINTS_UNAVAILABLE: &str = "native child target and spend constraints are not available";
 const PARENT_ADMISSION: &str = "native child has no live parent billing admission";
+/// A child nested after its parent's budget is spent: refused, nothing opened, nothing charged.
+const OVER_BUDGET: &str = "over_budget: the budget this request was admitted on is spent";
 const MONEY_UNRECORDABLE: &str =
     "durability unavailable: the journal cannot record a child's money";
 
@@ -124,6 +126,9 @@ impl NativeNests {
             seat.driver.usage_classes(),
         ) {
             Ok(unit) => unit,
+            Err(busbar_contract::caps::ReasonCode::OverBudget) => {
+                return NestReply::Unserved(OVER_BUDGET)
+            }
             Err(_) => return NestReply::Unserved(PARENT_ADMISSION),
         };
         let id = unit.ctx.key;
