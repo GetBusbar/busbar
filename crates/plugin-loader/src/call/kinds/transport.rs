@@ -73,9 +73,15 @@ fn packed<'a>(parts: Pieces<'a>) -> ([&'a [u8]; 4], usize) {
     let mut out: [&'a [u8]; 4] = [&[]; 4];
     let mut n = 0;
     // E_REFUSE is sent alone, so at most four entries are ever present.
-    for piece in [parts.head, parts.body, parts.trailers, parts.end, parts.refuse]
-        .into_iter()
-        .flatten()
+    for piece in [
+        parts.head,
+        parts.body,
+        parts.trailers,
+        parts.end,
+        parts.refuse,
+    ]
+    .into_iter()
+    .flatten()
     {
         out[n] = piece;
         n += 1;

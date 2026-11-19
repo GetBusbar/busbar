@@ -73,9 +73,7 @@ pub(crate) fn owners(
         name: &opened.who.name,
         id: opened.who.instance,
         kind: opened.port.issued_kind(),
-        verifies: opened.methods
-            & busbar_plugin_abi::auth::M_VERIFY
-            != 0,
+        verifies: opened.methods & busbar_plugin_abi::auth::M_VERIFY != 0,
     });
     let grants = resolve_grants(&config.issued_kinds, instances, credentials.installed())?;
     let policy = config.verdict_cache.checked().map_err(str::to_owned)?;

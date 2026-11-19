@@ -132,10 +132,7 @@ impl AuthSet {
             let instance = self.get(name).ok_or_else(|| {
                 format!("auth.admin_auth: '{name}' has no opened native auth instance")
             })?;
-            if instance.opened.methods
-                & busbar_plugin_abi::auth::M_VERIFY
-                == 0
-            {
+            if instance.opened.methods & busbar_plugin_abi::auth::M_VERIFY == 0 {
                 return Err(format!("auth.admin_auth: '{name}' cannot verify"));
             }
             policies.push(BindingsPolicy::operator(
