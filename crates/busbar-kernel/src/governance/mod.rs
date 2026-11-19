@@ -1244,7 +1244,9 @@ pub fn plane_grant_kind(field: &str) -> Option<String> {
 }
 
 pub fn plane_declares_kind(kind: &str) -> bool {
-    kind != "pool" && crate::plane_driver::registry::scope_kind_index(kind).is_some()
+    kind != "pool"
+        && (crate::plane_driver::registry::scope_kind_index(kind).is_some()
+            || crate::plane_driver::port_routes::kind_stated(kind))
 }
 
 pub(crate) fn pool_scopes(
