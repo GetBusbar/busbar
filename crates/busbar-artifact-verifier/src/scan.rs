@@ -14,8 +14,9 @@ use crate::refusal::{Refusal, RefusalCode};
 
 /// The stamp's size (IF §7.4).
 pub const STAMP_SIZE: usize = 272;
-/// The stamp format this busbar reads (round 28).
-pub const STAMP_FORMAT: u32 = 3;
+/// The stamp format this busbar reads: busbar-plugin-abi's `stamp::STAMP_FORMAT`, the one a stamp is
+/// written with (no second copy kept here).
+pub const STAMP_FORMAT: u32 = busbar_plugin_abi::stamp::STAMP_FORMAT;
 
 /// Why `stamp` found no usable stamp (r10 step 3). W1-L1: the IF names this type and never defines it; it is the
 /// three stamp refusals with what each prints.
