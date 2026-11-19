@@ -132,6 +132,8 @@ impl Watchdog {
                             table.hung(slot, epoch, entry, busy_ms, &Holder::of(held))
                         },
                     );
+                    #[cfg(feature = "crossing-witness")]
+                    crate::abi_crossings::tick();
                     std::thread::park_timeout(Duration::from_millis(100));
                 }
             })

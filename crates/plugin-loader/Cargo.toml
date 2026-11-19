@@ -11,6 +11,11 @@ license = "Apache-2.0"
 # Dev-only conformance retirement barrier and the standalone test harness (path loaders,
 # probes, door helpers); never enabled by shipped defaults.
 test-support = ["busbar-artifact-verifier/test-support"]
+# The crossing witness: a build of the engine that arms the crossing recorder from two environment
+# variables and writes its verdict to a file, so the `abi_crossings` security test can judge the real
+# default binary from outside the process. Never enabled by shipped defaults: a release binary holds
+# no recorder and no code that reads those variables.
+crossing-witness = []
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
 

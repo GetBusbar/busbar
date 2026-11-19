@@ -249,7 +249,7 @@ pub mod verification;
 // each wave-1 owner replaces the stubs in its own files.
 #[deny(unsafe_code)]
 /// The harness half of the `abi_crossings` security test.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support", feature = "crossing-witness"))]
 #[deny(unsafe_code)]
 pub mod abi_crossings;
 #[deny(unsafe_code)]

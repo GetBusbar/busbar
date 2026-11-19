@@ -120,6 +120,157 @@ impl Verdict {
     }
 }
 
+// ---- the witness: judging the real binary from outside the process ----
+
+/// The file of planted secrets a witness build reads at start: one secret a line,
+/// `label<TAB>hex of the secret<TAB>owner,owner` (owners are instance names; the third field may be empty).
+pub const PLANTS_ENV: &str = "BUSBAR_CROSSING_WITNESS_PLANTS";
+/// The file a witness build writes its verdict to (replaced whole each time it changes).
+pub const VERDICT_ENV: &str = "BUSBAR_CROSSING_WITNESS_VERDICT";
+
+/// One line of a plant file.
+pub fn plant_line(label: &str, secret: &[u8], owners: &[&str]) -> String {
+    format!("{label}\t{}\t{}\n", hex::encode(secret), owners.join(","))
+}
+
+/// Arm the recorder from the two environment variables. Called once when the loader's process resources
+/// are made, in a witness build only. Unset variables: nothing is armed (a witness build then runs as
+/// any other). A plant file that cannot be read or parsed is an error the caller refuses to start on:
+/// a witness that planted less than the test wrote would pass for the wrong reason.
+pub fn arm_from_env() -> Result<bool, String> {
+    let (Some(plants), Some(_verdict)) =
+        (std::env::var_os(PLANTS_ENV), std::env::var_os(VERDICT_ENV))
+    else {
+        return Ok(false);
+    };
+    let text = std::fs::read_to_string(&plants)
+        .map_err(|e| format!("crossing witness: the plant file cannot be read: {e}"))?;
+    let crossings =
+        arm().ok_or("crossing witness: another crossing recorder was installed first")?;
+    for (at, line) in text.lines().enumerate() {
+        let mut fields = line.split('\t');
+        let (Some(label), Some(secret)) = (fields.next(), fields.next()) else {
+            return Err(format!(
+                "crossing witness: plant line {} has no secret",
+                at + 1
+            ));
+        };
+        let secret = hex::decode(secret)
+            .map_err(|_| format!("crossing witness: plant line {} is not hex", at + 1))?;
+        let owners: Vec<&str> = fields
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .filter(|owner| !owner.is_empty())
+            .collect();
+        if !crossings.plant(label, &secret, &owners) {
+            return Err(format!(
+                "crossing witness: plant line {} is shorter than {} bytes",
+                at + 1,
+                record::SHORTEST
+            ));
+        }
+    }
+    Ok(true)
+}
+
+/// Write the verdict file if anything crossed since it was last written. Called from the loader's
+/// watchdog thread on each of its scans, so the file is at most one scan behind the traffic and needs no
+/// orderly shutdown to exist. Written to a sibling file and renamed, so a reader never sees half of one.
+pub fn tick() {
+    static WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+    let (Some(crossings), Some(path)) = (ARMED.get(), std::env::var_os(VERDICT_ENV)) else {
+        return;
+    };
+    let now = crossings.crossings();
+    if WRITTEN.swap(now, std::sync::atomic::Ordering::Relaxed) == now {
+        return;
+    }
+    let path = std::path::PathBuf::from(path);
+    let mut staged = path.clone().into_os_string();
+    staged.push(".part");
+    if std::fs::write(&staged, Verdict::of(crossings).to_text()).is_ok() {
+        let _ = std::fs::rename(&staged, &path);
+    }
+}
+
+impl Verdict {
+    /// The verdict as the witness writes it: counts, then one line per leak. No secret is in it.
+    pub fn to_text(&self) -> String {
+        use core::fmt::Write as _;
+        let mut out = String::new();
+        let _ = writeln!(out, "planted\t{}", self.planted);
+        let _ = writeln!(out, "crossings\t{}", self.crossings);
+        let _ = writeln!(out, "bytes\t{}", self.bytes);
+        for kind in KindCode::ALL {
+            let _ = writeln!(
+                out,
+                "kind\t{}\t{}",
+                kind.word(),
+                self.by_kind[kind as usize - 1]
+            );
+        }
+        for leak in &self.leaks {
+            let _ = writeln!(
+                out,
+                "leak\t{}\t{}\t{}\t{}\t{}\t{:?}",
+                leak.label,
+                leak.kind.word(),
+                leak.name,
+                leak.plugin,
+                leak.method,
+                leak.place
+            );
+        }
+        out
+    }
+
+    /// Every way a written verdict fails, one line each; empty for a pass. The test side of the
+    /// witness: it reads the file the binary wrote and never needs the recorder's types. `planted` is
+    /// how many secrets the test wrote to the plant file; `kinds` are the kind words the run must have
+    /// crossed toward. A file that cannot be understood is a failure, never a pass.
+    pub fn failures_of_text(text: &str, planted: usize, kinds: &[&str]) -> Vec<String> {
+        let mut out = Vec::new();
+        let (mut seen_planted, mut crossings) = (None, None);
+        let mut by_kind: Vec<(&str, u64)> = Vec::new();
+        for line in text.lines() {
+            let fields: Vec<&str> = line.split('\t').collect();
+            match fields.as_slice() {
+                ["planted", n] => seen_planted = n.parse::<usize>().ok(),
+                ["crossings", n] => crossings = n.parse::<u64>().ok(),
+                ["bytes", _] => {}
+                ["kind", word, n] => match n.parse::<u64>() {
+                    Ok(n) => by_kind.push((word, n)),
+                    Err(_) => out.push(format!("unreadable verdict line: {line}")),
+                },
+                ["leak", label, kind, name, plugin, method, place] => out.push(format!(
+                    "LEAK: secret '{label}' crossed toward {kind} instance '{name}' (image {plugin}) in table entry {method}, at {place}"
+                )),
+                _ => out.push(format!("unreadable verdict line: {line}")),
+            }
+        }
+        if seen_planted != Some(planted) {
+            out.push(format!(
+                "the witness planted {seen_planted:?} secrets; the test wrote {planted}"
+            ));
+        }
+        if planted == 0 {
+            out.push("no secret was planted: the run proves nothing".to_string());
+        }
+        if crossings.is_none_or(|n| n == 0) {
+            out.push("no call crossed the interface: the recorder saw nothing".to_string());
+        }
+        for kind in kinds {
+            if !by_kind.iter().any(|(word, n)| word == kind && *n > 0) {
+                out.push(format!(
+                    "no call crossed toward a {kind} plugin: that kind was not exercised"
+                ));
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +430,82 @@ mod tests {
             .failures(&[])
             .iter()
             .any(|line| line.starts_with("no call crossed")));
+    }
+}
+
+#[cfg(test)]
+mod witness_tests {
+    use super::*;
+    use crate::call::frame::{Frame, Mono};
+    use crate::call::record::{Recorder, Seen, Who};
+
+    const KEY: &[u8] = b"sk-live-planted-99aa01bb22cc33dd-upstream-provider-key";
+
+    fn run(leak: bool) -> Verdict {
+        let rec = Crossings::new();
+        rec.plant("provider-key", KEY, &["vault"]);
+        let http = Who {
+            kind: KindCode::Transport,
+            plugin: "busbar-transport-http",
+            name: "http",
+            instance: 4,
+            slot: 4,
+        };
+        let blob: &[u8] = if leak { KEY } else { b"GET / HTTP/1.1\r\n" };
+        let frame = Frame::new((), [], [blob]);
+        let call = frame.call(Mono::NONE);
+        rec.toward(&http, 2, &Seen::of(0, &call, &[]));
+        Verdict::of(&rec)
+    }
+
+    #[test]
+    fn a_clean_verdict_reads_back_clean() {
+        let text = run(false).to_text();
+        assert_eq!(
+            Verdict::failures_of_text(&text, 1, &["transport"]),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_leak_survives_the_file_and_the_file_holds_no_secret() {
+        let text = run(true).to_text();
+        let failures = Verdict::failures_of_text(&text, 1, &["transport"]);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0]
+            .starts_with("LEAK: secret 'provider-key' crossed toward transport instance 'http'"));
+        assert!(!text.contains("99aa01bb22cc33dd"));
+        assert!(!text.contains(&hex::encode(KEY)));
+    }
+
+    #[test]
+    fn a_verdict_that_planted_less_than_the_test_wrote_is_a_failure() {
+        let text = run(false).to_text();
+        assert!(Verdict::failures_of_text(&text, 2, &["transport"])
+            .iter()
+            .any(|line| line.starts_with("the witness planted Some(1) secrets")));
+    }
+
+    #[test]
+    fn an_empty_or_garbled_file_is_a_failure_never_a_pass() {
+        assert!(!Verdict::failures_of_text("", 1, &[]).is_empty());
+        assert!(
+            Verdict::failures_of_text("planted\t1\ncrossings\t5\nnonsense\n", 1, &[])
+                .iter()
+                .any(|line| line.starts_with("unreadable verdict line"))
+        );
+        assert!(
+            Verdict::failures_of_text("planted\t1\ncrossings\t5\n", 1, &["auth"])
+                .iter()
+                .any(|line| line.contains("toward a auth plugin"))
+        );
+    }
+
+    #[test]
+    fn a_plant_line_is_label_hex_owners() {
+        assert_eq!(
+            plant_line("k", b"\x01\xff", &["vault", "operator-auth"]),
+            "k\t01ff\tvault,operator-auth\n"
+        );
     }
 }
