@@ -15,7 +15,7 @@ pub mod wire;
 /// ([`crate::abi::versions::AbiVersion`]), equal or not equal and nothing else (LINT-RULES R21).
 pub use crate::abi::versions::AbiVersion;
 
-/// The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check over
+/// The fact keys the kernel reserves for a transport, and the transport settings.
 pub use registry::{
     facts, TransportSettings, DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS,
 };

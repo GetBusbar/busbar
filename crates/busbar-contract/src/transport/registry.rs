@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-
+//! The fact keys the kernel reserves for a transport, and the transport settings with their defaults.
 //! The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check that
 
 /// The transport fact keys the kernel reserves, spelled once.
