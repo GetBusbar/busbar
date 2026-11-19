@@ -225,8 +225,9 @@ fn native_money(
     gov: &Arc<busbar_kernel::governance::GovState>,
     post: Arc<dyn busbar_kernel::plane_driver::EndPost>,
 ) -> Arc<PlaneMoney> {
-    let _ = node;
-    Arc::new(PlaneMoney::new(Arc::clone(gov), post))
+    let money = Arc::new(PlaneMoney::new(Arc::clone(gov), post));
+    node.bind_native_money(&money);
+    money
 }
 
 #[cfg(test)]
