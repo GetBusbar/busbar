@@ -29,6 +29,8 @@ pub mod native_chain;
 pub mod native_data;
 pub mod native_keys;
 pub mod native_policy;
+pub mod native_signed;
+pub mod native_ticket;
 pub mod native_upgrade;
 pub mod verdicts;
 #[cfg(test)]
