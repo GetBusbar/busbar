@@ -437,6 +437,7 @@ dependencies = [
  "busbar-count",
  "busbar-crypto",
  "busbar-json",
+ "busbar-seal",
  "busbar-secure",
  "bytes",
  "ciborium",
@@ -830,6 +831,7 @@ dependencies = [
  "busbar-plugin-abi",
  "busbar-plugin-loader",
  "busbar-ports",
+ "busbar-seal",
  "bytes",
  "foldhash 0.2.0",
  "futures",
@@ -1090,6 +1092,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "busbar-seal"
+version = "1.6.0"
 
 [[package]]
 name = "busbar-secure"

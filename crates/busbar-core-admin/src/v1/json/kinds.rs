@@ -388,6 +388,7 @@ fn pools_descriptor() -> Value {
         "fields": [
             {"name": "pool", "label": "Pool", "type": "string", "unit": null, "format": null, "role": "dimension"},
             {"name": "model", "label": "Model", "type": "string", "unit": null, "format": null, "role": "id"},
+            {"name": "provider", "label": "Provider", "type": "string", "unit": null, "format": null, "role": "dimension"},
             {"name": "weight", "label": "Weight", "type": "int", "unit": "count", "format": null, "role": "measure"},
             {"name": "usable", "label": "Usable", "type": "bool", "unit": null, "format": null, "role": "status"},
             {"name": "cooldown_remaining_seconds", "label": "Cooldown left", "type": "int", "unit": "s", "format": null, "role": "measure"},

@@ -27,6 +27,8 @@ harness = false
 busbar-json = { path = "../busbar-json" }
 busbar-artifact-metadata = { path = "../busbar-artifact-metadata" }
 busbar-count = { path = "../busbar-count" }
+# The two capability seal TYPES, re-exported from `caps` (never the mint: busbar-seal's lib.rs, deny.toml).
+busbar-seal = { path = "../busbar-seal" }
 # SDK-SECRET-BUFFER: one shared byte owner, exposed only through the producer facades.
 busbar-secure = { path = "../busbar-secure" }
 # The crypto facade, re-exported whole as `busbar_contract::crypto`.
@@ -63,6 +65,8 @@ tracing-log = { workspace = true }
 
 [dev-dependencies]
 busbar-secure = { path = "../busbar-secure", features = ["test-support"] }
+# This crate's own unit tests mint with the test seals (`SlotSeal::acquire_for_tests`).
+busbar-seal = { path = "../busbar-seal", features = ["test-seal"] }
 libc = { workspace = true }
 stats_alloc = { workspace = true }
 serde_json = { workspace = true }
@@ -80,7 +84,7 @@ schema = ["busbar-json/schema"]
 axum = ["busbar-json/axum"]
 
 # Test-only; named only in [dev-dependencies], absent from release builds.
-test-seal = ["test-support"]
+test-seal = ["test-support", "busbar-seal/test-seal"]
 
 # Ordinary ABI test support (`abi::sdk::test_support`): the all-zero value of a reviewed ABI
 # struct, `Default` on it, and the lending pairs. It forges nothing; sealed credentials stay
