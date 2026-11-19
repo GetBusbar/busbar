@@ -23,9 +23,6 @@ mod kernel_state;
 #[path = "kernel_application/router.rs"]
 mod kernel_router;
 
-#[path = "../../../../dist/default/tests/product/decisions_hooks.rs"]
-mod decisions_hooks;
-
 #[path = "admin_application/usage_reads_the_process_rate_history.rs"]
 mod admin_usage_history;
 
