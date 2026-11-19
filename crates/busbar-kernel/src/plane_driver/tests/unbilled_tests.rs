@@ -51,9 +51,14 @@ use crate::teller::{Ended, UnitCtx};
 const NOW: u64 = 1_700_000_000;
 const UNIT: u64 = 1;
 
-/// The unit's billable classes: a count's class is its index here (`input` 0, `output` 1).
+/// The unit's billable classes: a count's class is its index here (`input` 0, `output` 1, `bytes`
+/// 2). The plane declares `bytes`; lane `m`'s card names no price for it.
 fn classes() -> Arc<[String]> {
-    Arc::from(vec!["input".to_string(), "output".to_string()])
+    Arc::from(vec![
+        "input".to_string(),
+        "output".to_string(),
+        "bytes".to_string(),
+    ])
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -308,12 +313,14 @@ impl IntentHost for Store {
 
 // ---------------------------------------------------------------------------------------------
 // The caller: its `fail_at`th write (from 0) fails, as the listener's pipe does once the client
-// is gone. Like the listener's sink, it notes the status of the first head it is handed, written
-// or not: the unit is settled with it.
+// is gone; its `hang_at`th write never completes (the session is held there until it is dropped).
+// Like the listener's sink, it notes the status of the first head it is handed, written or not:
+// the unit is settled with it.
 // ---------------------------------------------------------------------------------------------
 
 struct Caller {
     fail_at: usize,
+    hang_at: usize,
     writes: AtomicUsize,
     status: AtomicU16,
     /// What reached the caller, in order.
@@ -324,6 +331,7 @@ impl Caller {
     fn failing_at(fail_at: usize) -> Self {
         Self {
             fail_at,
+            hang_at: usize::MAX,
             writes: AtomicUsize::new(0),
             status: AtomicU16::new(0),
             took: Mutex::new(Vec::new()),
@@ -332,6 +340,13 @@ impl Caller {
 
     fn staying() -> Self {
         Self::failing_at(usize::MAX)
+    }
+
+    fn hanging_at(hang_at: usize) -> Self {
+        Self {
+            hang_at,
+            ..Self::staying()
+        }
     }
 
     fn took(&self) -> Vec<String> {
@@ -357,7 +372,11 @@ impl ClientSink for Caller {
                         .compare_exchange(0, *status, Ordering::Relaxed, Ordering::Relaxed);
             }
         }
-        if self.writes.fetch_add(1, Ordering::SeqCst) == self.fail_at {
+        let write = self.writes.fetch_add(1, Ordering::SeqCst);
+        if write == self.hang_at {
+            return Poll::Pending;
+        }
+        if write == self.fail_at {
             return Poll::Ready(false);
         }
         self.took
@@ -498,6 +517,10 @@ async fn rig() -> Rig {
         revision: 1,
         ..Default::default()
     });
+    // Admitted as the request's one admission admits it: the request is counted.
+    let grant = gov
+        .try_admit(&cost, &key, "", NOW)
+        .expect("admitted, the request counted");
     money.open(
         UnitKey::new(UNIT),
         UnitMoney {
@@ -509,7 +532,7 @@ async fn rig() -> Rig {
             arrived: NOW,
             mode: ExhaustionMode::FinishUnit,
             fee: FeeRefund::CallerStatus,
-            charge: Default::default(),
+            charge: grant.charge().clone(),
         },
     );
     let seam = Arc::new(Witness {
@@ -540,6 +563,18 @@ fn unit_ctx() -> UnitCtx {
 
 /// The session to its end over member `b`, its books the unit's.
 async fn serve(r: &Rig, plane: &Plane, caller: &Caller, walk: &mut Walk) -> Ran {
+    session(r, plane, caller, walk)
+        .await
+        .expect("the session runs to its end")
+}
+
+/// [`serve`], its outcome as the session returned it.
+async fn session(
+    r: &Rig,
+    plane: &Plane,
+    caller: &Caller,
+    walk: &mut Walk,
+) -> Result<Ran, crate::plane_driver::port_session::SessionError> {
     let store = Store;
     let resolver = Resolver::new(&store, Some([1; 32]));
     let refusals = CoreRefusals::new();
@@ -567,7 +602,27 @@ async fn serve(r: &Rig, plane: &Plane, caller: &Caller, walk: &mut Walk) -> Ran 
         },
     )
     .await
-    .expect("the session runs to its end")
+}
+
+/// The unit's settlement as the listener makes it for a session that failed or was dropped
+/// unfinished (`port_mount::Settle`: `Err`, or its drop): a gateway failure that ran nothing.
+fn settle_failed(r: &Rig) {
+    r.money
+        .settle_end_as(UnitKey::new(UNIT), end_of(502, false));
+}
+
+/// The requests the governance book counts for the caller's key.
+async fn requests(r: &Rig) -> u64 {
+    r.gov
+        .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .await
+        .expect("usage")
+        .requests
+}
+
+/// The checkpoint the witness logs for `counts` (class index, amount) answered `verdict`.
+fn checkpointed(counts: &[(u32, u64)], verdict: Checkpoint) -> String {
+    format!("checkpoint {counts:?} {verdict:?}")
 }
 
 /// The unit's settlement, as the listener makes it once its session returned (`Settle::finish`):
@@ -590,17 +645,19 @@ async fn ledgered(r: &Rig) -> Count {
         .tokens
 }
 
-/// What every case that bills the stated (7, 11) asserts: the books took the plane's final usage
-/// once, as one checkpoint answered `verdict`, and no cancel; the unit settles to exactly 18
-/// tokens, closes, and a second settlement adds nothing; nothing was audited unread or dropped.
+/// What every case that bills the stated (7, 11) asserts: the books took the HEAD's running (3, 4)
+/// as it was accepted, then the plane's final usage once, as one checkpoint answered `verdict`, and
+/// no cancel; the unit settles to exactly 18 tokens, closes, and a second settlement adds nothing;
+/// nothing was audited unread or dropped.
 async fn assert_billed_the_stated_usage_once(r: &Rig, caller: &Caller, verdict: Checkpoint) {
     assert_eq!(
         r.seam.log(),
         vec![
-            format!("checkpoint {:?} {verdict:?}", vec![(0u32, 7u64), (1, 11)]),
+            checkpointed(&[(0, 3), (1, 4)], Checkpoint::Continue),
+            checkpointed(&[(0, 7), (1, 11)], verdict),
             "finished".to_string(),
         ],
-        "the plane's final usage reached the books once, and nothing cancelled it"
+        "each usage reached the books once as it was accepted, and nothing cancelled it"
     );
     settle(r, caller);
     assert_eq!(
