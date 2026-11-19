@@ -5,7 +5,7 @@
 //!
 //! An accepted connection is driven by the same driver as a dialled one
 //! ([`crate::outbound::wire::Wire`], here with [`Role::Answer`]): every answer of the transport is
-//! checked against the output model (L1 to L7, L9) and placed for the connection as one run, and the
+//! checked against the output model (L1 to L7, L9), queued for the connection as one run, and the
 //! delivery state machine ([`crate::outbound::delivery`]) says, per answer, how much of it the
 //! operating system accepted. [`DeliveryLedger`] is that driver for one accepted connection, with the
 //! one thing the dial does not have: each answer's OWNER, the request's side in the root, which reads
@@ -24,11 +24,6 @@
 //! NOTHING IS MADE AHEAD (owner's allocation ruling): an empty ledger holds no array and no cell; an
 //! entry is made when the transport announces a stream, a cell when its request is admitted, the wake
 //! cell with the first of those.
-//!
-//! NO ANSWER BYTE IS HELD HERE (OPEN-3 16, money): the session already holds each answer's bytes in
-//! its own output buffer, charged to the connection's storage account. The ledger checks the answer
-//! and places its run ([`Wire::check`]) without copying a byte; the connection is given
-//! [`DeliveryLedger::give`] straight from the session's buffer, which is cleared only after the write.
 
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -38,12 +33,14 @@ use std::time::{Duration, Instant};
 use busbar_contract::response_delivery::{
     CarrierProgress, DeliverySnapshot, DeliveryTerminal, ResponseKey, ResponseStop,
 };
+use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::transport as abi;
 use futures::task::AtomicWaker;
 
 use crate::outbound::delivery::{Delivery as Verdict, Reason, Role, State as Sent};
 use crate::outbound::records::Out;
-use crate::outbound::wire::{Checked, Fault, Wire};
+use crate::outbound::tunnel::Dialling;
+use crate::outbound::wire::{Fault, Outcome, Wire};
 
 #[cfg(test)]
 #[path = "response_delivery_tests.rs"]
@@ -278,20 +275,23 @@ struct Answer {
 }
 
 /// THE ACCEPTED CONNECTION'S OUTPUT, DRIVEN: the delivery driver in the answering role, the
-/// connection's counts of the bytes the transport made, and each answer's owner. It holds no byte of
-/// an answer: those stay in the session's own charged buffer until the connection took them.
+/// connection's queue of bytes the transport made, and each answer's owner.
 ///
 /// It moves whole across the hand-over of an UPGRADE, counters and all ([`Self::adopt`]). However it
 /// goes, every answer still open has its verdict frozen as the socket's progress stands and handed to
 /// its owner, which then holds only that small value.
 pub struct DeliveryLedger {
     wire: Wire,
-    /// Bytes of the placed runs the connection has ever taken.
+    /// An accepted connection has no layer below its session here (its TLS is the connection's own,
+    /// beneath the writer the session is given): the driver's run goes straight into `queue`.
+    below: Dialling,
+    /// Bytes the transport made that the connection has not taken yet.
+    queue: SecureVec,
+    /// Bytes of the queue the connection has ever taken.
     written: u64,
-    /// Bytes ever placed for the connection (every checked run, byte for byte: an accepted
-    /// connection has no layer below its session here, its TLS is beneath the writer it is given).
+    /// Bytes ever queued for the connection.
     queued: u64,
-    /// A write failed: the rest of its run is not given, and nothing more is placed.
+    /// A write failed: what was queued and not taken was wiped, and nothing more is queued.
     lost: bool,
     answers: Vec<Answer>,
     /// CREDIT OWED to the transport, one entry a stream: (stream, bytes). Two things put a credit
@@ -310,7 +310,7 @@ impl fmt::Debug for DeliveryLedger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeliveryLedger")
             .field("answers", &self.answers.len())
-            .field("queued", &self.queued)
+            .field("queued", &self.queue.len())
             .field("written", &self.written)
             .field("retired", &self.retired)
             .finish_non_exhaustive()
@@ -322,6 +322,8 @@ impl Default for DeliveryLedger {
     fn default() -> Self {
         Self {
             wire: Wire::new(Role::Answer),
+            below: Dialling::direct(false),
+            queue: SecureVec::new(),
             written: 0,
             queued: 0,
             lost: false,

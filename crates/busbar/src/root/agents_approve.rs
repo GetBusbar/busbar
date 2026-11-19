@@ -125,11 +125,13 @@ pub(crate) async fn approve(
     };
     bound::trust_rule_effect(
         kernel,
-        &key,
-        Ruling::Approve,
-        Reviewed::Seen(&fingerprint),
-        actor,
-        operation,
+        bound::TrustDecision {
+            key: &key,
+            ruling: Ruling::Approve,
+            reviewed: Reviewed::Seen(&fingerprint),
+            actor,
+            operation,
+        },
         audited,
         |_| {
             json::to_vec(&json::json!({
