@@ -172,7 +172,8 @@ impl std::fmt::Debug for NativeSlot {
     }
 }
 impl NativeSlot {
-    /// The data chain of this slot's candidate; `None` on a slot with no data routes.
+    /// The configured data chain of this slot's candidate ([`slot_data_chain`]); `None` on the
+    /// operator slot, and on a data slot with no plane route and no chain configured.
     pub(crate) fn data_chain(&self) -> Option<Arc<NativeChain>> {
         self.data_chain.clone()
     }
@@ -236,12 +237,20 @@ pub(crate) fn is_upgrade(binding: &RouteBinding) -> bool {
 
 /// The data chain a data slot judges an unmatched path and a core keyed route (`/stats`) with.
 /// `names` is the configured `auth.chain`; `serves_data` is whether the slot mounts a plane route.
+///
+/// The chain is the CONFIGURED one whether or not the slot mounts a plane route, as v1.5.5 judged
+/// every non-exempt data path (`inbound-coverage.tsv` E05, E11, R02): a caller the chain verifies
+/// is served `/stats` and told 404 or 405 on an unmatched path; a caller with no credential, or
+/// with an operator's (never read on a data path), receives the one unverified answer. Never more
+/// open than v1.5.5: where no chain is configured a slot with no plane route has none (everyone
+/// is answered as unverified, where v1.5.5 served anyone), and a slot with plane routes refuses
+/// the candidate as before; a configured chain that cannot be built refuses the candidate.
 fn slot_data_chain<C>(
     names: &[Box<str>],
     serves_data: bool,
     build: impl FnOnce(&[Box<str>]) -> Result<C, String>,
 ) -> Result<Option<Arc<C>>, String> {
-    if !serves_data {
+    if names.is_empty() && !serves_data {
         return Ok(None);
     }
     build(names).map(|chain| Some(Arc::new(chain)))
