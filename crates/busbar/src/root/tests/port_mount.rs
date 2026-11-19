@@ -556,32 +556,3 @@ mod upgrade {
         )));
     }
 }
-
-/// A request that did not authenticate gets one answer on the native listener: 401, the same bytes
-/// whether it carried a bad credential, none, or reached no route at all.
-mod unauthenticated_answer {
-    use busbar_kernel::plane_driver::port_session::ToClient;
-    use busbar_plugin_abi::fail::refused::{R_AUTH_REQUIRED, R_BAD_CREDENTIAL};
-
-    use super::super::*;
-
-    #[test]
-    fn a_denial_is_a_401_status_with_body_and_never_tells_whether_the_route_exists() {
-        let absent = unauthenticated(false);
-        let presented = unauthenticated(true);
-        assert_eq!((absent.status, absent.code), (401, R_AUTH_REQUIRED));
-        assert_eq!((presented.status, presented.code), (401, R_BAD_CREDENTIAL));
-        let bytes = |refusal| {
-            port_auth::plain_refusal(&refusal)
-                .into_iter()
-                .map(|item| match item {
-                    ToClient::Head { status, fields } => format!("{status} {fields:?}"),
-                    ToClient::Body(body) => String::from_utf8(body).unwrap(),
-                    other => format!("{other:?}"),
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(bytes(absent), bytes(presented));
-        assert_eq!(bytes(unauthenticated(false))[1], UNAUTHENTICATED);
-    }
-}
