@@ -337,6 +337,16 @@ impl NativeDataRoute {
         &self.binding
     }
 
+    /// Whether a request on this route must present a credential to be verified: its admission
+    /// runs the chain on every request and the chain admits no caller that presents nothing.
+    /// The listener answers a head that presents none without taking its body.
+    pub fn requires_credential(&self) -> bool {
+        matches!(
+            self.admission,
+            Admission::Walk | Admission::Selected | Admission::PrincipalOnly | Admission::Catalog
+        ) && !self.owners.chain.admits_anonymous()
+    }
+
     /// The route's record, as bound.
     pub fn record(&self) -> &RouteRecord {
         &self.record
@@ -666,6 +676,9 @@ impl PendingData {
         let reason = match refusal {
             Refusal::BodyTooLarge => DataRefused::TooLarge,
             Refusal::Trailers => DataRefused::Trailers,
+            // A head screened as presenting no credential that its chain nevertheless verified
+            // (an open chain bound after the screen read it): not verified, the one 401.
+            Refusal::Unverified { .. } => DataRefused::Credential,
             // No other row is an input's own: nothing is answered, the request is cancelled.
             _ => DataRefused::Binding,
         };

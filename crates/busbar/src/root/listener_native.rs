@@ -52,6 +52,13 @@ pub(crate) type SelectNativeSlot = Arc<
         + Sync,
 >;
 
+/// Whether a request's head can be verified at all: `true` when its route requires a credential
+/// and the head presents none its chain could read. Such a request is answered on its head; the
+/// screen judges nothing else, and a head that presents any credential is verified by the chain
+/// as before.
+pub(crate) type HeadScreen =
+    Arc<dyn Fn(&busbar_kernel::inbound::native::RequestBinding) -> bool + Send + Sync>;
+
 pub(crate) struct NativeLimits {
     pub(crate) max_connections: usize,
     pub(crate) body_bytes: usize,
@@ -137,6 +144,26 @@ impl NativeListener {
         })
     }
 
+    /// The screen every connection of this listener judges its heads with.
+    fn head_screen(&self) -> HeadScreen {
+        let (select, slot) = (self.select.clone(), self.slot.clone());
+        Arc::new(move |binding| {
+            if !matches!(
+                binding.route().target(),
+                busbar_kernel::inbound::native::RouteTarget::Plane(_)
+            ) {
+                return false;
+            }
+            let Some(slot) = select(binding.app(), &slot) else {
+                return false;
+            };
+            let Ok(route) = slot.data_for(binding) else {
+                return false;
+            };
+            route.requires_credential() && !answer::presented(binding, route.withheld())
+        })
+    }
+
     /// Link the carrier side of an upgrade's hand-over. Called once, at assembly, by the listener
     /// plan when the candidate's websocket transport is admitted on this slot.
     pub(crate) fn with_adopter(mut self, adopter: Arc<dyn UpgradeAdopter>) -> Self {
@@ -212,6 +239,7 @@ impl NativeListener {
             self.budget.clone(),
             self.class,
             self.limits.body_bytes,
+            Some(self.head_screen()),
         );
         // Empty: its arrays and its wake cell are made with the first response (allocation ruling).
         let delivery = DeliveryLedger::default();
@@ -359,6 +387,9 @@ struct InputSlot {
     /// its body is discarded unbuffered, and at its end the request is answered with this row
     /// instead of being served. The connection, and its other streams, are untouched.
     refused: Option<busbar_kernel::auth::admission_table::Refusal>,
+    /// The request was answered on its head ([`HeadScreen`]): its input was completed empty,
+    /// and whatever body its client still sends is discarded as it arrives.
+    answered_at_head: bool,
 }
 impl InputSlot {
     fn next_deadline(&self) -> Option<Instant> {
@@ -398,6 +429,8 @@ pub(crate) struct NativeIngress {
     slots: Vec<InputSlot>,
     last_head: u64,
     body_limit: usize,
+    /// Whether a head can be verified at all ([`HeadScreen`]). `None`: every head is taken whole.
+    screen: Option<HeadScreen>,
 }
 
 impl NativeIngress {
@@ -406,6 +439,7 @@ impl NativeIngress {
         budget: Arc<ProcessAdmission>,
         class: AdmissionClass,
         body_limit: usize,
+        screen: Option<HeadScreen>,
     ) -> Self {
         Self {
             connection,
@@ -414,6 +448,7 @@ impl NativeIngress {
             slots: Vec::new(),
             last_head: 0,
             body_limit,
+            screen,
         }
     }
 
@@ -451,6 +486,13 @@ impl NativeIngress {
                 // PhysicalRequest now holds its own full head backing reservation.
                 drop(credit);
                 let body = InputBody::new(&request)?;
+                // A head that presents no credential its route could read cannot be verified:
+                // it is answered now, on the head, and none of its body is taken into memory.
+                let unverifiable = !end_stream
+                    && self
+                        .screen
+                        .as_ref()
+                        .is_some_and(|screen| screen(pending.binding()));
                 self.slots.push(InputSlot {
                     stream,
                     deadline,
@@ -461,9 +503,14 @@ impl NativeIngress {
                     owner: Arc::new(owner),
                     node: None,
                     carrier_reported: false,
-                    refused: None,
+                    refused: unverifiable.then_some(
+                        busbar_kernel::auth::admission_table::Refusal::Unverified {
+                            presented: false,
+                        },
+                    ),
+                    answered_at_head: unverifiable,
                 });
-                if end_stream {
+                if end_stream || unverifiable {
                     self.end(stream).map(Some)
                 } else {
                     Ok(None)
@@ -482,6 +529,9 @@ impl NativeIngress {
                     .iter_mut()
                     .find(|slot| slot.stream == stream)
                     .ok_or(InputError::Invalid)?;
+                if slot.answered_at_head {
+                    return Ok(None);
+                }
                 let pending = slot.pending.as_ref().ok_or(InputError::Invalid)?;
                 pending.binding().check_live()?;
                 let limit = pending
@@ -520,7 +570,17 @@ impl NativeIngress {
                 }
                 Ok(None)
             }
-            Inbound::End(stream) => self.end(stream).map(Some),
+            Inbound::End(stream) => {
+                // A request answered on its head completed its input then.
+                if self
+                    .slots
+                    .iter()
+                    .any(|slot| slot.stream == stream && slot.answered_at_head)
+                {
+                    return Ok(None);
+                }
+                self.end(stream).map(Some)
+            }
             Inbound::Reset { stream, .. } | Inbound::Stalled(stream) => {
                 let slot = self
                     .slots
@@ -541,6 +601,9 @@ impl NativeIngress {
                     .iter_mut()
                     .find(|slot| slot.stream == stream)
                     .ok_or(InputError::Invalid)?;
+                if slot.answered_at_head {
+                    return Ok(None);
+                }
                 if slot.refused.is_none() {
                     slot.refused = InputError::Trailers.refusal();
                 }
