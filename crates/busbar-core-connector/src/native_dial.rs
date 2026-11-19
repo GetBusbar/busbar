@@ -97,6 +97,10 @@ pub mod stage {
         CAUSE_CONNECT as CONNECT, CAUSE_DEADLINE as DEADLINE, CAUSE_FRAMER as FRAMER,
         CAUSE_SECURITY as SECURITY,
     };
+
+    /// A failure at the operator's proxy (the tunnel refused, the proxy unreachable, its own TLS): the proxy's,
+    /// never a provider's. No breaker is charged for it.
+    pub const PROXY: u64 = crate::outbound::tunnel::CAUSE_PROXY;
 }
 
 /// The admitted MIN-3 transport instance that carries one outbound carrier, as the connector holds it. The

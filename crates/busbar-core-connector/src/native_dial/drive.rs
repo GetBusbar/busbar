@@ -63,6 +63,72 @@ struct SealedPairRec {
     len: u32,
 }
 
+/// A DIAL THROUGH THE OPERATOR'S PROXY: the new `NativeDial::tunnel` (`None` = straight to the
+/// target). `native_dial.rs` re-exports it (`pub use drive::Tunnel;`). The socket connects to the
+/// proxy (`NativeDial::addr` and `also` are then the proxy's judged addresses); TLS to the target,
+/// inside the tunnel, still names the target.
+pub struct Tunnel {
+    hop: std::sync::Arc<crate::proxy_route::ProxyHop>,
+    target: crate::outbound::tunnel::Target,
+    trust: Option<std::sync::Arc<rustls::ClientConfig>>,
+}
+
+impl Tunnel {
+    /// The CONNECT names the target's judged address (the engine resolved the name: the
+    /// standard). `trust` = the client TLS settings for the proxy's own host, read only when the
+    /// proxy is reached over TLS.
+    #[must_use]
+    pub fn to_address(
+        hop: std::sync::Arc<crate::proxy_route::ProxyHop>,
+        target: SocketAddr,
+        trust: Option<std::sync::Arc<rustls::ClientConfig>>,
+    ) -> Self {
+        Self::planned(hop, crate::outbound::tunnel::Target::Addr(target), trust)
+    }
+
+    /// The CONNECT names the target by name (`outbound.proxy_resolution: proxy`, the operator's
+    /// deliberate choice).
+    #[must_use]
+    pub fn to_name(
+        hop: std::sync::Arc<crate::proxy_route::ProxyHop>,
+        authority: &str,
+        trust: Option<std::sync::Arc<rustls::ClientConfig>>,
+    ) -> Self {
+        Self::planned(
+            hop,
+            crate::outbound::tunnel::Target::Name(authority.to_owned()),
+            trust,
+        )
+    }
+
+    pub(crate) fn planned(
+        hop: std::sync::Arc<crate::proxy_route::ProxyHop>,
+        target: crate::outbound::tunnel::Target,
+        trust: Option<std::sync::Arc<rustls::ClientConfig>>,
+    ) -> Self {
+        Self { hop, target, trust }
+    }
+}
+
+/// CALLED by `NativeConnection::dial` to make the connection's `dialling` field from
+/// `NativeDial::tunnel`.
+///
+/// # Errors
+/// A proxy reached over TLS with no trust to verify it by, or its name is not a server name:
+/// stage `CAUSE_PROXY`, before any socket.
+pub(super) fn dialling_for(
+    tunnel: Option<Tunnel>,
+    secure_target: bool,
+) -> Result<crate::outbound::tunnel::Dialling, NativeFailure> {
+    match tunnel {
+        None => Ok(crate::outbound::tunnel::Dialling::direct(secure_target)),
+        Some(Tunnel { hop, target, trust }) => {
+            crate::outbound::tunnel::Dialling::through(hop, target, secure_target, trust.as_ref())
+                .map_err(proxy_failure)
+        }
+    }
+}
+
 /// A failure at the operator's proxy, as the dial reports it: its own stage, never `outbound`.
 pub(super) fn proxy_failure(failure: ProxyFailure) -> NativeFailure {
     NativeFailure::at(CAUSE_PROXY, failure.0)
@@ -524,6 +590,12 @@ impl NativeConnection {
     /// the count in the call's `credit`).
     pub(super) fn reader_took(&mut self, stream: u64, len: usize) -> Option<u64> {
         self.wire.taken(stream, len as u64)
+    }
+
+    /// The delivery state of `stream`'s request as the record words it: `none`, `part` or `whole`.
+    #[must_use]
+    pub fn sent_word(&self, stream: u64) -> &'static str {
+        self.wire.state_of(stream).as_str()
     }
 
     /// How much of `stream`'s request the operating system accepted, as it stands.

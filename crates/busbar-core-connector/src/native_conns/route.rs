@@ -31,7 +31,7 @@ use busbar_contract::services::codes::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
 use busbar_contract::storage::StorageSource;
 
 use super::{error_of, PendingDial};
-use crate::conns::native_dial::{NativeConnection, NativeDial};
+use crate::conns::native_dial::{NativeConnection, NativeDial, Tunnel};
 use crate::conns::{Answer, Verdict};
 use crate::outbound::tunnel::{hop_for, Resolution, Target, VERDICT_PROXY};
 use crate::proxy_route::ProxyHop;
@@ -55,16 +55,6 @@ pub(crate) struct Via {
     /// Who resolves the target's name.
     pub(crate) resolution: Resolution,
     /// The client TLS settings for the proxy's own host, read when the hop is reached over TLS.
-    pub(crate) trust: Option<Arc<rustls::ClientConfig>>,
-}
-
-/// What a tunnelled dial hands `NativeConnection::dial` (the new `NativeDial::tunnel`).
-pub(crate) struct Tunnel {
-    /// The proxy.
-    pub(crate) hop: Arc<ProxyHop>,
-    /// What the CONNECT names.
-    pub(crate) target: Target,
-    /// The client TLS settings for the proxy's own host.
     pub(crate) trust: Option<Arc<rustls::ClientConfig>>,
 }
 
@@ -255,11 +245,7 @@ pub(crate) fn dial_through(
             anchors,
             open_timeout,
             storage: storage.clone(),
-            tunnel: Some(Tunnel {
-                hop: via.hop,
-                target: connect_target,
-                trust: via.trust,
-            }),
+            tunnel: Some(Tunnel::planned(via.hop, connect_target, via.trust)),
         },
     )
     .map_err(|failure| {
