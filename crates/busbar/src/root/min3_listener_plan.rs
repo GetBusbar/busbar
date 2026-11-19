@@ -469,7 +469,7 @@ fn signed_admits(
         members.as_deref(),
         super::min3_physical::signed_body_cap(app),
     )
-    .map(drop)
+    .map(|_bound| ())
     .map_err(SignedUnmounted::reason)
 }
 
