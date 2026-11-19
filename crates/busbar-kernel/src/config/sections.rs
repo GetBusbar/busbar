@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use busbar_kernel_ledger::cost::UnitRate;
 
-use super::limits::{DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS};
+use super::limits::{default_rate_sweep_interval, default_usage_flush_interval_ms};
 
 pub use busbar_contract::conn::inbound::TlsCfg;
 
@@ -367,13 +367,6 @@ impl Default for AdvancedCfg {
             forwarded_header: None,
         }
     }
-}
-
-pub fn default_rate_sweep_interval() -> u32 {
-    DEFAULT_RATE_SWEEP_INTERVAL
-}
-pub fn default_usage_flush_interval_ms() -> u64 {
-    DEFAULT_USAGE_FLUSH_INTERVAL_MS
 }
 
 /// The most worker threads the engine will start: the most the Tokio multi-thread scheduler can
