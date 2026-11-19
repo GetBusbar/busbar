@@ -116,12 +116,20 @@ impl Stream {
     }
 }
 
+/// What a dial's set said, held until its stream is opened.
+struct Pending {
+    sealed: Vec<u32>,
+    given: u64,
+    asked: Asked,
+}
+
 /// The output state of one transport session.
 #[derive(Default)]
 pub struct Wire {
     open: Vec<Stream>,
-    /// Sealed slots declared with an `emit` of E_HEAD on stream 0 (a dial), waiting for STREAM_OPENED.
-    pending_sealed: Vec<u32>,
+    /// What an `emit` of E_HEAD on stream 0 (a dial) said, waiting for the STREAM_OPENED of its answer:
+    /// the sealed lengths, the body bytes given, and whether the set ended or refused the message.
+    pending: Option<Pending>,
     shutdown: bool,
 }
 
@@ -146,7 +154,17 @@ impl Wire {
     pub fn asked(&mut self, stream: u64, pieces: u32, body: u64, sealed: &[u32]) {
         if stream == 0 {
             if pieces & E_HEAD != 0 {
-                self.pending_sealed = sealed.to_vec();
+                self.pending = Some(Pending {
+                    sealed: sealed.to_vec(),
+                    given: if pieces & E_BODY != 0 { body } else { 0 },
+                    asked: if pieces & E_REFUSE != 0 {
+                        Asked::Refuse
+                    } else if pieces & E_END != 0 {
+                        Asked::End
+                    } else {
+                        Asked::Nothing
+                    },
+                });
             }
             return;
         }
@@ -164,6 +182,19 @@ impl Wire {
             s.asked = Asked::Refuse;
         } else if pieces & E_END != 0 {
             s.asked = Asked::End;
+        }
+    }
+
+    /// The dial's `emit(0, E_HEAD ..)` was answered STREAM_BUSY: nothing was opened, nothing is pending.
+    pub fn busy(&mut self) {
+        self.pending = None;
+    }
+
+    /// A session begun with CONN_UPGRADED serves the upgraded exchange as `stream` (1): it is open from
+    /// `begin`, before any record. Called by the adapter before it judges the `begin` answer.
+    pub fn adopt(&mut self, stream: u64) {
+        if stream != 0 && self.at(stream).is_none() {
+            self.open.push(Stream::new(stream, Vec::new()));
         }
     }
 
@@ -193,8 +224,18 @@ impl Wire {
                     .map(u64::from_le_bytes)
                     .unwrap_or(0);
                 if id != 0 && self.at(id).is_none() {
-                    let sealed = core::mem::take(&mut self.pending_sealed);
-                    self.open.push(Stream::new(id, sealed));
+                    // What the dial's set said waits here and attaches to the stream it opened: the
+                    // sealed lengths, the body bytes given, and whether the set ended or refused.
+                    let pending = self.pending.take();
+                    let mut stream = Stream::new(
+                        id,
+                        pending.as_ref().map_or_else(Vec::new, |p| p.sealed.clone()),
+                    );
+                    if let Some(p) = pending {
+                        stream.given = p.given;
+                        stream.asked = p.asked;
+                    }
+                    self.open.push(stream);
                 }
                 Ok(Part::Other)
             }
@@ -514,6 +555,54 @@ mod tests {
         assert_eq!(
             rule(w.record(tag::WIRE_SEALED, &sealed(0, 0, 0, 1))),
             Some(Rule::L3)
+        );
+    }
+
+    // The two fits below are from designer `wire` (parts/solo-wire-fit.rs), carried on house/d-adapt.
+
+    #[test]
+    fn a_dialled_request_sent_as_one_set_ends_whole_in_the_answer_that_opened_it() {
+        let mut w = Wire::new();
+        w.asked(0, E_HEAD | E_BODY | E_END, 2, &[]);
+        assert!(w.record(tag::STREAM_OPENED, &7u64.to_le_bytes()).is_ok());
+        assert!(
+            w.record(
+                tag::WIRE_PART,
+                &part(7, WIRE_CONTROL, b"POST / HTTP/1.1\r\n\r\n")
+            )
+            .is_ok()
+        );
+        assert!(
+            w.record(tag::WIRE_PART, &part(7, WIRE_PAYLOAD, b"{}"))
+                .is_ok()
+        );
+        assert!(w.record(tag::WIRE_END, &end(7, END_FLUSH, 0)).is_ok());
+        assert_eq!(w.open_streams(), 0);
+    }
+
+    #[test]
+    fn an_adopted_stream_is_open_from_begin() {
+        let mut w = Wire::new();
+        w.adopt(1);
+        assert!(
+            w.record(
+                tag::WIRE_PART,
+                &part(1, WIRE_CONTROL, b"HTTP/1.1 101 \r\n\r\n")
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_busy_dial_leaves_nothing_pending_for_the_next_stream() {
+        let mut w = Wire::new();
+        w.asked(0, E_HEAD | E_BODY | E_END, 2, &[4]);
+        w.busy();
+        // The next stream the session opens is not the refused dial: no end was asked of it.
+        assert!(w.record(tag::STREAM_OPENED, &9u64.to_le_bytes()).is_ok());
+        assert_eq!(
+            rule(w.record(tag::WIRE_END, &end(9, END_FLUSH, 0))),
+            Some(Rule::L5)
         );
     }
 }
