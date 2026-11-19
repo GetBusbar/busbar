@@ -529,6 +529,8 @@ mod fixed_piece {
     use busbar_plugin_abi::plane;
     use busbar_plugin_abi::records::Records;
     use busbar_plugin_loader::adapters::plane::{PlaneAdapter, PlaneDescribe};
+    use busbar_plugin_loader::call::kinds::plane::{Proxy, SessionHandle};
+    use busbar_plugin_loader::call::Mono;
     use busbar_plugin_loader::instance::ErrorBook;
     use busbar_plugin_test::FakeNeeds;
     use busbar_ports::plane::PlanePort;
@@ -550,10 +552,10 @@ mod fixed_piece {
                 fixture::MAX_OUT,
                 facts,
             );
-            let proxy = plane::Proxy::bind(inst).unwrap();
+            let proxy = Proxy::bind(inst).unwrap();
             let mut initial = Pool::global().acquire(fixture::MAX_OUT);
             let (session, answer) = proxy
-                .request(&mut initial, &fixture::plane_req(fixture::ACCEPT_BARE), b"")
+                .request(&mut initial, Mono::NONE, &fixture::plane_req(fixture::ACCEPT_BARE), b"")
                 .unwrap();
             assert!(answer.is_ok());
             let mut session = session.unwrap();
@@ -706,20 +708,20 @@ mod fixed_piece {
         drop((input_charge, general));
     }
 
-    fn opened() -> (PlaneAdapter<FakeNeeds>, plane::SessionHandle) {
+    fn opened() -> (PlaneAdapter<FakeNeeds>, SessionHandle) {
         opened_limit(fixture::MAX_OUT)
     }
 
-    fn opened_limit(max_out: usize) -> (PlaneAdapter<FakeNeeds>, plane::SessionHandle) {
+    fn opened_limit(max_out: usize) -> (PlaneAdapter<FakeNeeds>, SessionHandle) {
         let inst = fixture::hosted_with_limit::<plane::Marker>(
             &fixture::plane_fx::PLUGIN,
             plane::ALL,
             max_out,
         );
-        let proxy = plane::Proxy::bind(inst).unwrap();
+        let proxy = Proxy::bind(inst).unwrap();
         let mut initial = Pool::global().acquire(fixture::MAX_OUT);
         let (session, answer) = proxy
-            .request(&mut initial, &fixture::plane_req(fixture::ACCEPT_BARE), b"")
+            .request(&mut initial, Mono::NONE, &fixture::plane_req(fixture::ACCEPT_BARE), b"")
             .unwrap();
         assert!(answer.is_ok());
         let adapter = PlaneAdapter::new(
