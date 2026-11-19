@@ -580,7 +580,13 @@ async fn native_data_selected_scope_denial_never_claims_replay() {
     let f = fixture(false);
     let (request, selected, cx, _owner) = arrival(&f, 1);
     let pending = f.route.prepare_test(request, selected, cx).await.unwrap();
-    assert!(matches!(pending.complete().await, Err(DataRefused::Policy)));
+    // A verified key that does not hold the selected pool is refusal row 10 (403), never the
+    // unverified 401: the caller was verified before the selection was judged.
+    assert!(matches!(pending.complete().await, Err(DataRefused::Scope)));
+    assert_eq!(
+        DataRefused::Scope.refusal(true),
+        Some(crate::auth::admission_table::Refusal::ScopeDenied)
+    );
     assert_eq!(f.calls.calls.load(Ordering::SeqCst), 1);
     assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
 }
@@ -614,9 +620,11 @@ async fn native_data_policy_denial_retains_original_physical_completion() {
         .select(|_, _| Ok(Ok(selected)))
         .unwrap();
     let Err(DataPreparationFailed::Denied(denied)) = pending.complete().await else {
-        panic!("expected actual policy denial");
+        panic!("expected an actual scope denial");
     };
-    assert_eq!(denied.decision(), DataRefused::Policy);
+    // The key is verified and refused for what it selected: refusal row 10, after verification.
+    assert_eq!(denied.decision(), DataRefused::Scope);
+    assert!(denied.decision().after_verification());
     assert!(Arc::ptr_eq(denied.binding(), &binding));
     assert!(request.begin_data_preparation().is_err());
     let refusal = request.refuse_data(denied).unwrap();
