@@ -19,6 +19,11 @@ use super::min3_auth::AuthSet;
 use super::min3_auth::{AuthOwners, OpenedAuth};
 
 /// Assemble every configured native admin position before this candidate is published.
+///
+/// A position is left unset (it answers "not mine") only when it is the operator credential with
+/// nothing to judge: no opened instance and a definition carrying neither settings nor a token. A
+/// position whose definition carries a credential and has no opened instance refuses the
+/// candidate, so no admin request is ever judged while its configured instance is unopened.
 pub(crate) fn install(app: &mut App, auth: Arc<AuthSet>, epoch: u64) -> Result<(), String> {
     let mut chains = BTreeMap::new();
     let mut unset = BTreeSet::new();
@@ -31,7 +36,7 @@ pub(crate) fn install(app: &mut App, auth: Arc<AuthSet>, epoch: u64) -> Result<(
             && app
                 .identity_providers
                 .get(name)
-                .is_none_or(|cfg| cfg.token.is_none())
+                .is_none_or(|cfg| cfg.token.is_none() && cfg.settings.is_empty())
         {
             unset.insert(name.clone());
             continue;

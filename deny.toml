@@ -248,6 +248,9 @@ allow-git = [
     # root/dist [patch.crates-io] rows and locks.
     "https://github.com/MattJackson/sonic-rs",
     "https://github.com/MattJackson/olpc-cjson",
+    # The webrtc image's media stack: str0m 0.24.1 plus `set_fill` (Host-random ICE credentials), not yet
+    # proposed upstream; exact revision in dist/default's [patch.crates-io] rows and lock.
+    "https://github.com/MattJackson/str0m",
     # dist/default resolves these first-party plane plugins from the canonical GitLab host at their pinned revs
     # (the github.com rows above are the mirror URLs); busbar#429.
     "https://github.com/GetBusbar/busbar-plane-a2a",

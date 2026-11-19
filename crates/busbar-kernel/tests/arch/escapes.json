@@ -93,6 +93,8 @@
     "tools/openapi-diff/src/main.rs"
   ],
   "admitted": {
+    "crates/busbar-plugin-test/tests/fixtures/carrier_target.rs": "Owner, 18 Nov 2026: \"before round 2 do the old interface deletion so we audit minimal code\"; deleted with the old-interface host target (DELETE-OLD-INTERFACE-v2 R4)",
+    "crates/busbar-plugin-test/tests/fixtures/framer_target.rs": "Owner, 18 Nov 2026: \"before round 2 do the old interface deletion so we audit minimal code\"; deleted with the old-interface host target (DELETE-OLD-INTERFACE-v2 R4)",
     "crates/busbar-contract/src/json_grammar.rs": "DES-SONIC-WIPE r3 §1 #3 (adopted 2026-11-17, COORD ack): moved verbatim to crates/busbar-contract/src/abi/sdk/typed_json.rs, which keeps the forbid"
   }
 }

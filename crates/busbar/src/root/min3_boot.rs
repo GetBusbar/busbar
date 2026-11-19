@@ -597,7 +597,7 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
     let mut providers = cfg.identity_providers.iter().collect::<Vec<_>>();
     providers.sort_by_key(|(name, _)| *name);
     for (name, provider) in providers {
-        if busbar_kernel::config::is_builtin_identity_module(&provider.module) {
+        if !super::min3_auth::opens_instance(provider) {
             continue;
         }
         out.push(Configured {

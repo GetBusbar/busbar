@@ -10,7 +10,7 @@ ffi:
   path: crates/busbar-ffi
   # Every `unsafe` token in the crate (tests and doc code included) plus every allow/expect(unsafe_code).
   # Measured by W1-U0; it never rises (against the merge base and origin/dev) and only falls.
-  total: 92
+  total: 108
   # The only files the crate may hold, each with its own pinned count: no file is added, and unsafe
   # cannot move between files without the owner's approval of this file.
   files:
@@ -21,6 +21,7 @@ ffi:
     src/shim.rs: { tokens: 41, reason: "enter (def and block); instance shims' definitions and enter blocks; close's drop; its allow. Slot primitives are private safe calls under I6." }
     src/slots.rs: { tokens: 11, reason: "the raw slot write, exclusive value borrow and take, Sync for Slots, tie (the chain-future lifetime erasure), drop_inst (def, the in-place drops of chains and of the owned rest, and the free), the C-CLOSE-PARKED test's one block; its allow" }
     src/host.rs: { tokens: 11, reason: "one call block per entry arity (invoke0-5), the resume, cancel and close calls, Arena::lend's append; its allow" }
+    src/test_watch.rs: { tokens: 16, reason: "test code only (feature test-support): the allocation watch's GlobalAlloc impl and its four fns, their forwarding calls, the canary and freed-block reads, realloc's layout, alloc, copy and free; its allow. These tokens moved INTO busbar-ffi from busbar-contract (abi/sdk/test_support/watch.rs, interim 14): unsafe outside ffi falls by 14 when the cut deletes that copy; the two extra are realloc's copy and free split in two blocks and this file's allow" }
     src/image.rs: { tokens: 7, reason: "Library::new, Library::get, the opened and admitted header views, the stamp view, the vt::<K> cast; its allow" }
   # Exactly these dependencies, each with its role: always, host (optional, feature `host`), or the cfg.
   dependencies:
@@ -34,6 +35,18 @@ ffi:
     crates/busbar-plugin-abi/Cargo.toml: forwards host
     crates/plugin-loader/Cargo.toml: host
     crates/busbar-plugin-test/Cargo.toml: no host
+  # The owner's approved rises of `total`, each exact: against a comparison revision whose total is `from`,
+  # the total may be `to` only when the measured total is exactly `to`, the named file measures exactly
+  # `tokens` (= to - from) and is a module behind `feature`, and every other busbar-ffi file together still
+  # measures at most `from`. Any other rise stays red. An entry is never edited after it merges.
+  approved_rises:
+    - from: 92
+      to: 108
+      file: src/test_watch.rs
+      tokens: 16
+      feature: test-support
+      ruling: "owner, 18 Nov 2026: 'Yes: move it into ffi'"
+      reason: "the allocation watch (Watch, Freed, Block; a GlobalAlloc, test code only) leaves busbar-contract (abi/sdk/test_support/watch.rs, 14 tokens outside ffi) for ffi; 16 here because ffi's lints split realloc's copy and free into two blocks and the file carries its own allow. Two copies exist until the cut: the 14 interim tokens outside ffi go with the cut's deletion of abi/."
 # E1: every other tracked .rs file holding an escape token (unsafe, a linker identifier, an extern block,
 # an allow/expect/warn of unsafe_code, an OUT_DIR include, a build.rs writing .rs), with its exact count
 # and the package that deletes it. Rows are never added or raised; the whole map is deleted at the end
@@ -213,7 +226,6 @@ interim:
   crates/busbar/src/main.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/mod.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/serve.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/boot.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_auth.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_protocols.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/node_door_rig.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }

@@ -1106,20 +1106,44 @@ __attribute__((constructor)) static void mark_loaded(void) {
 }
 
 #[test]
-fn provider_location_refuses_an_unregistered_claim_and_an_omitted_target() {
+fn provider_location_refuses_a_scheme_core_does_not_dial_and_an_omitted_target() {
     let rows: Arc<dyn PluginRows> = Arc::new(PluginRegistry::empty());
-    let missing = locate_provider_destination(&rows, "missing-foreign-claim://example.test:9443")
-        .expect_err("a URL alone never registers a transport");
-    assert!(
-        missing.contains("no admitted transport claims 'missing-foreign-claim'"),
-        "{missing}"
-    );
+    for target in [
+        "missing-foreign-claim://example.test:9443",
+        "sse://example.test",
+        "grpc://example.test",
+        "tcp://10.0.0.1:5432",
+    ] {
+        let refused = locate_provider_destination(&rows, target)
+            .expect_err("a URL alone never registers a transport");
+        assert!(
+            refused.contains("is not one core dials"),
+            "{target}: {refused}"
+        );
+    }
     assert!(locate_provider_destination(&rows, "").is_err());
     assert!(locate_provider_destination(&rows, "example.test:9443").is_err());
 }
 
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-owner_test_sources!(boot_carrier_locate);
+#[test]
+fn provider_location_reads_the_scheme_table_and_needs_the_carriers_supplier() {
+    let none = locate_provider_destination_with("https://api.example.test/v1", &[])
+        .expect_err("a carrier the build assigns to no image refuses the destination");
+    assert!(none.contains("no supplying transport"), "{none}");
+    if crate::LINKED_CARRIERS.is_empty() {
+        return;
+    }
+    let https =
+        locate_provider_destination_with("https://api.example.test/v1", crate::LINKED_CARRIERS)
+            .expect("https rides the build's http carrier");
+    assert_eq!(https.authority, "api.example.test:443");
+    assert!(https.secure);
+    assert_eq!(https.name.as_deref(), Some("api.example.test"));
+    let http = locate_provider_destination_with("HTTP://127.0.0.1:9000", crate::LINKED_CARRIERS)
+        .expect("a scheme matches without regard to case");
+    assert_eq!(http.authority, "127.0.0.1:9000");
+    assert!(!http.secure);
+}
 
 /// COORD-STORE-C2 (live boot bug): when the MIN-3 walk opened and admitted the configured store, that admission
 /// is the boot's store admission (taken once) and the old ABI's preparation is never entered; a boot with no

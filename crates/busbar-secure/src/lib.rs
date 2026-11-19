@@ -18,7 +18,7 @@ const MIN_CAP: usize = 1024;
 /// A byte queue that wipes what it releases.
 ///
 /// Live bytes are `v[head..end]`. `v[..head]` and `v[end..v.len()]` are zero. `v.len()` is the
-/// zero-initialised extent (allocated and zeroed once, at growth or adoption). Drop volatile-wipes
+/// zero-initialised extent (allocated and zeroed once, at growth or adoption). Drop wipes
 /// the live bytes before the free; the rest is zero already.
 pub struct SecureVec {
     v: Vec<u8>,
@@ -27,7 +27,7 @@ pub struct SecureVec {
 }
 
 /// An uncommitted read owns its whole loan, including bytes outside the live extent.
-/// Abandoning it must use a volatile wipe: the buffer may itself drop during unwind.
+/// Abandoning it wipes the whole loan (the buffer may itself drop during unwind).
 struct ReadLoan<'a> {
     bytes: &'a mut [u8],
     committed: bool,
@@ -36,7 +36,7 @@ struct ReadLoan<'a> {
 impl Drop for ReadLoan<'_> {
     fn drop(&mut self) {
         if !self.committed {
-            self.bytes.zeroize();
+            wipe(self.bytes);
         }
     }
 }
@@ -114,7 +114,7 @@ impl SecureVec {
     pub fn truncate(&mut self, n: usize) {
         if n < self.len() {
             let cut = self.head + n;
-            fill_wipe(&mut self.v[cut..self.end]);
+            wipe(&mut self.v[cut..self.end]);
             self.end = cut;
             if self.head == self.end {
                 self.head = 0;
@@ -131,7 +131,7 @@ impl SecureVec {
         if self.head != 0 {
             let live = self.len();
             self.v.copy_within(self.head..self.end, 0);
-            fill_wipe(&mut self.v[live..self.end]);
+            wipe(&mut self.v[live..self.end]);
             self.head = 0;
             self.end = live;
         }
@@ -170,7 +170,7 @@ impl SecureVec {
     /// empty, both offsets reset for free.
     pub fn consume(&mut self, n: usize) {
         let n = n.min(self.len());
-        fill_wipe(&mut self.v[self.head..self.head + n]);
+        wipe(&mut self.v[self.head..self.head + n]);
         self.head += n;
         if self.head == self.end {
             self.head = 0;
@@ -227,7 +227,7 @@ impl SecureVec {
         match read(loan.bytes) {
             Ok(k) if k <= max => {
                 if tail == Tail::Wipe {
-                    fill_wipe(&mut loan.bytes[k..]);
+                    wipe(&mut loan.bytes[k..]);
                 }
                 // `room` already checked end + max; no user code or fallible step separates
                 // advancing the live extent from committing the loan.
@@ -252,7 +252,7 @@ impl SecureVec {
             // At least half the used span is consumed: move the `live` (≤ `head`) bytes to 0.
             self.v.copy_within(self.head..self.end, 0);
             moved(live);
-            fill_wipe(&mut self.v[live..self.end]);
+            wipe(&mut self.v[live..self.end]);
             self.head = 0;
             self.end = live;
             return Ok(());
@@ -266,9 +266,9 @@ impl SecureVec {
         n.resize(cap, 0); // the one zero-fill, at growth only
         n[..live].copy_from_slice(&self.v[self.head..self.end]);
         moved(live);
-        // The old block's live span (the rest is zero) is volatile-wiped, then freed.
+        // The old block's live span (the rest is zero) is wiped, then freed.
         let mut old = std::mem::replace(&mut self.v, n);
-        old[self.head..self.end].zeroize();
+        wipe(&mut old[self.head..self.end]);
         wiped_growth();
         self.head = 0;
         self.end = live;
@@ -313,19 +313,19 @@ impl fmt::Debug for SecureVec {
 }
 
 impl Zeroize for SecureVec {
-    /// Volatile-wipe the live bytes (everything outside them is already zero) and hold nothing;
-    /// the allocation is kept, all zero.
+    /// Wipe the live bytes (everything outside them is already zero) and hold nothing; the
+    /// allocation is kept, all zero.
     fn zeroize(&mut self) {
-        self.v[self.head..self.end].zeroize();
+        wipe(&mut self.v[self.head..self.end]);
         self.head = 0;
         self.end = 0;
     }
 }
 
-/// Only the live bytes need the volatile wipe: outside `[head, end)` is zero by construction.
+/// Only the live bytes need the wipe: outside `[head, end)` is zero by construction.
 impl Drop for SecureVec {
     fn drop(&mut self) {
-        self.v[self.head..self.end].zeroize();
+        wipe(&mut self.v[self.head..self.end]);
         wiped_drop();
     }
 }
@@ -390,12 +390,13 @@ pub enum Tail {
     Wipe,
 }
 
-/// Wipe bytes the buffer still owns and will reuse. These are not dead stores: the allocation is
-/// read again through `as_slice`/`copy_within`, and the final wipe before the free is
-/// `Zeroize`'s, at drop.
-fn fill_wipe(s: &mut [u8]) {
+/// THE ONE WIPE RULE (owner's ruling): bytes that held input are wiped in one block store, then an
+/// optimisation barrier that takes their address and is declared to read them, so the compiler
+/// must keep the zeros in memory even when the next step is the free. Used for every wipe: bytes
+/// the buffer keeps and reuses, and bytes about to be released.
+fn wipe(s: &mut [u8]) {
     s.fill(0);
-    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    zeroize::optimization_barrier(&*s);
 }
 
 #[cfg(any(test, feature = "test-support"))]
