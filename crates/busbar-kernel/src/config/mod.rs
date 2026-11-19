@@ -2173,6 +2173,10 @@ mod advanced_destinations_tests;
 mod worker_threads_tests;
 
 #[cfg(test)]
+#[path = "tests/usage_flush_tests.rs"]
+mod usage_flush_tests;
+
+#[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
 
