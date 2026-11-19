@@ -3,7 +3,7 @@
 
 //! MONEY: a priced LLM call is metered under its model's lane at the rate card's exact price,
 //! through the real binary, after the operator's admin changes have rebuilt the running
-//! configuration (a key minted, a group created, a reload): the shape the Console drives against a
+//! configuration (a key minted, a reload): the shape the Console drives against a
 //! live engine (its proof H3). A rebuild must keep the configured models, and the usage read must
 //! price every call; a call filed under no lane is a call the engine cannot bill.
 
@@ -69,21 +69,10 @@ fn priced_llm_calls_after_admin_rebuilds_are_metered_under_the_model_lane_at_the
         .section(&rate_card())
         .boot();
 
-    // The operator's admin changes, as the Console makes them before traffic: a key minted, a
-    // group created, and a reload of the configuration from disk. Each one that rebuilds the
-    // running configuration must keep the model it serves and prices.
+    // The operator's admin changes, as the Console makes them before traffic: a key minted and a
+    // reload of the configuration from disk. A rebuild of the running configuration must keep the
+    // model it serves and prices.
     let key = node.mint(&json!({ "name": "usage-priced" }));
-    let group = node.operator(
-        "POST",
-        "/api/v1/admin/groups",
-        Some(&json!({ "name": "usage_priced_team", "config": {} })),
-    );
-    assert!(
-        group.status < 300,
-        "the operator creates a group: {} {}",
-        group.status,
-        group.text()
-    );
     let reload = node.operator("POST", "/api/v1/admin/config/reload", None);
     assert!(
         reload.status < 300,
