@@ -210,8 +210,9 @@ pub(crate) fn state_hydration_buckets(
     buckets
 }
 
-/// `state`: the periodic budget shard sweep (once per `rate_sweep_interval` admissions on the
-/// shard): drops aged clean cells, then prunes dead model rows from the cells it keeps.
+/// `state`: the budget shard sweep (the usage writer's tick, `GovState::sweep_budgets`): drops
+/// aged clean cells, then prunes dead model rows from the cells it keeps. The age is the longest
+/// window a bucket has, a calendar month of at most 31 days.
 pub(crate) fn state_sweep_budget_shard(
     map: &mut foldhash::HashMap<Text, BudgetCell>,
     cost: &crate::cost::CostModel,

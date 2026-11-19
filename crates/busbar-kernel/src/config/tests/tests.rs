@@ -1600,7 +1600,6 @@ models:
     );
 
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
-    assert_eq!(l.rate_sweep_interval, DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(l.usage_flush_interval_ms, DEFAULT_USAGE_FLUSH_INTERVAL_MS);
     assert_eq!(l.default_probe_interval_secs, DEFAULT_PROBE_INTERVAL_SECS);
     assert_eq!(l.default_probe_timeout_secs, DEFAULT_PROBE_TIMEOUT_SECS);
@@ -1622,7 +1621,6 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
         a.upstream_request_timeout_secs,
         b.upstream_request_timeout_secs
     );
-    assert_eq!(a.rate_sweep_interval, b.rate_sweep_interval);
     assert_eq!(a.usage_flush_interval_ms, b.usage_flush_interval_ms);
     assert_eq!(a.default_policy_timeout_ms, b.default_policy_timeout_ms);
     assert_eq!(a.key_gauge_limit, b.key_gauge_limit);
@@ -2124,7 +2122,10 @@ advanced:
     assert_eq!(deploy.per_request_fee, 2);
     assert_eq!(deploy.groups.len(), 2);
     assert_eq!(deploy.groups["eng-batch"].parent.as_deref(), Some("eng"));
-    assert_eq!(deploy.advanced.rate_sweep_interval, 64);
+    assert!(
+        deploy.advanced.rate_sweep_interval.is_some(),
+        "the removed key is accepted"
+    );
     assert_eq!(deploy.advanced.usage_flush_interval_ms, 5);
 
     let bare: DeployCfg =
@@ -2133,10 +2134,7 @@ advanced:
     assert!(bare.rate_card.is_none());
     assert_eq!(bare.per_request_fee, 0, "per_request_fee defaults to 0");
     assert!(bare.groups.is_empty());
-    assert_eq!(
-        bare.advanced.rate_sweep_interval,
-        DEFAULT_RATE_SWEEP_INTERVAL
-    );
+    assert!(bare.advanced.rate_sweep_interval.is_none());
     assert_eq!(
         bare.advanced.usage_flush_interval_ms,
         DEFAULT_USAGE_FLUSH_INTERVAL_MS

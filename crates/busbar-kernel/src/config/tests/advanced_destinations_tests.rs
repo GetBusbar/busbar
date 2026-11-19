@@ -17,7 +17,7 @@ fn the_destination_keys_parse_under_advanced() {
 fn private_addresses_are_blocked_by_default() {
     assert!(AdvancedCfg::default().block_private_addresses);
     let omitted: AdvancedCfg =
-        busbar_contract::yaml::from_str("rate_sweep_interval: 256\n").expect("parses");
+        busbar_contract::yaml::from_str("usage_flush_interval_ms: 100\n").expect("parses");
     assert!(omitted.block_private_addresses);
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
     let d = cfg.destinations();

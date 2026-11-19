@@ -475,7 +475,6 @@ store:
 # ── Advanced (optional) ──────────────────────────────────────────────────────────────────────────
 # Internal tuning; the defaults are right for almost everyone.
 # advanced:
-#   rate_sweep_interval: 256                # rate-map idle-entry sweep amortization
 #   usage_flush_interval_ms: 100            # write-behind flush cadence for usage counters
 
 # ── Plugins (optional; OFF by default) ───────────────────────────────────────────────────────────

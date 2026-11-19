@@ -27,7 +27,7 @@
         },
         "rate_sweep_interval": {
           "optional": true,
-          "type": "u32"
+          "type": "IgnoredAny"
         },
         "response_headers": {
           "optional": true,

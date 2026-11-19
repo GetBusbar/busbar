@@ -67,7 +67,8 @@ fn every_patch_mirrors_every_field_of_its_section() {
         allow_destinations: _,
     } = crate::config::AdvancedCfg::default();
     let _ = AdvancedPatch {
-        rate_sweep_interval: Some(rate_sweep_interval),
+        // A removed key: carried as accepted, never a value.
+        rate_sweep_interval,
         usage_flush_interval_ms: Some(usage_flush_interval_ms),
         response_headers: Some(response_headers),
     };

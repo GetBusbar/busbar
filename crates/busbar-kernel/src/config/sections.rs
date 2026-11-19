@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use busbar_kernel_ledger::cost::UnitRate;
 
-use super::limits::{default_rate_sweep_interval, default_usage_flush_interval_ms};
+use super::limits::default_usage_flush_interval_ms;
 
 pub use busbar_contract::conn::inbound::TlsCfg;
 
@@ -238,10 +238,10 @@ pub struct AdvancedCfg {
     /// Operator deregistration allowance, captured at boot; edit through the config document.
     #[serde(default)]
     pub shutdown: super::shutdown::AdvancedShutdownCfg,
-    /// Amortization interval for the budget-table sweep: every Nth admission on a budget shard
-    /// also drops that shard's entries no longer needed (default 256).
-    #[serde(default = "default_rate_sweep_interval")]
-    pub rate_sweep_interval: u32,
+    /// REMOVED (was the budget-table sweep cadence): accepted from an old configuration, ignored,
+    /// never written back; [`AdvancedCfg::removed`] names it so `config::resolve` logs one line.
+    #[serde(default, skip_serializing)]
+    pub rate_sweep_interval: Option<serde::de::IgnoredAny>,
     /// Write-behind flush cadence (ms) for the in-memory usage/budget counters. On an UNGRACEFUL
     /// crash (kill -9 / power loss) at most this many ms of accrued spend/requests can be lost; a
     /// graceful shutdown flushes fully. Default 100.
@@ -305,9 +305,8 @@ pub struct AdvancedCfg {
     /// does not resolve here is the proxy's to check). BOOT-TIME.
     #[serde(default, skip_serializing_if = "is_local_resolution")]
     pub proxy_resolution: super::tls::ProxyResolution,
-    /// RETIRED: the global destination allowlist was removed (private reach is a registration's own
-    /// `allow_private`). A configuration written while it existed still loads: the value is
-    /// ignored, never written back, and `config::resolve` logs one line when it is present.
+    /// REMOVED (was the global destination allowlist): accepted from an old configuration, ignored,
+    /// never written back; [`AdvancedCfg::removed`] names it so `config::resolve` logs one line.
     #[serde(default, skip_serializing)]
     pub allow_destinations: Option<serde::de::IgnoredAny>,
 }
@@ -362,7 +361,7 @@ impl Default for AdvancedCfg {
     fn default() -> Self {
         Self {
             shutdown: super::shutdown::AdvancedShutdownCfg::default(),
-            rate_sweep_interval: default_rate_sweep_interval(),
+            rate_sweep_interval: None,
             usage_flush_interval_ms: default_usage_flush_interval_ms(),
             worker_threads: None,
             upstream_http1_only: false,
@@ -413,6 +412,51 @@ pub fn effective_worker_threads(configured: Option<usize>) -> (Option<usize>, Op
             )),
         ),
         other => (other, None),
+    }
+}
+
+/// The `advanced` keys that are no longer settings, each with what the engine does instead: the
+/// one place that is worded. An old configuration carrying one still loads (the configuration
+/// file, a settings patch, a document edit), and `config::resolve` says this line once per key.
+pub const REMOVED_ADVANCED: [(&str, &str); 2] = [
+    (
+        "allow_destinations",
+        "a private address is reached only by a registration that sets its own allow_private, \
+         or by a provider's own origin",
+    ),
+    (
+        "rate_sweep_interval",
+        "the budget tables are swept on the usage writer's tick (advanced.usage_flush_interval_ms), \
+         releasing every entry that holds nothing unwritten and whose window has passed",
+    ),
+];
+
+/// The line said for a removed `advanced` key an old configuration carries.
+#[must_use]
+pub fn removed_advanced_line(key: &str) -> Option<String> {
+    REMOVED_ADVANCED
+        .iter()
+        .find(|(removed, _)| *removed == key)
+        .map(|(removed, instead)| {
+            format!("advanced.{removed} is no longer a setting and is ignored: {instead}")
+        })
+}
+
+impl AdvancedCfg {
+    /// The removed keys this block still carries (an old configuration), in [`REMOVED_ADVANCED`]
+    /// order.
+    pub fn removed(&self) -> impl Iterator<Item = &'static str> + '_ {
+        let Self {
+            allow_destinations,
+            rate_sweep_interval,
+            ..
+        } = self;
+        [
+            ("allow_destinations", allow_destinations.is_some()),
+            ("rate_sweep_interval", rate_sweep_interval.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(key, carried)| carried.then_some(key))
     }
 }
 

@@ -168,7 +168,6 @@ impl ConfiguredView {
         put!(
             "advanced",
             json!({
-                "rate_sweep_interval": l.rate_sweep_interval,
                 "usage_flush_interval_ms": l.usage_flush_interval_ms,
                 "upstream_http1_only": l.upstream_http1_only,
                 "upstream_h2_prior_knowledge": l.upstream_h2_prior_knowledge,

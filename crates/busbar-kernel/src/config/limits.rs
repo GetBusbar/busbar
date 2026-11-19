@@ -44,8 +44,6 @@ pub const DEFAULT_DEFAULT_MAX_TOKENS: u32 = DEFAULT_MAX_TOKENS;
 
 pub const DEFAULT_KEY_GAUGE_LIMIT: usize = 2000;
 
-pub const DEFAULT_RATE_SWEEP_INTERVAL: u32 = 256;
-
 pub const DEFAULT_USAGE_FLUSH_INTERVAL_MS: u64 = 100;
 
 /// The least `advanced.usage_flush_interval_ms` the writer can honour. The writer loop
@@ -140,9 +138,6 @@ pub fn default_default_max_tokens() -> u32 {
 }
 pub fn default_key_gauge_limit() -> usize {
     DEFAULT_KEY_GAUGE_LIMIT
-}
-pub fn default_rate_sweep_interval() -> u32 {
-    DEFAULT_RATE_SWEEP_INTERVAL
 }
 pub fn default_usage_flush_interval_ms() -> u64 {
     DEFAULT_USAGE_FLUSH_INTERVAL_MS
@@ -398,10 +393,9 @@ pub struct LimitsResolved {
     pub default_max_tokens: u32,
     pub reasoning_effort_budgets: ReasoningEffortBudgets,
     pub key_gauge_limit: usize,
-    pub rate_sweep_interval: u32,
     pub usage_flush_interval_ms: u64,
     /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`). BOOT-TIME knob
-    /// read once at client build. Carried here (like `rate_sweep_interval`) so the client-build wiring
+    /// read once at client build. Carried here (like `usage_flush_interval_ms`) so the client-build wiring
     /// reads a flat struct. (The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was removed in 1.6.0.)
     pub upstream_http1_only: bool,
     /// Force HTTP/2 prior-knowledge to cleartext upstreams (`advanced.upstream_h2_prior_knowledge`).
@@ -450,7 +444,6 @@ impl LimitsResolved {
             default_max_tokens: limits.default_max_tokens,
             reasoning_effort_budgets: limits.reasoning_effort_budgets,
             key_gauge_limit,
-            rate_sweep_interval: advanced.rate_sweep_interval,
             usage_flush_interval_ms: effective_usage_flush_interval_ms(
                 advanced.usage_flush_interval_ms,
             )

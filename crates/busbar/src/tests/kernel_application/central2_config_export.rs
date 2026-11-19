@@ -47,7 +47,6 @@ routing:
     assert_eq!(l.request_body_max_bytes, 1_048_576);
     assert_eq!(l.pool_idle_timeout_secs, 77);
     assert_eq!(l.key_gauge_limit, 9);
-    assert_eq!(l.rate_sweep_interval, 64);
     assert_eq!(l.usage_flush_interval_ms, 5);
     assert_eq!(l.default_probe_interval_secs, 7);
     assert_eq!(l.default_policy_timeout_ms, 99);

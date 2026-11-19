@@ -9,7 +9,7 @@ fn advanced(yaml: &str) -> Result<crate::config::AdvancedCfg, String> {
 
 #[test]
 fn an_omitted_tls_block_is_the_bundled_roots_alone() {
-    let a = advanced("rate_sweep_interval: 256\n").expect("parses");
+    let a = advanced("usage_flush_interval_ms: 100\n").expect("parses");
     assert!(a.tls.is_default());
     assert_eq!(a.tls.roots, TlsRoots::Bundled);
 }

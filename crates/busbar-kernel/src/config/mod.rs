@@ -1572,8 +1572,8 @@ pub use busbar_kernel::config::limits::{
     default_max_auto_provisioned_groups, default_max_honored_retry_after_secs,
     default_max_inbound_concurrent, default_max_keys_per_principal, default_pool_idle_timeout_secs,
     default_pool_max_idle_per_host, default_probe_interval_secs, default_probe_timeout_secs,
-    default_rate_sweep_interval, default_reasoning_high, default_reasoning_low,
-    default_reasoning_medium, default_reasoning_minimal, default_request_body_max_bytes,
+    default_reasoning_high, default_reasoning_low, default_reasoning_medium,
+    default_reasoning_minimal, default_request_body_max_bytes,
     default_request_body_read_timeout_secs, default_tls_handshake_timeout_secs,
     default_upstream_error_body_max_bytes, default_upstream_request_timeout_secs,
     default_usage_flush_interval_ms, ExportLimits, HealthDefaultsCfg, LimitsCfg, LimitsResolved,
@@ -1581,10 +1581,10 @@ pub use busbar_kernel::config::limits::{
     DEFAULT_HARD_DOWN_COOLDOWN_SECS, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
     DEFAULT_MAX_INBOUND_CONCURRENT, DEFAULT_PLUGIN_FETCH_MAX_BYTES, DEFAULT_POOL_IDLE_TIMEOUT_SECS,
     DEFAULT_POOL_MAX_IDLE_PER_HOST, DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS,
-    DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_REQUEST_BODY_MAX_BYTES,
-    DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS, DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS,
-    DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES, DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
-    DEFAULT_USAGE_FLUSH_INTERVAL_MS, REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
+    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS,
+    DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS, DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES,
+    DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
 };
 
 fn default_plugins_dir() -> String {
@@ -1657,11 +1657,14 @@ pub fn resolve_with_provider_planes(
     {
         diag_warn!(crate::diagnostics::CONFIG_SETTING_OUT_OF_RANGE, "{note}");
     }
-    if deploy.advanced.allow_destinations.is_some() {
-        tracing::warn!(
-            "advanced.allow_destinations was removed and is ignored: a private address is reached \
-             only by a registration that sets its own allow_private, or by a provider's own origin"
-        );
+    // A settings patch and a document edit are spliced into `deploy` first, so this is one line
+    // per removed key an old configuration still carries, at boot and on every apply.
+    for line in deploy
+        .advanced
+        .removed()
+        .filter_map(sections::removed_advanced_line)
+    {
+        tracing::warn!("{line}");
     }
     for name in deploy
         .rate_card

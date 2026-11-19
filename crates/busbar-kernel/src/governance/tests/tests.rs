@@ -1693,14 +1693,11 @@ async fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         );
     }
 
-    gov.budget.sweep_ticker_for("survivor").store(
-        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
-        Ordering::Relaxed,
-    );
     assert!(
         gov.try_admit(&flat_cost(1), &survivor, "", now).is_ok(),
         "key admits"
     );
+    gov.sweep_budgets(&flat_cost(1), now);
 
     let map = gov.budget.read("survivor");
     let total = map
@@ -1771,14 +1768,11 @@ async fn test_budget_sweep_staleness_boundary_is_exact() {
         map.insert("alltime-just-under".into(), seeded(0, now - max_window + 1));
     }
 
-    gov.budget.sweep_ticker_for("survivor2").store(
-        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
-        Ordering::Relaxed,
-    );
     assert!(
         gov.try_admit(&flat_cost(1), &survivor, "", now).is_ok(),
         "key admits"
     );
+    gov.sweep_budgets(&flat_cost(1), now);
 
     let map = gov.budget.read("survivor2");
     assert!(
@@ -1826,75 +1820,52 @@ async fn admission_never_sweeps_the_budget_table() {
     );
 }
 
+/// The writer tick's sweep reaches a shard no admission touches (the old admission-counted sweep
+/// never swept a quiet shard), releases what has aged out, keeps what still holds anything, and
+/// leaves no flag behind for the flush to walk.
 #[tokio::test]
-async fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
-    const N: u32 = crate::config::DEFAULT_RATE_SWEEP_INTERVAL;
+async fn the_writer_tick_sweeps_a_quiet_shard() {
     let store = crate::real_store::core().await;
     let gov = GovState::new_with_core(store.core(), None, None)
         .await
         .unwrap();
-    let k = sample_key("k1", "h1");
     let now = 1_700_000_040u64;
-    let stale = || BudgetCell {
-        flushing_windows: Default::default(),
-        correction: None,
-        group_owners: Default::default(),
-        flushing: 0,
-        window_start: now - 40 * SECS_PER_DAY,
+    let cell = |window_start: u64, dirty: bool| BudgetCell {
+        window_start,
         requests: 1,
         billable_requests: 1,
-        flushed_requests: 0,
-        flushed_billable_requests: 0,
-        models: Vec::new(),
-        fee_eras: Default::default(),
-        flushed_fee_eras: Default::default(),
-        rolled: Vec::new(),
-        rolled_eras: Vec::new(),
-        dirty: false,
+        dirty,
         last_touch: now,
-        fee_incarnation: 0,
-        fee_sequence: 0,
-        fee_captured: 0,
-        fee_obligations: 0,
+        ..BudgetCell::default()
     };
-
     {
-        let mut map = gov.budget.write("k1");
-        map.insert("stale".into(), stale());
+        let mut map = gov.budget.write("quiet-shard");
+        map.insert("aged".into(), cell(now - 40 * SECS_PER_DAY, false));
+        map.insert("aged-unwritten".into(), cell(now - 40 * SECS_PER_DAY, true));
+        map.insert(
+            "current".into(),
+            cell(budget_window(WINDOW_MONTH, now), false),
+        );
     }
+    let _ = gov.budget.take_flags();
 
-    assert_eq!(gov.budget.sweep_ticker_for("k1").load(Ordering::Relaxed), 0);
-    assert!(gov.try_admit(&flat_cost(0), &k, "", now).is_ok());
+    gov.sweep_budgets(&flat_cost(0), now);
+
+    let map = gov.budget.read("quiet-shard");
     assert!(
-        gov.budget.read("k1").contains_key("stale"),
-        "first admission must NOT sweep (post-increment value 1 is not a multiple of N)"
+        !map.contains_key("aged"),
+        "an aged, written cell is released"
     );
-
-    gov.budget
-        .sweep_ticker_for("k1")
-        .store(N - 1, Ordering::Relaxed);
-    assert!(gov.try_admit(&flat_cost(0), &k, "", now).is_ok());
     assert!(
-        !gov.budget.read("k1").contains_key("stale"),
-        "admission N must run the sweep and evict the stale entry"
+        map.contains_key("aged-unwritten"),
+        "a cell holding unwritten counts is kept"
     );
-
-    {
-        let mut map = gov.budget.write("k1");
-        map.insert("stale2".into(), stale());
-    }
-    gov.budget
-        .sweep_ticker_for("k1")
-        .store(u32::MAX, Ordering::Relaxed);
-    assert!(gov.try_admit(&flat_cost(0), &k, "", now).is_ok());
+    assert!(map.contains_key("current"), "a current window is kept");
+    drop(map);
     assert_eq!(
-        gov.budget.sweep_ticker_for("k1").load(Ordering::Relaxed),
+        gov.budget.take_flags(),
         0,
-        "ticker wrapped to 0"
-    );
-    assert!(
-        !gov.budget.read("k1").contains_key("stale2"),
-        "wrap boundary must still sweep (post-increment 0 is a multiple of N) - no skipped cycle"
+        "the sweep flags no shard for the flush"
     );
 }
 
@@ -3374,10 +3345,6 @@ async fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() 
         map.insert("vk_unflushed".into(), all_time(9, true, now - idle_for));
     }
 
-    gov.budget.sweep_ticker_for("survivor").store(
-        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
-        Ordering::Relaxed,
-    );
     let cost = crate::cost::CostModel::resolve_parts(
         None,
         1,
@@ -3387,6 +3354,7 @@ async fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() 
         )]),
     );
     assert!(gov.try_admit(&cost, &survivor, "", now).is_ok());
+    gov.sweep_budgets(&cost, now);
 
     let map = gov.budget.read("survivor");
     assert!(
@@ -3447,11 +3415,8 @@ async fn test_hydrated_cells_survive_the_first_sweep() {
     );
 
     let driver = sample_key("restored", "hr");
-    gov.budget.sweep_ticker_for("restored").store(
-        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
-        Ordering::Relaxed,
-    );
     assert!(gov.try_admit(&flat_cost(1), &driver, "", now).is_ok());
+    gov.sweep_budgets(&flat_cost(1), now);
 
     assert_eq!(
         gov.budget
@@ -4540,14 +4505,11 @@ async fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         });
     }
 
-    gov.budget.sweep_ticker_for("survivor3").store(
-        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
-        Ordering::Relaxed,
-    );
     assert!(
         gov.try_admit(&cost, &survivor, "", now).is_ok(),
         "key admits"
     );
+    gov.sweep_budgets(&cost, now);
 
     let map = gov.budget.read("survivor3");
     assert!(
@@ -4761,14 +4723,11 @@ async fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters
         map.insert("group:team#eng@total".into(), idle());
     }
 
-    gov.budget.sweep_ticker_for("survivor-delim").store(
-        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
-        Ordering::Relaxed,
-    );
     assert!(
         gov.try_admit(&cost, &survivor, "", now).is_ok(),
         "key admits"
     );
+    gov.sweep_budgets(&cost, now);
 
     let map = gov.budget.read("survivor-delim");
     assert!(

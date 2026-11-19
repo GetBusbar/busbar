@@ -1861,7 +1861,6 @@ Internal tuning knobs, normally omitted; each field defaults to its historical v
 
 ```yaml
 advanced:
-  rate_sweep_interval: 256          # budget-table sweep: every Nth admission drops entries no longer needed
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
   worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each; omit ⇒ one per core
   upstream_http1_only: false        # pin the upstream client to HTTP/1.1
@@ -1916,7 +1915,7 @@ Repeated operator requests cannot extend either interval. Reserve at least
 least 31 seconds before margin. The six seconds covers the existing bounded exit handover.
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
-once at process/client construction), so unlike `rate_sweep_interval` and `usage_flush_interval_ms`
+once at process/client construction), so unlike `usage_flush_interval_ms`
 they are not live-mutable via `PUT /config/settings`. A change takes effect on the next restart.
 (The usage writer reads `usage_flush_interval_ms` before each wait, so an applied change is used
 from the next wait on.) The
@@ -1982,7 +1981,6 @@ act yet).
 |---|---|---|---|---|---|
 | `advanced.wait_for_commit` | boolean | `false` | `true` / `false` | Whether an answer waits until its audit, ledger and usage records are committed. *Arriving with the audit change.* | to be confirmed |
 | `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 1 to 946,080,000,000 (30 years); `0` is raised to 1 with one warning | How often in-memory usage and budget counters are written out. | on apply |
-| `advanced.rate_sweep_interval` | integer, count of admissions | `256` | 1 to 4,294,967,295; `0` is refused | How often a budget table drops entries that are no longer needed. | on apply |
 | `advanced.worker_threads` | integer, threads | one per CPU core | 1 to 65,535; `0` means the default, and above 65,535 is lowered to 65,535, each with one warning (`BUSBAR-9008`) | Number of data-plane worker threads. | restart |
 | `advanced.upstream_http1_only` | boolean | `false` | `true` / `false` | Pin the upstream HTTP client to HTTP/1.1. | restart |
 | `advanced.upstream_h2_prior_knowledge` | boolean | `false` | `true` / `false` | Speak HTTP/2 without negotiation to cleartext upstreams. | restart |
@@ -1996,9 +1994,9 @@ act yet).
 | `advanced.tls.trust_anchors` | list of certificate sources | empty list | `{ file: }`, `{ env: }` or inline PEM | Extra certificate authorities trusted for every destination. | restart |
 | `advanced.tls.destinations` | list of entries | empty list | see [`advanced.tls`](#advancedtls) | Per-destination authorities, key pins and client certificate. | restart |
 
-"Restart" for the keys above is what the code does today: `advanced.rate_sweep_interval` is read
-again on every admission, `advanced.usage_flush_interval_ms` before each wait of the background
-writer, and the configuration apply republishes both; every other key is read once at boot. Every
+"Restart" for the keys above is what the code does today: `advanced.usage_flush_interval_ms` is
+read before each wait of the background writer, and the configuration apply republishes it; every
+other key is read once at boot. Every
 one of those restart keys is reported by the pending-restart list in the admin API
 (`reload_to_apply`) when an edit changes it: `worker_threads`, `response_headers`,
 `shutdown.deregister_delay`, `upstream_http1_only`, `upstream_h2_prior_knowledge`,
@@ -2058,22 +2056,18 @@ advanced:
   usage_flush_interval_ms: 50
 ```
 
-#### `advanced.rate_sweep_interval`
+#### Removed: `advanced.rate_sweep_interval`
 
-Budget counters are kept in memory in tables. Every Nth admission that touches a table also
-removes entries that are no longer needed (idle for more than 31 days with nothing owed).
-`rate_sweep_interval` is N. It is a count of admissions, not a time.
+No longer a setting. Budget counters are kept in memory in tables; on every tick of the usage
+writer (`advanced.usage_flush_interval_ms`), right after it writes, the engine releases every entry
+that holds nothing unwritten and whose window has passed (at most 31 days, the longest window a
+budget has). No admission pays for it, and a table no request touches is swept like any other.
 
-When to change it: rarely. Raise it if the sweep shows up in latency measurements on a table with
-very many keys; lower it to reclaim memory sooner. Cost: a low value spends a pass over the table
-more often; a high value lets unused entries stay in memory longer. A table that receives no
-admissions is not swept at all. `0` is refused at boot (`BUSBAR-3117`, configuration setting out of range).
-Applies on a configuration apply.
-
-```yaml
-advanced:
-  rate_sweep_interval: 1024
-```
+A configuration that still carries the key (in `config.yaml`, a `PUT /config/settings` body, a
+stored settings overlay or an admin document edit) loads and applies as before: the value is
+ignored, never written back, and one warning line says so at boot and on every apply:
+`advanced.rate_sweep_interval is no longer a setting and is ignored: ...`. Delete the line when
+convenient.
 
 #### `advanced.worker_threads`
 

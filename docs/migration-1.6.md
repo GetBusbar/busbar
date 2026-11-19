@@ -604,6 +604,11 @@ address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:808
   config.yaml or the settings overlay) and reports it; `route_policy: true` refuses the upgrade until
   you delete the key. The deciding policy and the answering member are on the unit record
   (`GET /api/v1/admin/records`).
+- `advanced.rate_sweep_interval` is no longer a setting. The budget tables are swept on every tick
+  of the usage writer, not on every 256th admission, so a quiet table is released too. A 1.5.5
+  configuration (or settings overlay, or settings `PUT`) that carries the key still loads and
+  applies: the value is ignored, never written back, and one warning line names the key at boot
+  and on every apply. A value of `0`, which 1.5.5 refused, is ignored the same way.
 
 ### Plugins and diagnostics
 
