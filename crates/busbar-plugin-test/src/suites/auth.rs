@@ -382,6 +382,127 @@ mod tests {
         busbar_plugin_abi::plugin!(Auth, IssuedAuth, name: "fixture-issued-auth");
     }
 
+    /// An auth plugin whose older settings held its bearer key as a literal at `/token`: a converting open takes the
+    /// literal and names it CORE_CFG(LIFT); every later open reads the key through the reference core wrote there.
+    mod lift {
+        use super::*;
+        use busbar_contract::json::{self, JsonValueTrait};
+        use busbar_plugin_abi::need::{need, SecretHandle};
+        use busbar_plugin_abi::records::{core_cfg, settled, tag as rec, Full};
+        use busbar_plugin_abi::secure::SecureVec;
+
+        pub(super) const BAG: &[u8] = br#"{"token":"lifted-bearer-key"}"#;
+        pub(super) const SUBJECT: &str = "lifted-subject";
+
+        /// The settings it opened with, the key, and whether the key came as a literal.
+        pub struct LiftAuth(Vec<u8>, SecureVec, bool);
+
+        impl Open for LiftAuth {
+            async fn open(_: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+                let config = config.to_vec();
+                let value = json::parse_value(&config).map_err(|_| Fail::refused(R_CONFIG))?;
+                let token = value.get("token").ok_or_else(|| Fail::refused(R_CONFIG))?;
+                if let Some(literal) = token.as_str() {
+                    let key = SecureVec::from(literal.as_bytes());
+                    return Ok(Self(config, key, true));
+                }
+                let handle = token
+                    .get("$secret")
+                    .and_then(|n| n.as_u64())
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| Fail::refused(R_CONFIG))?;
+                let key = need::secret(SecretHandle(handle)).await?;
+                Ok(Self(config, key, false))
+            }
+            fn check(_: &Host, _: &[u8], _: &mut Endpoints<'_>) -> Result<(), Fail> {
+                Ok(())
+            }
+            fn describe(d: &mut Describe<'_>) {
+                d.schema(r#"{"type":"object"}"#).secret_path("/token");
+                d.methods(abi::M_VERIFY);
+                d.item_text(tag::D_CRED_HEADER, "authorization");
+            }
+            fn settled(&self, out: &mut Out<'_>) -> Result<(), Full> {
+                settled::config(out, &self.0)?;
+                if self.2 {
+                    settled::core_cfg(out, core_cfg::LIFT, "", br#""/token""#)?;
+                }
+                Ok(())
+            }
+        }
+        impl busbar_plugin_abi::Auth for LiftAuth {
+            /// `authorization: Bearer <key>` is the subject; another bearer is BAD_CREDENTIAL; none is not mine.
+            fn verify(&self, _: &Host, req: &AuthReq<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
+                let Some(line) = req
+                    .headers
+                    .get()
+                    .iter()
+                    .find(|p| p.name.get() == "authorization")
+                else {
+                    return Err(Fail::refused(abi::NOT_MINE));
+                };
+                let presented = line.value.get().strip_prefix(b"Bearer ".as_slice());
+                if presented == Some(&self.1[..]) {
+                    out.put_text(rec::ID_SUBJECT, SUBJECT)
+                        .map_err(|_| Fail::refused(R_CONFIG))
+                } else {
+                    Err(Fail::refused(abi::BAD_CREDENTIAL))
+                }
+            }
+        }
+        busbar_plugin_abi::plugin!(Auth, LiftAuth, name: "fixture-lift-auth");
+    }
+
+    /// Older settings with a literal key at a secret position: the converting open lifts it, and the auth cases run
+    /// on the settings core persisted, where the key is the reference core wrote, resolved by custody to the literal.
+    #[test]
+    fn a_migrated_literal_secret_verifies_through_the_reference_core_wrote() {
+        use super::super::{auth_migrated, harness::OpenPurpose, MigrateCase, MigrateExpect};
+        use busbar_plugin_abi::records::core_cfg::LIFT;
+        use busbar_plugin_abi::types::{Bytes, Pair, Str};
+        let line = |value: &'static str| Pair {
+            name: Str::new("authorization"),
+            value: Bytes::new(value.as_bytes()),
+        };
+        fn with<'a>(headers: &'a [Pair<'a>]) -> busbar_ports::auth::AuthIn<'a> {
+            busbar_ports::auth::AuthIn {
+                headers,
+                ..request("/")
+            }
+        }
+        let good = [line("Bearer lifted-bearer-key")];
+        let bad = [line("Bearer another-key")];
+        let cases = [
+            AuthCase {
+                req: with(&good),
+                expect: Expect::Subject(lift::SUBJECT),
+            },
+            AuthCase {
+                req: with(&bad),
+                expect: Expect::Rejected(abi::BAD_CREDENTIAL),
+            },
+            AuthCase {
+                req: request("/"),
+                expect: Expect::NotMine,
+            },
+        ];
+        auth_migrated(
+            &lift::PLUGIN,
+            MigrateCase {
+                bag: lift::BAG,
+                purpose: OpenPurpose::ConvertUnstamped,
+                limits: Default::default(),
+            },
+            &[],
+            FakeNeeds::new(),
+            MigrateExpect::Settled {
+                config: Some(lift::BAG),
+                core_cfg: &[(LIFT, "", br#""/token""#)],
+            },
+            &cases,
+        );
+    }
+
     fn request(path: &str) -> busbar_ports::auth::AuthIn<'_> {
         busbar_ports::auth::AuthIn {
             method: "GET",
