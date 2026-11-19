@@ -18,7 +18,7 @@ auth:
     - admin-tokens
 providers:
   mock:
-    api_key: { env: MOCK_KEY }
+    api_key: none   # 1.6.0 has no admitted `env` secret module in this fixture; the stub checks no credential
 models:
   test-model:
     provider: mock
