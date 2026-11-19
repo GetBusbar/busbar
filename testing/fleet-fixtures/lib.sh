@@ -109,19 +109,19 @@ wait_for_http() {  # wait_for_http <url> <max-seconds> — returns 0 the moment 
 # something is, whatever protocol it goes on to speak or fail to speak.
 #
 # Return contract unchanged: 0 = free, non-zero = in use.
+#
+# The connect is bash's own (/dev/tcp), bounded at 1 s where `timeout` exists. A refusal is the free
+# case; a completed connect, a timeout (a filtered or wedged listener still holds the port) or any
+# other error is in-use: unknown is not free. LC_ALL=C keeps the refusal message unlocalised.
 assert_port_free() {  # assert_port_free <port>
-  local port="$1"
-  python3 - "$port" <<'PY'
-import errno, socket, sys
-s = socket.socket()
-s.settimeout(1.0)
-# connect_ex returns 0 on success and an errno otherwise. A refusal is the free case; a timeout is
-# NOT (a filtered or wedged listener is still holding the port), so only "refused" is treated as
-# free and everything else, including 0, is in-use — unknown is not free.
-rc = s.connect_ex(("127.0.0.1", int(sys.argv[1])))
-s.close()
-sys.exit(0 if rc == errno.ECONNREFUSED else 1)
-PY
+  local port="$1" err bound=""
+  command -v timeout >/dev/null 2>&1 && bound="timeout 1"
+  err="$(LC_ALL=C $bound bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' assert_port_free "$port" 2>&1)" \
+    && return 1
+  case "$err" in
+    *"Connection refused"*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # ── Oracle mock control-file writes (atomic + confirmed) ──────────────────────────────────────────
