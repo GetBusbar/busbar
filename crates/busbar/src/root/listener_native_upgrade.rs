@@ -178,6 +178,7 @@ async fn unadmitted(
         .cloned()
         .ok_or(InputError::Invalid)?;
     let deadline = binding.deadline().ok_or(InputError::Invalid)?;
+    let mono_ns = binding.mono_ns().ok_or(InputError::Invalid)?;
     let request_id = binding.invocation().request_id().get();
     let preparation = request
         .begin_data_preparation()
@@ -191,6 +192,7 @@ async fn unadmitted(
                 deadline,
                 request_id,
                 stack: Default::default(),
+                mono_ns,
             },
         )
         .await

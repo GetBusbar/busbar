@@ -35,6 +35,7 @@ pub(super) async fn prepare(
         return Ok(KeyAnswered::Refused(response, refusal));
     };
     let deadline = binding.deadline().ok_or(InputError::Invalid)?;
+    let mono_ns = binding.mono_ns().ok_or(InputError::Invalid)?;
     let verified = verify_core_key(
         &chain,
         &binding,
@@ -42,6 +43,7 @@ pub(super) async fn prepare(
             deadline,
             request_id: binding.invocation().request_id().get(),
             stack: Default::default(),
+            mono_ns,
         },
     )
     .await;

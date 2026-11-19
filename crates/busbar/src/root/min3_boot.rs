@@ -2189,6 +2189,7 @@ pub(super) async fn finish_with_store(
                 export_observers
                     .observer(&instance.name)
                     .ok_or("opened export has no reserved observation owner")?,
+                busbar_contract::clock::HostClock::system(super::egress_ports::tokio_sleep),
             );
             export_doors.push((instance.name.clone(), door));
         }

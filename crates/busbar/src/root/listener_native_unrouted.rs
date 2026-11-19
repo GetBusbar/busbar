@@ -44,6 +44,7 @@ pub(super) async fn prepare(
     };
     let mut facts = Facts::arrived(answer::presented(&binding, &carriers), false);
     let deadline = binding.deadline().ok_or(InputError::Invalid)?;
+    let mono_ns = binding.mono_ns().ok_or(InputError::Invalid)?;
     // The decision asks for the chain's judgement once; both of its facts come from one run.
     let refusal = loop {
         match decide(target, &facts) {
@@ -56,6 +57,7 @@ pub(super) async fn prepare(
                         deadline,
                         request_id: binding.invocation().request_id().get(),
                         stack: Default::default(),
+                        mono_ns,
                     },
                 )
                 .await;

@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
+use busbar_contract::clock::{Deadline, HostClock};
 use busbar_contract::export_calls::{
     Delivered as Queued, ExportCalls, ExportCustodyLevel, ExportDropReason, ExportLossKind,
     ExportObservation, ExportObserver, Family, RecorderRequirements, ServeRequest, Served,
@@ -171,6 +172,8 @@ struct Shared {
     observer: Arc<dyn ExportObserver>,
     label: Box<str>,
     timeout: Duration,
+    /// The node's host clock: each delivery reads it once (its deadline and the exporter's `mono_ns`).
+    clock: HostClock,
     queue: Mutex<VecDeque<Line>>,
     wake: Condvar,
     stop: AtomicBool,
@@ -350,7 +353,10 @@ impl Shared {
     }
 
     fn cx(&self, delivery: u64) -> CallCx {
-        let timeout = Instant::now() + self.timeout;
+        // The host clock, read once for this delivery: the deadline is set from it and the
+        // exporter is handed it.
+        let at = self.clock.now();
+        let timeout = self.clock.instant(Deadline::after(at, self.timeout));
         CallCx {
             deadline: self
                 .lifecycle()
@@ -358,10 +364,7 @@ impl Shared {
                 .map_or(timeout, |d| d.min(timeout)),
             request_id: delivery,
             stack: CallStack::default(),
-            // The pump made one clock reading for this delivery, the deadline above, on the
-            // standard clock; none on the host's monotonic clock is handed in, and an exporter that
-            // needs one asks the host once.
-            mono_ns: 0,
+            mono_ns: at.mono_ns,
         }
     }
 
@@ -575,15 +578,17 @@ impl PortDoor {
     }
 
     /// Starts the instance's pump over `port`. `label` is the operator's instance name; `limits` its
-    /// `limits` (only `timeout_ms` is read here: the per-delivery deadline, 0 = [`DEFAULT_DELIVER_TIMEOUT`]).
+    /// `limits` (only `timeout_ms` is read here: the per-delivery deadline, 0 = [`DEFAULT_DELIVER_TIMEOUT`]);
+    /// `clock` the node's host clock, read once per delivery.
     pub fn open(
         label: &str,
         port: Arc<dyn ExportPort>,
         disk: Arc<dyn DestAppend>,
         limits: &InstanceLimits,
         observer: Arc<dyn ExportObserver>,
+        clock: HostClock,
     ) -> Result<Arc<Self>, String> {
-        let door = Self::prepare(label, port, disk, limits, observer);
+        let door = Self::prepare(label, port, disk, limits, observer, clock);
         door.start()?;
         Ok(door)
     }
@@ -595,6 +600,7 @@ impl PortDoor {
         disk: Arc<dyn DestAppend>,
         limits: &InstanceLimits,
         observer: Arc<dyn ExportObserver>,
+        clock: HostClock,
     ) -> Arc<Self> {
         let timeout = match limits.timeout_ms {
             0 => DEFAULT_DELIVER_TIMEOUT,
@@ -620,6 +626,7 @@ impl PortDoor {
             observer,
             label: label.into(),
             timeout,
+            clock,
             queue: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
@@ -1055,12 +1062,13 @@ pub async fn open_min3<N: busbar_plugin_abi::host_side::needs::Needs>(
     refs: &Arc<dyn busbar_ports::binder::RefSource>,
     disk: Arc<dyn DestAppend>,
     observer: Arc<dyn ExportObserver>,
+    clock: HostClock,
 ) -> Result<Arc<PortDoor>, String> {
     let port = registry
         .open_export(spec, needs, refs)
         .await
         .map_err(|e| crate::cold::export_pump::not_opened(spec.name, &e))?;
-    PortDoor::open(spec.name, port, disk, &spec.limits, observer)
+    PortDoor::open(spec.name, port, disk, &spec.limits, observer, clock)
 }
 
 #[cfg(test)]

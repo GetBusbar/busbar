@@ -194,6 +194,7 @@ async fn signed(
         deadline: binding.deadline().ok_or(InputError::Invalid)?,
         request_id: binding.invocation().request_id().get(),
         stack: Default::default(),
+        mono_ns: binding.mono_ns().ok_or(InputError::Invalid)?,
     };
     match route.admit(request, cx).await? {
         SignedAnswered::Admitted(owner) => Ok(unbilled(
@@ -271,6 +272,7 @@ async fn input_refused(
     let route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
     let (seat, _) = super::unbilled::seat_of(&binding)?;
     let deadline = binding.deadline().ok_or(InputError::Invalid)?;
+    let mono_ns = binding.mono_ns().ok_or(InputError::Invalid)?;
     let preparation = request
         .begin_data_preparation()
         .map_err(|_| InputError::Invalid)?;
@@ -281,6 +283,7 @@ async fn input_refused(
                 deadline,
                 request_id: binding.invocation().request_id().get(),
                 stack: Default::default(),
+                mono_ns,
             },
         )
         .await

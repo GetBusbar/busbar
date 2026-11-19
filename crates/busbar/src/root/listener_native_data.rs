@@ -652,6 +652,7 @@ pub(super) async fn prepare_for(
     let billing = routes.served.billing.clone().ok_or(InputError::Invalid)?;
     let data_route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
     let deadline = binding.deadline().ok_or(InputError::Invalid)?;
+    let mono_ns = binding.mono_ns().ok_or(InputError::Invalid)?;
     let preparation = request
         .begin_data_preparation()
         .map_err(|_| InputError::Invalid)?;
@@ -664,6 +665,7 @@ pub(super) async fn prepare_for(
                 deadline,
                 request_id: binding.invocation().request_id().get(),
                 stack: Default::default(),
+                mono_ns,
             },
         )
         .await

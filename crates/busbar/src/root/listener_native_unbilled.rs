@@ -83,6 +83,7 @@ pub(super) async fn prepare_verified(
     let binding = request.binding().clone();
     let (seat, route_id) = seat_of(&binding)?;
     let deadline = binding.deadline().ok_or(InputError::Invalid)?;
+    let mono_ns = binding.mono_ns().ok_or(InputError::Invalid)?;
     let preparation = request
         .begin_data_preparation()
         .map_err(|_| InputError::Invalid)?;
@@ -90,6 +91,7 @@ pub(super) async fn prepare_verified(
         deadline,
         request_id: binding.invocation().request_id().get(),
         stack: Default::default(),
+        mono_ns,
     };
     // Steps 2 and 3: the route's chain on the head, then key policy and the replay claim.
     let pending = match route.prepare(preparation, cx).await {
