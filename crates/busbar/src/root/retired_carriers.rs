@@ -6,9 +6,10 @@
 //! In 1.6.0 the engine owns the carrier: it listens, dials, runs child-process servers and frames their lines
 //! itself, so the two plugins that used to carry raw TCP and a spawned program's pipes have nothing left to do
 //! and are no longer part of the distribution. A deployment may still NAME one of them: an image of it left in
-//! the plugins directory, an entry of a publisher's `plugins:` scope, an `insecure_transport` acceptance keyed
-//! by its instance. The rule for every such place is the same and is the whole of this module: THE NAME IS
-//! ACCEPTED AND IGNORED, with one notice per carrier per boot. It is never a refusal (old settings are
+//! the plugins directory is the one place where naming it would otherwise act (an entry of a publisher's
+//! `plugins:` scope and an `insecure_transport` acceptance keyed by its instance are lookups that simply never
+//! match). The rule is the whole of this module: THE NAME IS ACCEPTED AND IGNORED, with one notice per carrier
+//! per boot (`min3_boot::admit_dropped_images`). It is never a refusal (old settings are
 //! migrated, never refused), and it is never an instance: nothing is admitted, opened or dealt settings.
 //!
 //! What a deployment relied on is unchanged, and the notice says so: a `transport: stdio` upstream is served
@@ -102,31 +103,6 @@ impl Retired {
     }
 }
 
-/// The names a deployment holds in one place, less the retired carriers: every item whose name is a retired
-/// carrier is dropped from the result, and `notices` gains that carrier's notice unless an earlier place of
-/// this boot already gave it (`told` carries that across places). Order is kept. Nothing else is touched.
-pub(crate) fn pass_over<T>(
-    items: Vec<T>,
-    name_of: impl Fn(&T) -> &str,
-    place: &str,
-    told: &mut Vec<Retired>,
-    notices: &mut Vec<String>,
-) -> Vec<T> {
-    items
-        .into_iter()
-        .filter(|item| match retired(name_of(item)) {
-            None => true,
-            Some(carrier) => {
-                if !told.contains(&carrier) {
-                    told.push(carrier);
-                    notices.push(carrier.notice(place));
-                }
-                false
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,72 +154,6 @@ mod tests {
         ] {
             assert_eq!(retired(name), None, "{name}");
         }
-    }
-
-    #[test]
-    fn a_named_carrier_is_dropped_with_one_notice_and_everything_else_is_kept_in_order() {
-        let (mut told, mut notices) = (Vec::new(), Vec::new());
-        let dropped = vec![
-            "libbusbar_transport_http_plugin.so",
-            "libbusbar_transport_tcp_plugin.so",
-            "libbusbar_store_sqlite_plugin.so",
-            "libbusbar_transport_stdio_plugin.so",
-            "libbusbar_transport_tcp_plugin.so",
-        ];
-        let kept = pass_over(
-            dropped,
-            |name| name,
-            "an image in the plugins directory",
-            &mut told,
-            &mut notices,
-        );
-        assert_eq!(
-            kept,
-            [
-                "libbusbar_transport_http_plugin.so",
-                "libbusbar_store_sqlite_plugin.so"
-            ]
-        );
-        assert_eq!(told, [Retired::Tcp, Retired::Stdio]);
-        assert_eq!(
-            notices.len(),
-            2,
-            "one notice per carrier, however often it is named"
-        );
-        assert!(
-            notices[0].starts_with(
-                "`busbar-transport-tcp` (an image in the plugins directory) is accepted and ignored: "
-            ),
-            "{}",
-            notices[0]
-        );
-        assert!(notices[1].contains("4 MiB"), "{}", notices[1]);
-
-        // A second place of the same boot that names them again drops them again and says nothing more.
-        let scope = vec!["busbar-transport-tcp", "busbar-auth-oidc", "stdio"];
-        let kept = pass_over(
-            scope,
-            |name| name,
-            "plugins.trust.publishers[0].plugins",
-            &mut told,
-            &mut notices,
-        );
-        assert_eq!(kept, ["busbar-auth-oidc"]);
-        assert_eq!(notices.len(), 2);
-    }
-
-    #[test]
-    fn a_place_that_names_neither_is_returned_as_it_was_and_says_nothing() {
-        let (mut told, mut notices) = (Vec::new(), Vec::new());
-        let kept = pass_over(
-            vec![("http", 1), ("ws", 2)],
-            |(name, _)| name,
-            "anywhere",
-            &mut told,
-            &mut notices,
-        );
-        assert_eq!(kept, [("http", 1), ("ws", 2)]);
-        assert!(told.is_empty() && notices.is_empty());
     }
 
     #[test]
