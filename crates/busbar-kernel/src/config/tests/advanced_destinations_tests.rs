@@ -49,17 +49,20 @@ fn the_1_5_5_security_keys_feed_the_one_guard() {
     );
 }
 
-/// UPSTREAMS-DECLARED r3 section 2.4 removes the global destination grant.
+/// UPSTREAMS-DECLARED r3 section 2.4 removes the global destination grant. A configuration that
+/// still carries the key is converted, not refused: it loads, the key grants nothing, and it is
+/// not written back.
 #[test]
-fn allow_destinations_is_refused_as_an_unknown_key() {
+fn a_configuration_still_carrying_allow_destinations_loads_and_grants_nothing() {
     for yaml in [
         "allow_destinations: [127.0.0.1]\n",
         "allow_destinations: []\n",
     ] {
-        let err = busbar_contract::yaml::from_str::<AdvancedCfg>(yaml)
-            .expect_err("the deleted advanced key is refused")
-            .to_string();
-        assert!(err.contains("unknown field"), "{yaml}: {err}");
+        let advanced: AdvancedCfg = busbar_contract::yaml::from_str(yaml)
+            .unwrap_or_else(|e| panic!("{yaml}: an old configuration must load: {e}"));
+        assert!(advanced.block_private_addresses, "{yaml}");
+        let written = busbar_contract::yaml::to_string(&advanced).expect("serializes");
+        assert!(!written.contains("allow_destinations"), "{written}");
     }
 }
 

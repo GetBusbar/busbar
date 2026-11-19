@@ -580,9 +580,9 @@ A plugin declares billable classes for a configured lane, but that lane lacks on
 - **Since:** 1.6.0
 - **Slug:** `config-private-reach-retired`
 
-A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.
+RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed; a configuration that still carries it loads, the key is ignored and one warning line says so.
 
-**What to do:** Run the first-boot migration: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
+**What to do:** Nothing emits this code. Set `allow_private: true` only on the registration that must reach a private target; cloud metadata and the gateway's own listeners stay refused whatever is written.
 
 <a id="config-legacy-overlay-not-read"></a>
 ### BUSBAR-3028 — A 1.5.5 overlay selector, variable or file is not read (nothing to import)
@@ -2616,9 +2616,9 @@ The binary hit a fatal startup condition — a misconfiguration or other boot-ti
 - **Since:** 1.6.0
 - **Slug:** `worker-threads-invalid`
 
-An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on the default worker count (one per core). The operator's intended worker count is NOT in effect. Emitted pre-tracing, to stderr, at boot.
+An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is out of range or not a positive integer. `0` and non-numeric text are IGNORED and busbar boots on the default worker count (one per core); a count above 65,535, the most the runtime can run, is lowered to 65,535. The operator's intended worker count is NOT in effect. Said once at boot (pre-tracing, to stderr), and in the log when a configuration edit or the recovered document carries such a value; an edit is never refused for it.
 
-**What to do:** Set the data-plane worker count to a positive integer (at least 1) or remove it to accept the default. The gateway runs, but on the default worker count, not the value provided.
+**What to do:** Set the data-plane worker count to an integer from 1 to 65,535 or remove it to accept the default. The gateway runs, but not on the value provided.
 
 <a id="shutdown-signal-handler-install-failed"></a>
 ### BUSBAR-9009 — Shutdown-signal handler not installed (that signal won't trigger graceful drain)

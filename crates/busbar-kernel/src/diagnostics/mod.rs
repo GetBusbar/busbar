@@ -318,7 +318,7 @@ diagnostics! {
     /// RETIRED: a registration's `allow_private` is core's own key again and is not refused.
     CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", true,
         "A registration still carries the retired per-registration private-address switch",
-        "RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed.",
+        "RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed; a configuration that still carries it loads, the key is ignored and one warning line says so.",
         "Nothing emits this code. Set `allow_private: true` only on the registration that must reach a private target; cloud metadata and the gateway's own listeners stay refused whatever is written.";
 
     /// RETIRED: configured providers retain private reach on their own core-selected origins.
@@ -1249,8 +1249,8 @@ diagnostics! {
     /// An explicitly-set worker-thread count (env or config) is not a positive integer; default used.
     WORKER_THREADS_INVALID = 9008, Boot, Actionable, "worker-threads-invalid", "1.6.0", false,
         "Configured worker-thread count is invalid (ignored; default used)",
-        "An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on the default worker count (one per core). The operator's intended worker count is NOT in effect. Emitted pre-tracing, to stderr, at boot.",
-        "Set the data-plane worker count to a positive integer (at least 1) or remove it to accept the default. The gateway runs, but on the default worker count, not the value provided.";
+        "An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is out of range or not a positive integer. `0` and non-numeric text are IGNORED and busbar boots on the default worker count (one per core); a count above 65,535, the most the runtime can run, is lowered to 65,535. The operator's intended worker count is NOT in effect. Said once at boot (pre-tracing, to stderr), and in the log when a configuration edit or the recovered document carries such a value; an edit is never refused for it.",
+        "Set the data-plane worker count to an integer from 1 to 65,535 or remove it to accept the default. The gateway runs, but not on the value provided.";
 
     /// A shutdown-signal handler could not be installed; that signal will not trigger graceful drain.
     SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED = 9009, Boot, Actionable, "shutdown-signal-handler-install-failed", "1.6.0", false,
@@ -1489,7 +1489,7 @@ diagnostics! {
 
     CONFIG_SETTING_OUT_OF_RANGE = 3117, Config, Fatal, "config-setting-out-of-range", "1.6.0", false,
         "A global limit or timing setting is out of range",
-        "A value under `limits:`, `health:`, `routing:` or `advanced:` is outside what busbar can run with: a timeout or interval of 0 (which fails or disables the thing it bounds), a size below its floor or above its ceiling, a duration above the 30-year ceiling the runtime's clock arithmetic can hold, or reasoning-effort budgets that are zero or not ascending.",
+        "A value under `limits:`, `health:`, `routing:` or `advanced:` is outside what busbar can run with: a timeout or interval of 0 (which fails or disables the thing it bounds), a size below its floor or above its ceiling, a duration above the 30-year ceiling the runtime's clock arithmetic can hold, or reasoning-effort budgets that are zero or not ascending. One case is converted, not refused: `advanced.usage_flush_interval_ms: 0` is raised to 1 ms and logged as a warning carrying this code.",
         "Set the named key within the range the message states, or omit it to take the default; docs/configuration.md lists every default."
         => config_setting_out_of_range(detail) "{detail}",
         example "limits:\n  upstream_request_timeout_secs: 0",

@@ -1242,9 +1242,10 @@ fn validate_limits_with(
     }
 
     if limits.rate_sweep_interval == 0 {
-        errors.push(coded::config_setting_out_of_range("advanced.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the rate-map \
-             idle-entry sweep, leaking entries for silent keys until restart. The default is 256 \
-             (sweep every 256 admissions); use a larger value to make sweeps rarer."
+        errors.push(coded::config_setting_out_of_range("advanced.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the sweep of \
+             the budget tables, so entries for silent keys stay resident until restart. The default \
+             is 256 (every 256th admission on a budget shard sweeps it); use a larger value to make \
+             sweeps rarer."
                 ).into());
     }
 
