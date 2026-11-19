@@ -27,6 +27,7 @@ pub mod hostio;
 pub mod io;
 pub(crate) mod line;
 pub mod listen;
+pub(crate) mod native_conns;
 pub mod native_dial;
 pub mod pool;
 pub mod process;
@@ -1276,6 +1277,9 @@ pub struct Connector {
     /// address; `proxy` (`false`): a name that does not resolve here is CONNECTed by name and its
     /// address check is the proxy's (BUSBAR-3149 at boot).
     proxy_by_address: std::sync::atomic::AtomicBool,
+    /// THE NATIVE CARRIERS ([`Connector::carry_natively`]): the transport instance the build assigned each
+    /// outbound carrier, and the account their sessions are charged to; set once at boot, held for the process.
+    pub(crate) native: std::sync::OnceLock<native_conns::Natives>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -1310,6 +1314,7 @@ impl Default for Connector {
             spawn_secrets: None,
             trust: arc_swap::ArcSwapOption::empty(),
             proxy_by_address: std::sync::atomic::AtomicBool::new(true),
+            native: std::sync::OnceLock::new(),
         }
     }
 }

@@ -263,3 +263,28 @@ pub(crate) fn copied_fields(fields: &[(&str, &[u8])]) -> Vec<(String, Vec<u8>)> 
 pub(crate) fn owned_bytes(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
 }
+
+impl crate::conns::Connector {
+    /// BOOT: the transport instances the build assigns the outbound carriers (HTTP today), and the account their
+    /// framer sessions are charged to (the boot's process admission, Data class: the account inbound
+    /// connections are charged to). Set once, before the connector serves a native dial; a second call is
+    /// refused. Held for the process (a reload that changes transports is refused by the root).
+    ///
+    /// # Errors
+    /// A second call.
+    pub fn carry_natively(
+        &self,
+        carriers: Vec<crate::native_dial::NativeCarrier>,
+        storage: busbar_contract::storage::StorageSource,
+    ) -> Result<(), String> {
+        self.native
+            .set(crate::conns::native_conns::Natives { carriers, storage })
+            .map_err(|_| "the native carriers are set once, at boot".to_owned())
+    }
+
+    /// Whether [`Self::carry_natively`] was called.
+    #[must_use]
+    pub fn carries_natively(&self) -> bool {
+        self.native.get().is_some()
+    }
+}
