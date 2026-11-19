@@ -376,6 +376,15 @@ pub fn default_usage_flush_interval_ms() -> u64 {
     DEFAULT_USAGE_FLUSH_INTERVAL_MS
 }
 
+/// The most worker threads the engine will start.
+pub const MAX_WORKER_THREADS: usize = u16::MAX as usize;
+
+/// The one rule for `advanced.worker_threads`; the signature is in place and the rule is not yet.
+#[must_use]
+pub fn effective_worker_threads(configured: Option<usize>) -> (Option<usize>, Option<String>) {
+    (configured, None)
+}
+
 /// The `advanced.response_headers:` block: opt-in toggles for every busbar-INJECTED
 /// response header, unified in ONE place instead of each header having its own bespoke gate. Every field defaults `false`
 /// (invisible out of the box) — see each field's doc comment for the header it controls and why it

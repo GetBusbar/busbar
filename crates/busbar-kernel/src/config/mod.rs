@@ -2169,6 +2169,10 @@ mod provider_protocol_tests;
 mod advanced_destinations_tests;
 
 #[cfg(test)]
+#[path = "tests/worker_threads_tests.rs"]
+mod worker_threads_tests;
+
+#[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
 
