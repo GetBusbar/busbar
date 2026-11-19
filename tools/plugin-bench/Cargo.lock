@@ -852,8 +852,8 @@ dependencies = [
 
 [[package]]
 name = "granit-parser"
-version = "2.1.0"
-source = "git+https://github.com/MattJackson/granit-parser?rev=d31e9292a0be49de7d3a85ee07555bb9d0afce20#d31e9292a0be49de7d3a85ee07555bb9d0afce20"
+version = "2.2.0"
+source = "git+https://github.com/MattJackson/granit-parser?rev=6597ae7f5622872c6e242af590342de05300d601#6597ae7f5622872c6e242af590342de05300d601"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -884,8 +884,8 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "http"
-version = "1.4.1"
-source = "git+https://github.com/MattJackson/http?rev=904f4519b5f27a0424b121a4828640c741efcd95#904f4519b5f27a0424b121a4828640c741efcd95"
+version = "1.5.0"
+source = "git+https://github.com/MattJackson/http?rev=7e71322105371bae475f8e68d86324e73f4a11c9#7e71322105371bae475f8e68d86324e73f4a11c9"
 dependencies = [
  "bytes",
  "itoa",
@@ -1517,8 +1517,8 @@ dependencies = [
 
 [[package]]
 name = "serde-saphyr"
-version = "2.1.1"
-source = "git+https://github.com/MattJackson/serde-saphyr?rev=a94d2da01a448d348b5d14945e29192e511b8452#a94d2da01a448d348b5d14945e29192e511b8452"
+version = "2.2.0"
+source = "git+https://github.com/MattJackson/serde-saphyr?rev=34461cdf00e17aea91654dc744aa6ae585458411#34461cdf00e17aea91654dc744aa6ae585458411"
 dependencies = [
  "annotate-snippets",
  "base64 0.22.1",
