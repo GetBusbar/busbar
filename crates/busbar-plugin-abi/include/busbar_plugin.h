@@ -18,8 +18,8 @@
 #define BB_SECRET_ABI 3u
 #define BB_SECRET_MINOR 0u
 #define BB_KIND_SECRET 2u
-#define BB_CORE_FP   0x0000000000000000ull /* TO FILL at the compile pass from versions::CORE_CONTRACT.wire; C-HEADER asserts == CORE_FP */
-#define BB_SECRET_FP 0x0000000000000000ull /* TO FILL at the compile pass; C-HEADER asserts == secret::FP */
+#define BB_CORE_FP   0x3b0e1903e87c9e9cull /* versions::CORE_CONTRACT.wire; C-HEADER asserts == CORE_FP */
+#define BB_SECRET_FP 0x35486c566edc8f6eull /* C-HEADER asserts == secret::FP */
 
 /* §2 */
 typedef struct { const uint8_t *ptr; size_t len; } bb_bytes;  /* ptr may be NULL only when len == 0; {NULL,0} is empty everywhere (round 17, C-NULL-EMPTY) */
