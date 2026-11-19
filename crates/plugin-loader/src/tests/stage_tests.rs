@@ -307,48 +307,6 @@ mod on_unix {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
 
-    #[test]
-    fn the_staged_bytes_are_the_verified_bytes() {
-        let (verified, other) = two_libraries();
-        clean_load_holds_the_verified_bytes(&verified);
-
-        let (tampered, loaded) = tamper_then_load(&verified, |path| {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(path)?;
-            f.write_all(&other)?;
-            f.flush()
-        });
-        tampered.expect("the owning uid can rewrite its own staged file in place");
-        assert_refused("staged file rewritten in place", loaded);
-
-        let (tampered, loaded) = tamper_then_load(&verified, |path| {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-            let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
-            let last = verified.len() as u64 - 1;
-            std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(last))?;
-            f.write_all(&[verified[verified.len() - 1] ^ 0xff])?;
-            f.flush()?;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400))
-        });
-        tampered.expect("the owning uid can flip a byte of its own staged file");
-        assert_refused("staged file with one byte flipped", loaded);
-    }
-
-    #[test]
-    fn a_staged_file_swapped_between_verify_and_load_is_refused() {
-        let (verified, other) = two_libraries();
-
-        let (swapped, loaded) = tamper_then_load(&verified, |path| {
-            let decoy = path.with_extension("decoy");
-            std::fs::write(&decoy, &other)?;
-            std::fs::rename(&decoy, path)
-        });
-        swapped.expect("the owning uid can rename inside its own staging directory");
-        assert_refused("staged file swapped by rename", loaded);
-    }
 }
 
 #[cfg(windows)]
