@@ -91,6 +91,8 @@ where
 {
     crate::dist_root_install::install();
     busbar_core_admin::install();
+    // The operator credential's binding, installed as the production boot installs it.
+    busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding());
     root::connector::install_io_reactor();
 
     let library = root::test_plugins::application_store_library();
