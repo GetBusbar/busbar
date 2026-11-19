@@ -328,8 +328,6 @@ interim:
   crates/plugin-loader/tests/fixtures/neutral_frame_door.rs: { tokens: 24, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/tests/fixtures/neutral_plane_plugin.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/tests/streaming_media.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
-  dist/default/tests/canary/abi.rs: { tokens: 2, by: "W1-L1" }
-  dist/default/tests/canary/recorder.rs: { tokens: 40, by: "W1-L1" }
   dist/default/tests/cli_validate.rs: { tokens: 1, by: "W1-U1" }
   dist/default/tests/door_ready_alloc.rs: { tokens: 19, by: "W3-D-BINARY" }
   dist/default/tests/export_otlp_delivers_spans.rs: { tokens: 1, by: "W3-D-BINARY" }

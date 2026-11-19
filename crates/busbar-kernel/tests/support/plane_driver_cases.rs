@@ -37,6 +37,8 @@ pub mod stat {
 
     pub(crate) const LAST_DISPOSITION: usize = 4;
 
+    pub(crate) const DRIVES: usize = 5;
+
     pub const UNIT: usize = 6;
 
     pub const COUNT: usize = 7;
