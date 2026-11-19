@@ -377,7 +377,7 @@ fn wants_client_cert(
 }
 
 /// The pinning verifier over `roots` holding the peer to `pins`, or why it cannot be built (an
-/// empty root store, as `advanced.tls.roots: none` with no anchor gives): a refusal, never a panic.
+/// empty root store, as `outbound.tls.roots: none` with no anchor gives): a refusal, never a panic.
 pub(crate) fn pinned_key_verifier(
     roots: RootCertStore,
     pins: &[[u8; 32]],
@@ -531,7 +531,7 @@ impl TrustStore {
         };
         let mut global = Vec::new();
         for (i, src) in cfg.trust_anchors.iter().enumerate() {
-            let key = format!("advanced.tls.trust_anchors[{i}]");
+            let key = format!("outbound.tls.trust_anchors[{i}]");
             match load_anchors(src, &key, "global", now, env) {
                 Ok(mut a) => global.append(&mut a),
                 Err(e) => errors.push(e),
@@ -756,7 +756,7 @@ impl TrustStore {
             count = self.base.anchors.len(),
             sha256 = %self.base.digest,
             source = self.base.source.as_deref().unwrap_or("-"),
-            "advanced.tls: base set loaded"
+            "outbound.tls: base set loaded"
         );
         if self.base.source.is_some() {
             busbar_kernel::audit_ring::AUDIT.record_by(
@@ -776,7 +776,7 @@ impl TrustStore {
                 diag::CONFIG_TLS_BASE_ROOTS_DROPPED,
                 count = self.base.dropped.len(),
                 first = %self.base.dropped.first().map(String::as_str).unwrap_or_default(),
-                "advanced.tls.roots: system: {} certificate(s) in the OS bundle were not used as \
+                "outbound.tls.roots: system: {} certificate(s) in the OS bundle were not used as \
                  trust anchors (expired, not a CA, or unreadable)",
                 self.base.dropped.len()
             );
@@ -790,7 +790,7 @@ impl TrustStore {
                 subject = %a.subject,
                 issuer = %a.issuer,
                 not_after = a.not_after,
-                "advanced.tls: trust anchor accepted"
+                "outbound.tls: trust anchor accepted"
             );
             busbar_kernel::audit_ring::AUDIT.record_by(
                 AUDIT_ANCHOR,
@@ -822,7 +822,7 @@ impl TrustStore {
                 scope = %a.scope,
                 sha256 = %a.fingerprint(),
                 not_after = a.not_after,
-                "advanced.tls: the trust anchor {} ({}) expires within 30 days; rotate it before \
+                "outbound.tls: the trust anchor {} ({}) expires within 30 days; rotate it before \
                  then (an expired anchor is withdrawn and refuses the next boot)",
                 a.key,
                 a.subject
@@ -863,7 +863,7 @@ impl TrustStore {
                 scope = %a.scope,
                 sha256 = %a.fingerprint(),
                 not_after = a.not_after,
-                "advanced.tls: the trust anchor {} expired and was withdrawn from new connections",
+                "outbound.tls: the trust anchor {} expired and was withdrawn from new connections",
                 a.key
             );
             busbar_kernel::audit_ring::AUDIT.record_by(
@@ -886,7 +886,7 @@ impl TrustStore {
                     diag::EGRESS_TLS_ANCHOR_FILE_CHANGED,
                     key = %a.key,
                     path = %path.display(),
-                    "advanced.tls: the anchor file {} changed since boot; restart busbar to apply it",
+                    "outbound.tls: the anchor file {} changed since boot; restart busbar to apply it",
                     path.display()
                 );
                 busbar_kernel::audit_ring::AUDIT.record_by(
@@ -925,7 +925,7 @@ fn is_label_name(n: &str) -> bool {
 }
 
 fn matcher(i: usize, written: &str) -> Result<Matcher, String> {
-    let key = format!("advanced.tls.destinations[{i}].match");
+    let key = format!("outbound.tls.destinations[{i}].match");
     let bad = || {
         format!(
             "{}: {key}: `{written}` is not a host, a `*.domain` wildcard, an IP or a CIDR",
@@ -978,7 +978,7 @@ fn load_entry(
     let scope = format!("destinations[{i}] ({})", d.matches.trim());
     let mut anchors = Vec::new();
     for (j, src) in d.trust_anchors.iter().enumerate() {
-        let key = format!("advanced.tls.destinations[{i}].trust_anchors[{j}]");
+        let key = format!("outbound.tls.destinations[{i}].trust_anchors[{j}]");
         match load_anchors(src, &key, &scope, now, env) {
             Ok(mut a) => anchors.append(&mut a),
             Err(e) => errors.push(e),
@@ -989,7 +989,7 @@ fn load_entry(
         match pin_bytes(p) {
             Some(b) => pins.push(b),
             None => errors.push(format!(
-                "{}: advanced.tls.destinations[{i}].pin_spki_sha256[{j}]: not `sha256/<base64>` of a \
+                "{}: outbound.tls.destinations[{i}].pin_spki_sha256[{j}]: not `sha256/<base64>` of a \
                  32-byte SHA-256 SubjectPublicKeyInfo digest",
                 diag::CONFIG_TLS_DESTINATION_INVALID.banner()
             )),
@@ -1015,7 +1015,7 @@ fn load_entry(
         include_roots: d.include_roots,
         pins,
         identity,
-        // The `plaintext` row is deleted from `advanced.tls.destinations` (parse refuses it; transport
+        // The `plaintext` row is deleted from `outbound.tls.destinations` (parse refuses it; transport
         // security is `insecure_transport`), so no entry admits plaintext.
         plaintext: false,
     })
@@ -1047,7 +1047,7 @@ fn load_identity(
     id: &busbar_kernel::config::tls::TlsClientIdentityCfg,
     env: EnvFn<'_>,
 ) -> Result<(Vec<CertificateDer<'static>>, Arc<PrivateKeyDer<'static>>), String> {
-    let key_name = format!("advanced.tls.destinations[{i}].client_identity");
+    let key_name = format!("outbound.tls.destinations[{i}].client_identity");
     let bad = |why: String| {
         format!(
             "{}: {key_name}: {why}",
@@ -1286,7 +1286,7 @@ fn load_system(now: SystemTime, env: EnvFn<'_>) -> Result<Base, String> {
     }
     if anchors.is_empty() {
         return Err(format!(
-            "{}: advanced.tls.roots: system: the operating system's CA bundle holds no usable \
+            "{}: outbound.tls.roots: system: the operating system's CA bundle holds no usable \
              certificate ({}); install the distribution's ca-certificates package, set \
              SSL_CERT_FILE, or use `roots: bundled`",
             diag::CONFIG_TLS_TRUST_EMPTY.banner(),

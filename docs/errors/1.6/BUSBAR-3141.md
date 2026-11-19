@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-3141
 
 ## What it means
 
-A plugin's connection to a destination wrote application bytes in cleartext, and the destination is neither loopback nor an exact `advanced.tls.destinations` entry with `plaintext: true`. busbar refuses the write and closes the connection: a connection that must be secured carries only a short negotiation request (at most 64 bytes) before it is. The refusal names the destination class, never the bytes.
+A plugin's connection to a destination wrote application bytes in cleartext, and the destination is neither loopback nor an exact `outbound.tls.destinations` entry with `plaintext: true`. busbar refuses the write and closes the connection: a connection that must be secured carries only a short negotiation request (at most 64 bytes) before it is. The refusal names the destination class, never the bytes.
 
 ## How to fix it
 
-Secure the connection (turn on the plugin's TLS setting and make the server's certificate verifiable), or, if the destination must stay cleartext, add it as an exact host or IP under `advanced.tls.destinations` with `plaintext: true`.
+Secure the connection (turn on the plugin's TLS setting and make the server's certificate verifiable), or, if the destination must stay cleartext, add it as an exact host or IP under `outbound.tls.destinations` with `plaintext: true`.
 
 ---
 

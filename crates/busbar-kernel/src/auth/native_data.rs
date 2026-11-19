@@ -45,7 +45,9 @@ pub enum DataRefused {
 /// Actual immutable candidate owners. Root assembles these; none is a plugin proof.
 pub struct DataRouteOwners {
     pub generation: Arc<ServingGeneration>,
-    pub inventory: Arc<ResourceInventory>,
+    /// The configured resources a selecting route selects from; `None` for a route that selects
+    /// none (it declares no resource kinds).
+    pub inventory: Option<Arc<ResourceInventory>>,
     pub chain: Arc<NativeChain>,
     pub keys: Arc<crate::door::UnitKeyMint>,
     pub routes: Arc<RequestRoutes>,
@@ -62,10 +64,19 @@ pub struct NativeDataRoute {
 }
 
 impl NativeDataRoute {
-    /// Lend the actual inventory retained by this canonical route for pre-auth resource selection.
-    /// A reconstructed inventory with equal entries is not the same authorization owner.
-    pub fn inventory(&self) -> &Arc<ResourceInventory> {
-        &self.owners.inventory
+    /// The actual inventory this canonical route selects from after verification
+    /// ([`PendingData::select`]); `None` when it selects nothing. A reconstructed inventory with
+    /// equal entries is not the same authorization owner.
+    pub fn inventory(&self) -> Option<&Arc<ResourceInventory>> {
+        self.owners.inventory.as_ref()
+    }
+
+    /// Whether this route's plane selects resources for each request (it declares resource kinds,
+    /// and binding retained their inventory). A route that selects none is admitted through the
+    /// plane's own `request`: the key's grant of the pool or model it names is judged in the
+    /// request walk, and money is admitted there.
+    pub fn selects(&self) -> bool {
+        self.owners.inventory.is_some()
     }
 
     /// Whether this path can admit `mounted` on `seat` at all, before any owner exists: the
@@ -84,10 +95,12 @@ impl NativeDataRoute {
         if mounted.auth != AUTH_PRINCIPAL || mounted.effective != AUTH_PRINCIPAL {
             return Err("the native data path admits principal routes only");
         }
-        if mounted.resource_kinds.is_empty()
-            || seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
+        // A route that declares resource kinds is admitted only through its plane's selection;
+        // a route that declares none is admitted through the plane's `request` (no selection).
+        if !mounted.resource_kinds.is_empty()
+            && seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
         {
-            return Err("the native data path admits a route only through its selected resources");
+            return Err("the route declares resource kinds its plane does not select");
         }
         if seat.driver.has_hooks(mounted.route) {
             return Err("the native data path does not run route hooks");
@@ -116,8 +129,12 @@ impl NativeDataRoute {
                 .data
                 .iter()
                 .any(|route| route == mounted)
-            || owners.inventory.instance() != target.caller().incarnation()
-            || owners.inventory.epoch() != owners.chain.epoch()
+            // A route selects exactly when it declares resource kinds, from its own inventory.
+            || mounted.resource_kinds.is_empty() != owners.inventory.is_none()
+            || owners.inventory.as_ref().is_some_and(|inventory| {
+                inventory.instance() != target.caller().incarnation()
+                    || inventory.epoch() != owners.chain.epoch()
+            })
             || !owners.chain.matches_names(target.auth_instances())
         {
             return Err(DataRefused::Binding);
@@ -137,16 +154,16 @@ impl NativeDataRoute {
         &self.withheld
     }
 
-    /// Consumes the original physical preparation latch before verification.
-    /// Root retains the completion owner for the exact authorization or denied result.
+    /// Consumes the original physical preparation latch, then verifies the credential. Nothing of
+    /// the request is lent to the plane here: only a verified [`PendingData`] lends it, for
+    /// selection ([`PendingData::lend_selection`]). Root retains the completion owner for the
+    /// exact authorization or denied result.
     pub async fn prepare(
         self: &Arc<Self>,
         preparation: DataPreparation,
-        selected: SelectedResources,
         cx: CallCx,
     ) -> Result<PendingData, DataPreparationFailed> {
         let binding = preparation.binding().clone();
-        let selected = Arc::new(selected);
         let result = async {
             // One reading for this step's two deadlines: the binding's own and the call's. No lock
             // and no await sits between the reading and the second check.
@@ -157,16 +174,11 @@ impl NativeDataRoute {
                 || cx.request_id != binding.invocation().request_id().get()
                 || binding.deadline().is_some_and(|at| cx.deadline > at)
                 || live_at >= cx.deadline
-                || selected.invocation() != binding.invocation()
-                || !Arc::ptr_eq(selected.inventory(), &self.owners.inventory)
             {
                 return Err(DataRefused::Binding);
             }
             let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
-            if !selected.request().matches_snapshot(&snapshot)
-                || selected.request().route() != self.binding.line().route.rung
-                || !snapshot.request().same_request(binding.request())
-            {
+            if !snapshot.request().same_request(binding.request()) {
                 return Err(DataRefused::Binding);
             }
             let cred_header = match self.binding.target() {
@@ -191,19 +203,61 @@ impl NativeDataRoute {
             Ok(prepared) => Ok(PendingData {
                 preparation,
                 route: self.clone(),
-                selected,
+                selected: None,
                 prepared,
                 deadline: cx.deadline,
             }),
             Err(reason) => Err(preparation_failed(
                 preparation,
                 self.clone(),
-                selected,
+                None,
                 None,
                 reason,
             )),
         }
     }
+}
+
+/// The governed key a verified identity is admitted as, valid at `now` (enabled, not deleted, not
+/// expired): the anonymous key of an explicitly empty data chain, else the key the identity's
+/// provider and groups earn through the role bindings. DATA and the upgrade route both use it.
+pub(crate) fn governed_key(
+    app: &App,
+    prepared: &PreparedNativeIdentity,
+    chain: &NativeChain,
+    now: u64,
+) -> Result<Arc<VirtualKey>, DataRefused> {
+    let resolved = match chain.anonymous() {
+        Some(anonymous) if prepared.is_anonymous() => Arc::clone(anonymous),
+        Some(_) => return Err(DataRefused::Binding),
+        None if prepared.is_anonymous() => return Err(DataRefused::Binding),
+        None => {
+            let identity = prepared.identity();
+            let (_, gov) = super::resolve_identity_from_bindings(
+                &app.role_bindings,
+                super::ChainVerdict::Identified {
+                    module: prepared.provider_text(),
+                    principal: super::Principal {
+                        id: identity.subject().to_owned(),
+                        name: None,
+                        roles: identity.groups().map(str::to_owned).collect(),
+                        ttl_secs: identity.cache_s().map(u64::from),
+                    },
+                    resolved: None,
+                    signed_authority: None,
+                },
+            )
+            .map_err(|_| DataRefused::Policy)?;
+            gov.key.ok_or(DataRefused::Policy)?
+        }
+    };
+    if !resolved.enabled
+        || resolved.deleted_at.is_some()
+        || resolved.expires_at.is_some_and(|until| now >= until)
+    {
+        return Err(DataRefused::Policy);
+    }
+    Ok(resolved)
 }
 
 /// The credential carriers a native route is judged on, lowercase and once each: `authorization` (the
@@ -235,6 +289,10 @@ pub(crate) fn refuse_bound_carriers(
     chain: &NativeChain,
     cred_header: Option<&str>,
 ) -> Result<(), DataRefused> {
+    // An explicitly empty chain verifies nothing, so no carrier is judged (1.5.5's open relay).
+    if chain.anonymous().is_some() {
+        return Ok(());
+    }
     snapshot
         .with_auth_input(|request| {
             for field in request.headers {
@@ -271,14 +329,75 @@ pub(crate) fn refuse_bound_carriers(
         .map_err(|_| DataRefused::Capacity)?
 }
 
+/// A request whose credential verified, before key policy and its replay claim.
 pub struct PendingData {
     preparation: DataPreparation,
     route: Arc<NativeDataRoute>,
-    selected: Arc<SelectedResources>,
+    selected: Option<Arc<SelectedResources>>,
     prepared: Arc<PreparedNativeIdentity>,
     deadline: Instant,
 }
 impl PendingData {
+    /// Lend the verified request to its plane's resource selector and keep what it selected:
+    /// the only lending before the plane's `request`, and only after the credential verified.
+    /// `selector` is lent the frozen request and the carriers it must withhold
+    /// ([`crate::resource_admission::select_resources`]). A route that selects nothing is
+    /// refused here: it is admitted with no selection.
+    pub fn select(
+        mut self,
+        selector: impl FnOnce(
+            &crate::resource_admission::FrozenRequest,
+            &[Box<str>],
+        ) -> crate::resource_admission::Selection,
+    ) -> Result<Self, DataPreparationFailed> {
+        let result = (|| {
+            let RouteTarget::Plane(target) = self.route.binding.target() else {
+                return Err(DataRefused::Binding);
+            };
+            let Some(inventory) = self.route.owners.inventory.as_ref() else {
+                return Err(DataRefused::Binding);
+            };
+            if self.selected.is_some() {
+                return Err(DataRefused::Binding);
+            }
+            let binding = self.preparation.binding();
+            let frozen = crate::resource_admission::FrozenRequest::from_snapshot(
+                binding.invocation(),
+                target.mounted().route,
+                Arc::clone(self.prepared.snapshot()),
+            );
+            let wire = selector(&frozen, self.route.withheld())
+                .map_err(|_| DataRefused::Capacity)?
+                .map_err(|_| DataRefused::Unavailable)?;
+            let selected = inventory
+                .select_wire(frozen, target.mounted(), &wire)
+                .map_err(|_| DataRefused::Binding)?;
+            if selected.invocation() != binding.invocation()
+                || !Arc::ptr_eq(selected.inventory(), inventory)
+                || !selected
+                    .request()
+                    .matches_snapshot(self.prepared.snapshot())
+                || selected.request().route() != self.route.binding.line().route.rung
+            {
+                return Err(DataRefused::Binding);
+            }
+            Ok(selected)
+        })();
+        match result {
+            Ok(selected) => {
+                self.selected = Some(Arc::new(selected));
+                Ok(self)
+            }
+            Err(reason) => Err(preparation_failed(
+                self.preparation,
+                self.route,
+                None,
+                Some(self.prepared),
+                reason,
+            )),
+        }
+    }
+
     /// Consumes the completion right before awaiting replay. Publication after this lease
     /// is not cancellation; reset/deadline and an uncertain replay still grant no effects.
     pub async fn complete(self) -> Result<DataAuthorization, DataPreparationFailed> {
@@ -291,6 +410,11 @@ impl PendingData {
             if live_at >= self.deadline {
                 return Err(DataRefused::Cancelled);
             }
+            // A selecting route is completed only with its selection; a route that selects
+            // nothing never carries one.
+            if self.route.selects() != self.selected.is_some() {
+                return Err(DataRefused::Binding);
+            }
             let mut key = None;
             let lease = binding
                 .handle()
@@ -298,35 +422,26 @@ impl PendingData {
                     let now = crate::store::now();
                     self.prepared.fresh(now).map_err(|_| DataRefused::Policy)?;
                     if !self.prepared.belongs_to(&self.route.owners.chain)
-                        || !self
-                            .selected
-                            .request()
-                            .matches_snapshot(self.prepared.snapshot())
-                        || app.config_generation.load(Ordering::Acquire) != self.selected.epoch()
+                        || self.selected.as_ref().is_some_and(|selected| {
+                            !selected
+                                .request()
+                                .matches_snapshot(self.prepared.snapshot())
+                                || selected.epoch() != self.route.owners.chain.epoch()
+                        })
+                        || app.config_generation.load(Ordering::Acquire)
+                            != self.route.owners.chain.epoch()
                     {
                         return Err(DataRefused::Binding);
                     }
-                    let identity = self.prepared.identity();
-                    let (_, gov) = super::resolve_identity_from_bindings(
-                        &app.role_bindings,
-                        super::ChainVerdict::Identified {
-                            module: self.prepared.provider_text(),
-                            principal: super::Principal {
-                                id: identity.subject().to_owned(),
-                                name: None,
-                                roles: identity.groups().map(str::to_owned).collect(),
-                                ttl_secs: identity.cache_s().map(u64::from),
-                            },
-                            resolved: None,
-                            signed_authority: None,
-                        },
-                    )
-                    .map_err(|_| DataRefused::Policy)?;
-                    let resolved = gov.key.ok_or(DataRefused::Policy)?;
-                    if !resolved.enabled
-                        || resolved.deleted_at.is_some()
-                        || resolved.expires_at.is_some_and(|until| now >= until)
-                        || !self.selected.scope_allowed(&resolved)
+                    let resolved =
+                        governed_key(app, &self.prepared, &self.route.owners.chain, now)?;
+                    // With a selection the key's scope is judged against it here; with none, the
+                    // request walk judges the key's grant of the pool or model the plane names
+                    // (`RequestRoutes::scope_admits`), before any money.
+                    if self
+                        .selected
+                        .as_ref()
+                        .is_some_and(|selected| !selected.scope_allowed(&resolved))
                     {
                         return Err(DataRefused::Policy);
                     }
@@ -412,7 +527,7 @@ impl DataPreparationFailed {
 pub struct PreparedDataDenial {
     preparation: DataPreparationDenied,
     _route: Arc<NativeDataRoute>,
-    _selected: Arc<SelectedResources>,
+    _selected: Option<Arc<SelectedResources>>,
     _prepared: Option<Arc<PreparedNativeIdentity>>,
     decision: DataRefused,
 }
@@ -437,7 +552,7 @@ pub struct UnknownDataPreparation {
 fn preparation_failed(
     preparation: DataPreparation,
     route: Arc<NativeDataRoute>,
-    selected: Arc<SelectedResources>,
+    selected: Option<Arc<SelectedResources>>,
     prepared: Option<Arc<PreparedNativeIdentity>>,
     reason: DataRefused,
 ) -> DataPreparationFailed {
@@ -481,7 +596,7 @@ pub struct DataAuthorization {
     preparation: DataPreparationSuccess,
     binding: Arc<RequestBinding>,
     route: Arc<NativeDataRoute>,
-    selected: Arc<SelectedResources>,
+    selected: Option<Arc<SelectedResources>>,
     prepared: Arc<PreparedNativeIdentity>,
     lease: AdmissionLease,
     key: Arc<VirtualKey>,
@@ -582,8 +697,11 @@ impl NativeDataAllocation {
             plan.cost.clone(),
             authorization.prepared.snapshot().now_s(),
         )
-        .map_err(|_| DataRefused::Unit)?
-        .with_selection(Arc::clone(&authorization.selected));
+        .map_err(|_| DataRefused::Unit)?;
+        let allocation = match &authorization.selected {
+            Some(selected) => allocation.with_selection(Arc::clone(selected)),
+            None => allocation,
+        };
         let audit = crate::teller::native_data_audit::NativeAuditState::new(
             registration.context.clone(),
             authorization.key.clone(),
@@ -843,7 +961,7 @@ pub struct NativeDataPending {
     binding: Arc<RequestBinding>,
     deadline: Instant,
     route: Arc<NativeDataRoute>,
-    selected: Arc<SelectedResources>,
+    selected: Option<Arc<SelectedResources>>,
     prepared: Arc<PreparedNativeIdentity>,
     pending: Arc<Pending>,
     execution: Arc<OnceLock<DataExecutionAdmission>>,
@@ -856,11 +974,15 @@ impl NativeDataPending {
         decision: &ClientRefusal,
     ) -> Result<(PhysicalExecutionOwner, DataRefusalCustody), DataRefused> {
         let mut custody = self.custody.lock().map_err(|_| DataRefused::Unit)?;
-        if custody.phase != DataCommitPhase::ExpectedPreMoneyRefusal
-            || custody.refusal.as_ref() != Some(decision)
-            || self.execution.get().is_some()
-            || self.pending.admitted().is_some()
-        {
+        // Either money itself refused this decision, or the session refused before money was
+        // ever asked (the key's grant, the plane's own refusal of its input): the commit never
+        // ran, and once the bundle leaves here it never can.
+        let before_money = match custody.phase {
+            DataCommitPhase::ExpectedPreMoneyRefusal => custody.refusal.as_ref() == Some(decision),
+            DataCommitPhase::Awaiting => custody.refusal.is_none(),
+            _ => false,
+        };
+        if !before_money || self.execution.get().is_some() || self.pending.admitted().is_some() {
             return Err(DataRefused::Unit);
         }
         let bundle = custody.bundle.take().ok_or(DataRefused::Unit)?;
@@ -891,8 +1013,13 @@ impl NativeDataPending {
     pub fn withheld(&self) -> &Arc<[Box<str>]> {
         self.route.withheld()
     }
-    pub fn selected(&self) -> &SelectedResources {
-        &self.selected
+    /// The resources the plane selected after verification; `None` on a route that selects none.
+    pub fn selected(&self) -> Option<&SelectedResources> {
+        self.selected.as_deref()
+    }
+    /// The plane route (rung) this request was admitted on.
+    pub fn route(&self) -> u32 {
+        self.route.binding.line().route.rung
     }
     pub fn identity(&self) -> &busbar_ports::auth::Identity {
         self.prepared.identity()
@@ -910,7 +1037,10 @@ impl NativeDataPending {
             && self.route.caller.same_incarnation(driver.caller())
             && Arc::ptr_eq(self.route.owners.generation.core(), driver.core())
             && self.route.binding.line().route.rung == route
-            && self.selected.request().route() == route
+            && self
+                .selected
+                .as_ref()
+                .is_none_or(|selected| selected.request().route() == route)
     }
 
     pub(crate) fn pending(&self) -> &Arc<Pending> {
@@ -945,8 +1075,8 @@ impl DataExecutionAdmission {
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.authorization.binding
     }
-    pub fn selected(&self) -> &SelectedResources {
-        &self.authorization.selected
+    pub fn selected(&self) -> Option<&SelectedResources> {
+        self.authorization.selected.as_deref()
     }
     pub fn context(&self) -> &InvocationContext {
         &self.registration.context

@@ -103,7 +103,7 @@ pub struct Dial {
     /// The opener's core-held acceptance admits plaintext to `target`
     /// ([`busbar_contract::conn::OpenDesc::plaintext_accepted`]): a dial not secured from its first
     /// byte is admitted and is not held to a cleartext window. `false` = only an exact
-    /// `advanced.tls.destinations` plaintext entry admits one; no loopback address or name does.
+    /// `outbound.tls.destinations` plaintext entry admits one; no loopback address or name does.
     pub plaintext_accepted: bool,
 }
 
@@ -318,7 +318,7 @@ const CLEAR_WINDOW_BYTES: usize = 64;
 /// The refusal of a cleartext write past the negotiation window on a connection that must be
 /// secured before it carries anything else.
 const CLEAR_WINDOW_REFUSED: &str = "BUSBAR-3141: plaintext is not admitted to this destination: \
-     it is neither loopback nor an exact advanced.tls.destinations entry with plaintext: true, so \
+     it is neither loopback nor an exact outbound.tls.destinations entry with plaintext: true, so \
      the connection must be secured before it carries application bytes";
 
 /// One write held back until the framing takes it: its stream, bytes, whether they end the

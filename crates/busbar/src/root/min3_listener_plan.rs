@@ -319,6 +319,14 @@ pub(crate) fn plan_route_names<'a>(
         let header = route.cred_header.as_deref();
         let names = match explicit.get(&(Box::from(instance), route.route)) {
             Some(names) => {
+                // An empty chain is the open relay, which only `auth.chain: []` configures; a
+                // route's own list never opens a route.
+                if names.is_empty() {
+                    return Err(format!(
+                        "{instance}.routes.{}.auth_instances is empty; name at least one configured auth instance",
+                        route.route
+                    ));
+                }
                 let mut chain = Vec::with_capacity(names.len());
                 for name in names {
                     let reader = readers
@@ -433,17 +441,10 @@ fn route_chains(
                     &route.pattern,
                     why,
                 ))
-            } else if own.is_none() && config.data_chain.is_empty() {
-                // `auth.chain: []` (the operator's open relay) has no native producer yet: neither
-                // native path can verify the anonymous principal, so the route is not mounted
-                // rather than served unjudged.
-                Some(unadmitted_line(
-                    &seat.instance,
-                    route.route,
-                    &route.pattern,
-                    "auth.chain is empty and the native path has no producer for the anonymous principal yet",
-                ))
             } else {
+                // With `auth.chain: []` (the operator's open relay) a route that runs the data
+                // chain is served as the anonymous principal, through admission like any other
+                // (`NativeChain::open_data`).
                 None
             };
             let chain = match (unserved, own) {

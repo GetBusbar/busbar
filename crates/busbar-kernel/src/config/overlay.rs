@@ -242,6 +242,8 @@ impl RootSettings {
         }
         if let Some(v) = advanced {
             v.apply(&mut deploy.advanced);
+            // A stored or submitted patch may still name a moved key: carry it to its home.
+            deploy.carry_moved();
         }
 
         if let Some(v) = health {

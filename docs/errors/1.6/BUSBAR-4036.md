@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-4036
 
 ## What it means
 
-busbar could not tell who sent a request: the server has no socket peer (an embedded server), a trusted proxy forwarded an unparseable hop, or a private or loopback peer sent `X-Forwarded-For` or `Forwarded` while `advanced.trusted_proxies` is empty, which means an ingress sits in front of busbar and every user would otherwise share one bucket. Per-source limits are skipped for such requests; the per-account limiter still applies. Warned once, then at debug.
+busbar could not tell who sent a request: the server has no socket peer (an embedded server), a trusted proxy forwarded an unparseable hop, or a private or loopback peer sent `X-Forwarded-For` or `Forwarded` while `client_address.trusted_proxies` is empty, which means an ingress sits in front of busbar and every user would otherwise share one bucket. Per-source limits are skipped for such requests; the per-account limiter still applies. Warned once, then at debug.
 
 ## How to fix it
 
-List the ingress or load balancer addresses in `advanced.trusted_proxies` (and set `advanced.forwarded_header` if it sends `Forwarded`).
+List the ingress or load balancer addresses in `client_address.trusted_proxies` (and set `client_address.header` if it sends `Forwarded`).
 
 ---
 

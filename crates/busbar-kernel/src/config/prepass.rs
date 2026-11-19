@@ -248,7 +248,12 @@ struct Body(DeployCfg);
 
 impl<'de> Deserialize<'de> for Body {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        DeployCfg::deserialize(de).map(Body)
+        // Every reader of a document comes here: an old `advanced` key that moved lands at its
+        // own section before anything reads the document.
+        DeployCfg::deserialize(de).map(|mut deploy| {
+            deploy.carry_moved();
+            Body(deploy)
+        })
     }
 }
 

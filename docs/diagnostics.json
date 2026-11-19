@@ -640,10 +640,10 @@
     "number": 3029,
     "class": "config",
     "slug": "retired-env-var-ignored",
-    "title": "A retired launch environment variable is set and IGNORED",
+    "title": "A retired launch environment variable is set (converted or ignored)",
     "severity": "actionable",
-    "summary": "busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.",
-    "action": "Write the value into config.yaml, validate, then remove the variable from the launcher.",
+    "summary": "busbar 1.6 retired the launch variables BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, TOKIO_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY and BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. None refuses a start: each one set is said once, never echoing its value. BUSBAR_PROVIDERS is read as the providers catalog path, as 1.5.5 read it, unless --providers names one; the two upstream variables are applied over their configuration keys, as 1.5.5 applied them; the two worker variables are ignored, because the worker count is one per CPU core the process may use. Emitted pre-tracing, to stderr, at boot and by --validate.",
+    "action": "Move the value into config.yaml where a key exists (`providers_file:`, the upstream keys), validate, then remove the variable from the launcher.",
     "since": "1.6.0",
     "retired": false
   },
@@ -2824,12 +2824,12 @@
     "number": 9008,
     "class": "boot",
     "slug": "worker-threads-invalid",
-    "title": "Configured worker-thread count is invalid (ignored; default used)",
+    "title": "Configured worker-thread count is invalid — RETIRED",
     "severity": "actionable",
-    "summary": "An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is out of range or not a positive integer. `0` and non-numeric text are IGNORED and busbar boots on the default worker count (one per core); a count above 65,535, the most the runtime can run, is lowered to 65,535. The operator's intended worker count is NOT in effect. Said once at boot (pre-tracing, to stderr), and in the log when a configuration edit or the recovered document carries such a value; an edit is never refused for it.",
-    "action": "Set the data-plane worker count to an integer from 1 to 65,535 or remove it to accept the default. The gateway runs, but not on the value provided.",
+    "summary": "RETIRED. Nothing emits this code. The data-plane worker count is no longer a setting: the engine runs one worker per CPU core the process may use (its CPU affinity and container CPU limit). A configuration carrying `advanced.worker_threads`, or a launcher setting TOKIO_WORKER_THREADS, starts as before and says once that the value is ignored.",
+    "action": "Nothing to do. To run fewer workers, lower the container's CPU limit or the process's CPU affinity.",
     "since": "1.6.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-9009",

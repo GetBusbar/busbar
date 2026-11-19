@@ -325,8 +325,9 @@ pub struct RevokeView {
 /// Module-carried streams, produced fields and required pinned fields are published in the export
 /// form schema; lifecycle and restart requirements remain explicit in mutation responses.
 /// The settings endpoint exposes only the patchable advanced fields. The document-only
-/// `advanced.shutdown.deregister_delay` is captured at boot and requires restart.
-/// Within these settings, `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
+/// `shutdown.deregister_delay` is captured at boot and requires restart.
+/// Within these settings, `advanced` is live EXCEPT `response_headers` (an old key whose home is
+/// `telemetry.response_headers`; a PUT naming it is carried there): `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
 /// router" freezing as `max_inbound_concurrent`) and is not rebuilt by an apply.
 #[derive(Serialize, JsonSchema)]

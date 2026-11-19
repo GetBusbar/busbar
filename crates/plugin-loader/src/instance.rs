@@ -1808,8 +1808,8 @@ fn plaintext_refusal(name: &str, module: &str, dest: &str) -> String {
          busbar 1.6.0 connects only over verified TLS, and nothing is exempt: not loopback, not unix sockets.\n\
          Fix it one of two ways:\n\
          \x20 1. Turn on TLS for this connection (the plugin's docs name its TLS setting) and make the server's\n\
-         \x20    certificate verifiable: put its CA under advanced.tls.trust_anchors, or pin its key under\n\
-         \x20    advanced.tls.destinations (match: {host}, verify: pin).\n\
+         \x20    certificate verifiable: put its CA under outbound.tls.trust_anchors, or pin its key under\n\
+         \x20    outbound.tls.destinations (match: {host}, verify: pin).\n\
          \x20 2. If verified TLS is not possible here, accept the risk explicitly. Add this line to the {name}\n\
          \x20    block of your configuration, and replace the reason:\n\
          \x20      insecure_transport: {{ accept: plaintext, reason: \"<why this is acceptable>\" }}\n\
@@ -1891,6 +1891,8 @@ pub struct SlotTable {
     dir: Box<[OnceLock<Mid>; FAN]>,
     /// Free slot indices and the next never-used index.
     cold: Mutex<(Vec<u32>, u32)>,
+    /// Entries the watchdog found past their ceiling (each quarantined its instance): what the core watch reads.
+    hung: std::sync::atomic::AtomicU64,
 }
 
 impl Default for SlotTable {
@@ -1909,7 +1911,13 @@ impl SlotTable {
         SlotTable {
             dir: Box::new(core::array::from_fn(|_| OnceLock::new())),
             cold: Mutex::new((Vec::new(), 0)),
+            hung: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// How many entries the watchdog has found hung since start (one Relaxed load).
+    pub fn hung_total(&self) -> u64 {
+        self.hung.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn entry(&self, slot: u32) -> Option<&SlotEntry> {
@@ -1995,6 +2003,7 @@ impl SlotTable {
         if !cell.quarantine(epoch) {
             return;
         }
+        self.hung.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(rec) = e.record.load_full() {
             tracing::error!(
                 kind = ?rec.kind,

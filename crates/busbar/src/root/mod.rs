@@ -180,6 +180,7 @@ pub mod linked;
         clippy::allow_attributes_without_reason
     )
 )]
+pub(crate) mod core_watch;
 pub mod listener;
 pub(crate) mod listener_native;
 pub(crate) mod loader;

@@ -1358,8 +1358,13 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     ) -> Result<(Self, Answer), SessionError> {
         let data = effects.data().cloned();
         if let Some(data) = &data {
+            let withheld = data.withheld();
+            let lent = |name: &str| !withheld.iter().any(|w| w.eq_ignore_ascii_case(name));
             if !data.is_live()
-                || data.selected().request().route() != req.route
+                || data.route() != req.route
+                || data
+                    .selected()
+                    .is_some_and(|selected| selected.request().route() != req.route)
                 || req.request_id != data.binding().invocation().request_id().get()
                 || req.auth != busbar_plugin_abi::plane::AUTH_PRINCIPAL
                 || req.identity != data.identity().identity_records()
@@ -1371,11 +1376,12 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                     .headers
                     .iter()
                     .map(|field| (field.name.get(), field.value.get()))
-                    .eq(data.snapshot().headers())
+                    // The plane is lent the snapshot's fields minus the withheld carriers.
+                    .eq(data.snapshot().headers().filter(|(name, _)| lent(name)))
                 || !effects
                     .invocation()
                     .is_some_and(|context| context.same_unit(data.context()))
-                || !calls.resource_scoped(req.route)
+                || calls.resource_scoped(req.route) != data.selected().is_some()
             {
                 return Err(SessionError::NotDriven);
             }

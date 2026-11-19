@@ -55,7 +55,7 @@ fn every_patch_mirrors_every_field_of_its_section() {
         usage_flush_interval_ms,
         response_headers,
 
-        worker_threads: _,
+        worker_threads,
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
 
@@ -67,9 +67,12 @@ fn every_patch_mirrors_every_field_of_its_section() {
         allow_destinations: _,
     } = crate::config::AdvancedCfg::default();
     let _ = AdvancedPatch {
-        rate_sweep_interval: Some(rate_sweep_interval),
+        // Removed keys: carried as accepted, never a value.
+        rate_sweep_interval,
+        worker_threads,
         usage_flush_interval_ms: Some(usage_flush_interval_ms),
-        response_headers: Some(response_headers),
+        // A moved key: kept as written, carried to `telemetry.response_headers` on read.
+        response_headers,
     };
 
     let crate::config::HealthDefaultsCfg {
