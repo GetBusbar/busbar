@@ -921,7 +921,7 @@ async fn a_rebound_name_is_refused_before_its_bytes_leave() {
             NEED,
             &OpenDesc {
                 within: &within,
-                body: bytes::Bytes::from_static(b"the request body"),
+                body: busbar_contract::conn::Bytes::from_static(b"the request body"),
                 ..desc(&named)
             },
         )
@@ -993,11 +993,15 @@ async fn a_framed_operator_infrastructure_need_without_a_declared_target_is_refu
         Err(ConnError::Refused)
     );
     let code = busbar_kernel::diagnostics::PLUGIN_DECLARES_RETIRED_ABI_VALUE.code;
-    assert_eq!(
-        *connector.flagged.lock().unwrap(),
-        std::collections::HashSet::from([(OWNER, code)]),
-        "the instance is flagged once, however often it declares the shape"
-    );
+    {
+        let flagged = connector.flagged.lock().unwrap();
+        assert!(flagged.contains(&(OWNER, code)), "the shape is flagged");
+        assert_eq!(
+            flagged.len(),
+            1,
+            "the instance is flagged once, however often it declares the shape"
+        );
+    }
     for need in [NEED, NeedId(4)] {
         assert!(connector.native_need(OWNER, need).is_none());
         assert!(connector.open(OWNER, need, &desc(&format!("http://{addr}/v1"))).is_err());

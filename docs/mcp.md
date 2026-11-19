@@ -286,6 +286,10 @@ Reroute never means Busbar found somewhere else to send a call on its own. It me
 
 ## Authentication and identity
 
+### Anonymous callers: `auth.chain: [anonymous]`
+
+Auth is core's and plane-agnostic: whatever `auth: { chain: [anonymous] }` does for the LLM plane, it does for this one. A caller presenting no credential is admitted as the principal `anonymous`, narrowed by `role_bindings.anonymous` (each role must name a scope; admin scopes and verbs are refused), and billed to its binding's budget and pool. `initialize`, `tools/list` and `tools/call` serve within the grant: `tools/list` lists only the servers the binding grants (`allowed_mcp_servers`), and a call outside it is refused by the plane's grant check, exactly as for a key. Per-caller state is isolated by the server-issued handle, never by the shared subject: a session's records live under its `Mcp-Session-Id` (see [Inbound: streamable HTTP](#inbound-streamable-http)), so two anonymous sessions never read or resume each other's. A credential-less caller on a stateless request has no session handle, so nothing caller-scoped is kept for it. With `anonymous` in the chain there is no `401` to answer, so `authorization_servers` may be empty; the RFC 9728 document is still served.
+
 ### The discovery loop
 
 An MCP client arrives with no credential. It gets `401` with an RFC 6750 `WWW-Authenticate: Bearer` challenge carrying a `resource_metadata` parameter — the **absolute** URL of this deployment's protected-resource document, because a client with no credential also has no reason to trust its own reconstruction of your origin (`endpoint.rs`, `crates/busbar-kernel/src/auth/challenge.rs`). It reads that document, finds `authorization_servers`, does ordinary OAuth against your IdP, and comes back with a token.
@@ -391,7 +395,7 @@ MCP is one dialect with dated revisions, and the plane speaks four of them, inbo
 
 An unsupported protocol version answers `-32022`.
 
-**The session revisions:** sessions are bound to the caller's key and bounded per owner in count and bytes (`door_sessions.rs`, `tool_sessions.rs`). A session request whose `MCP-Protocol-Version` disagrees with its session's revision is `400`. On an ungoverned chain every caller is one owner, so a session isolates nothing; the first `2024-11-05` stream on such an instance reports that once, as a warning.
+**The session revisions:** sessions are bound to the caller's key and bounded per owner in count and bytes (`door_sessions.rs`, `tool_sessions.rs`). A session request whose `MCP-Protocol-Version` disagrees with its session's revision is `400`. Under `auth: { chain: [anonymous] }` every caller presenting no credential is the one principal `anonymous`, so its sessions are not bound to a key: each session's records are keyed by its own `Mcp-Session-Id` (the plane states it to core as the session's handle; core derives the caller scope from it alone). The id is 16 bytes from the engine's CSPRNG, so a session is reached only by presenting its id: a guessed id, or one another anonymous caller holds and this one does not, is `404`, and nothing lists sessions across callers. The count and byte bounds per owner apply to `anonymous` as one owner.
 
 ### Inbound: `busbar --stdio`
 
