@@ -920,3 +920,7 @@ pub(crate) mod retained_fixture {
 #[cfg(test)]
 #[path = "native_retire_tests.rs"]
 mod retire_tests;
+
+#[cfg(test)]
+#[path = "native_open_units_tests.rs"]
+mod open_units_tests;
