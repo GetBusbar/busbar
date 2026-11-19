@@ -1176,6 +1176,12 @@ crate::kind! {
                 ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE, RouteAdmissionRec, RouteFault, RouteRec,
                 SCOPE_NONE, SCOPE_SELECTED, SCOPE_WALK,
             };
+            /// Whether a route whose auth mask is `auth` may state a D_ROUTE_CRED_HEADER: the mask holds
+            /// AUTH_PRINCIPAL, or is exactly AUTH_OPTIONAL, or exactly AUTH_SIGNED_INGRESS. The one rule the
+            /// loader (describe) and the kernel (route record) both apply.
+            pub const fn cred_header_admitted(auth: u32) -> bool {
+                auth & AUTH_PRINCIPAL != 0 || auth == AUTH_OPTIONAL || auth == AUTH_SIGNED_INGRESS
+            }
             /// The host side of the plane kind: a typed face over busbar-ffi's `Instance` (IF §10.4).
             /// `live` points into the plugin image and is valid because `inst` holds the image (I13).
             #[cfg(feature = "host")]

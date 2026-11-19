@@ -18,7 +18,7 @@
 #define BB_SECRET_ABI 3u
 #define BB_SECRET_MINOR 0u
 #define BB_KIND_SECRET 2u
-#define BB_CORE_FP   0x3b0e1903e87c9e9cull /* versions::CORE_CONTRACT.wire; C-HEADER asserts == CORE_FP */
+#define BB_CORE_FP   0x321d476410f7bbe8ull /* versions::CORE_CONTRACT.wire; C-HEADER asserts == CORE_FP */
 #define BB_SECRET_FP 0x35486c566edc8f6eull /* C-HEADER asserts == secret::FP */
 
 /* §2 */
