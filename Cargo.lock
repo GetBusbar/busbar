@@ -391,6 +391,7 @@ version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "busbar-artifact-metadata",
+ "busbar-contract",
  "busbar-count",
  "busbar-crypto",
  "busbar-json",
