@@ -1430,6 +1430,30 @@ impl DataAuthorization {
     }
 }
 
+/// Who presented a request on a core route or on no route: the engine's own token judged by the
+/// engine (`keys`, under this generation's governance, bound to no audience: a core route is bound
+/// to none), exactly as a data route judges it, else the chain's instances. A key the operator
+/// minted is the same caller on `/stats`, on an unknown path and on a plane's route.
+async fn core_or_chain(
+    app: &App,
+    chain: &Arc<NativeChain>,
+    cx: CallCx,
+    snapshot: Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>,
+) -> Result<NativePreparedAnswer, DataRefused> {
+    let now = snapshot.now_s();
+    if let Some(core) =
+        super::native_keys::judge(&snapshot, chain, None, app.governance.as_deref(), None, now)?
+    {
+        return Ok(NativePreparedAnswer::Identity(
+            chain.core_identity(cx, snapshot, core),
+        ));
+    }
+    chain
+        .prepare_snapshot(cx, snapshot)
+        .await
+        .map_err(|_| DataRefused::Unavailable)
+}
+
 /// The data chain's judgement of a request no route matched (design C4, question 4): the facts
 /// the admission decision needs to answer 404 or 405 to a verified caller and the one 401 to
 /// anyone else. Nothing is lent to any plane and nothing is claimed: an unknown path consumes no
