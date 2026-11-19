@@ -579,3 +579,142 @@ fn a_key_over_its_budget_is_refused_before_any_101_and_the_provider_is_never_dia
         );
     });
 }
+
+/// A key revoked while a session it opened is live: the engine ends that session itself, for the
+/// revoked credential (CR_REVOKED), and its unit settles once, billed what its plane stated before
+/// the cut. A session open on another key, which nobody revoked, goes on untouched.
+#[test]
+fn revoked_session_ends() {
+    let runtime = runtime();
+    let mut provider = runtime.block_on(WsProvider::start(false));
+    let node = ws_node("ws-revoked", provider.port);
+    let revoked = node.mint(&json!({ "name": "e2e-ws-revoked" }));
+    let kept = node.mint(&json!({ "name": "e2e-ws-kept" }));
+
+    let (mut cut, mut other) = runtime.block_on(async {
+        let mut cut = open(&node, &revoked)
+            .await
+            .expect("a 101 for the key about to be revoked");
+        provider
+            .seen_where("the first session", |seen| {
+                matches!(seen, Seen::Dialled { .. })
+            })
+            .await;
+        // The far end answers a turn on the first session: its plane states that turn's usage.
+        provider.tell(Tell::Send(Message::text(
+            json!({
+                "type": "response.done",
+                "response": {"id": "resp_revoked", "status": "completed", "usage": {
+                    "total_tokens": 3, "input_tokens": 1, "output_tokens": 2,
+                    "input_token_details": {"text_tokens": 1, "audio_tokens": 0},
+                    "output_token_details": {"text_tokens": 2, "audio_tokens": 0}
+                }}
+            })
+            .to_string(),
+        )));
+        received(&mut cut, "the provider's response.done", |message| {
+            event_type(&message.clone().into_data()).as_deref() == Some("response.done")
+        })
+        .await;
+        let other = open(&node, &kept)
+            .await
+            .expect("a 101 for the key nobody revokes");
+        provider
+            .seen_where("the second session", |seen| {
+                matches!(seen, Seen::Dialled { .. })
+            })
+            .await;
+        (cut, other)
+    });
+
+    let answer = node.operator(
+        "POST",
+        &format!("/api/v1/admin/keys/{}/revoke", revoked.id),
+        None,
+    );
+    assert_eq!(answer.status, 200, "the revoke: {}", answer.text());
+
+    runtime.block_on(async {
+        // The engine ends the revoked key's session with a close frame: neither a normal end nor
+        // a restart, and never a connection left to hang.
+        let deadline = tokio::time::Instant::now() + WAIT;
+        let code = loop {
+            match tokio::time::timeout_at(deadline, cut.next()).await {
+                Ok(Some(Ok(Message::Close(frame)))) => {
+                    break frame.map(|frame| u16::from(frame.code));
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(error))) => {
+                    panic!("the revoked session was cut, not closed: {error}")
+                }
+                Ok(None) => panic!("the revoked session ended with no close frame"),
+                Err(_) => panic!("the session of a revoked key was still open after {WAIT:?}"),
+            }
+        };
+        assert!(
+            !matches!(code, None | Some(1000 | 1001 | 1012)),
+            "a revoked session is not ended as a normal close, a going-away or a restart: {code:?}"
+        );
+
+        // The other key's session is live: what its caller sends still reaches the provider.
+        other
+            .send(Message::text(r#"{"type":"response.create","marker":"kept"}"#))
+            .await
+            .expect("the unrevoked session sends");
+        provider
+            .seen_where("the unrevoked session's message", |seen| {
+                matches!(seen, Seen::Message { bytes, .. }
+                    if String::from_utf8_lossy(bytes).contains("\"kept\""))
+            })
+            .await;
+    });
+
+    // The engine says why it ended the session, for that key and no other.
+    let log = node.log();
+    let said = |key: &str| {
+        log.lines()
+            .any(|line| line.contains("CR_REVOKED") && line.contains(key))
+    };
+    assert!(
+        said(&revoked.id),
+        "the engine never said it ended a session for the revoked key"
+    );
+    assert!(
+        !said(&kept.id),
+        "the engine said it ended a session for a key nobody revoked"
+    );
+
+    // The cut session is one unit, settled once, billed what its plane stated before the cut.
+    let record = node.settled_where(&revoked, |record| record["status"] == 101);
+    assert_eq!(
+        record["usage"]["classes"]["text_tokens_out"], "2",
+        "the usage stated before the cut is billed: {record}"
+    );
+    assert_eq!(
+        record["usage"]["classes"]["per_session"], "1",
+        "the session fee of a session the far end answered is billed: {record}"
+    );
+    // The unrevoked session is still open: nothing of it has settled.
+    assert_eq!(
+        node.records_of(&kept)
+            .iter()
+            .filter(|record| record["status"] == 101)
+            .count(),
+        0,
+        "the unrevoked session settled while still open"
+    );
+
+    runtime.block_on(async {
+        other
+            .close(None)
+            .await
+            .expect("the unrevoked session closes");
+    });
+    node.settled_where(&kept, |record| record["status"] == 101);
+    let sessions = node
+        .records_of(&revoked)
+        .into_iter()
+        .filter(|record| record["status"] == 101)
+        .count();
+    assert_eq!(sessions, 1, "the cut session settled as {sessions} units");
+}
