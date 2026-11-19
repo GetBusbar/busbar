@@ -57,6 +57,7 @@ use busbar_contract::abi::transport::{
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
 use busbar_contract::clock::{Deadline, HostClock, Reading as HostReading};
+use busbar_contract::conn::codes::CAUSE_PROXY;
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
@@ -1117,6 +1118,8 @@ enum NoAnswer {
     Connect,
     /// A deadline passed first: the member's own attempt cap, or the walk's.
     Timeout,
+    /// The operator's egress proxy failed or refused the tunnel: the member was never reached.
+    Proxy,
 }
 
 impl NoAnswer {
@@ -1483,12 +1486,24 @@ impl EgressFarEnd<'_> {
             let mut retirement = Retirement { owner: self, live };
             let live = &mut retirement.live;
             let now = at.secs;
+            if matches!(cause, NoAnswer::Proxy) {
+                // The member was never reached: no breaker charge (and no probe verdict), no upstream
+                // failure stated against it. The failover is counted under its own reason.
+                let pool = Self::metric_pool(&live.pool, &live.member);
+                e.telemetry.failover(pool, net::PROXY);
+                live.probe = None;
+                self.lock().failed = Some(net::PROXY);
+                retirement.finish();
+                return fail_over();
+            }
             let (failure, failover) = match cause {
                 NoAnswer::Connect => (disposition::TRANSIENT, net::CONNECT),
                 NoAnswer::Timeout if live.member.attempt_timeout_ms.is_some() => {
                     (disposition::ATTEMPT_TIMEOUT, disposition::ATTEMPT_TIMEOUT)
                 }
                 NoAnswer::Timeout => (disposition::TRANSIENT, net::TIMEOUT),
+                // Answered above.
+                NoAnswer::Proxy => (disposition::TRANSIENT, net::PROXY),
             };
             let outcome = Outcome::Transient { retry_after: None };
             if let Some(destination) = self.probe_of {
@@ -2286,6 +2301,11 @@ impl EgressFarEnd<'_> {
                 return Some(match cause {
                     Some(cause) if cause.stage == CAUSE_FRAMER && cause.outbound => {
                         self.local_fault(token, &cause)
+                    }
+                    // A proxy failure is the proxy's: v1.5.5 recorded it against the provider, so a proxy
+                    // outage tripped every breaker. No member is charged; the walk moves on.
+                    Some(cause) if cause.stage == CAUSE_PROXY => {
+                        self.no_answer(token, NoAnswer::Proxy, at)
                     }
                     _ => self.no_answer(token, NoAnswer::of(ConnError::Fault), at),
                 });

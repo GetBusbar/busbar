@@ -31,6 +31,10 @@ pub mod socket;
 pub mod spawn_env;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::off_path::conns::test_support;
+// Loopback stand-ins for the far side of a dial: a scripted HTTP/1.1 provider and a CONNECT proxy.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_support_far_ends.rs"]
+pub mod test_support_far_ends;
 pub mod tls;
 
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
@@ -310,10 +314,6 @@ mod refusal_text {
     /// The build assigns no transport image the destination's carrier.
     pub(crate) const NO_CARRIER: &str =
         "no transport image carries this destination's protocol in this build";
-    /// The operator's egress proxy selects the destination, and a natively carried dial does not go through a
-    /// proxy: it is refused, never dialled around the proxy.
-    pub(crate) const NATIVE_PROXY: &str =
-        "the egress proxy selects this destination and its dial cannot go through a proxy yet";
 }
 
 /// A guard verdict in words (never `guard::Refusal`'s Display: its catch-all and the operator's
@@ -801,6 +801,10 @@ pub struct Connector {
     /// address; `proxy` (`false`): a name that does not resolve here is CONNECTed by name and its
     /// address check is the proxy's (BUSBAR-3149 at boot).
     proxy_by_address: std::sync::atomic::AtomicBool,
+    /// Requests sent again on a fresh connection from the evidence of what was sent
+    /// (`native_conns/again.rs`): a kept connection that turned out closed, a stream the far end
+    /// refused unprocessed, a busy connection.
+    redials: std::sync::atomic::AtomicU64,
     /// THE NATIVE CARRIERS ([`Connector::carry_natively`]): the transport instance the build assigned each
     /// outbound carrier, and the account their sessions are charged to; set once at boot, held for the process.
     pub(crate) native: std::sync::OnceLock<native_conns::Natives>,
@@ -838,6 +842,7 @@ impl Default for Connector {
             spawn_secrets: None,
             trust: arc_swap::ArcSwapOption::empty(),
             proxy_by_address: std::sync::atomic::AtomicBool::new(true),
+            redials: std::sync::atomic::AtomicU64::new(0),
             native: std::sync::OnceLock::new(),
             native_needs: Mutex::new(HashMap::new()),
             native_idle: native_conns::Idle::default(),
@@ -1748,11 +1753,22 @@ impl Conns for Connector {
         caller: InstanceId,
         conn: ConnId,
         bytes: &[u8],
-        _end: bool,
-        _text: bool,
+        end: bool,
+        text: bool,
     ) -> Result<usize, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
         let native = held.native.as_ref().ok_or(ConnError::Closed)?;
+        // A WebSocket upstream carries messages after its open: the write's `end` and `text` are the
+        // message's. An HTTP exchange handed its whole request over at the open.
+        if native.carries_messages() {
+            return self.write_native_message(
+                native,
+                // As for every native write: a pended write is offered again on the caller's next wake.
+                Waker::noop(),
+                bytes,
+                (text, end),
+            );
+        }
         self.write_native(native, bytes)
     }
 
@@ -1773,15 +1789,22 @@ impl Conns for Connector {
     }
 
     fn wait(&self, caller: InstanceId, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError> {
-        // A native entry has no look-ahead of its answer: the first is named ready, and its read
-        // answers Pending (with the ticket's waker kept) when nothing has arrived.
-        let Some(conn) = set.first() else {
-            return Err(ConnError::Pending);
-        };
         let waker = self.waker(caller, ticket);
-        let (_, held) = self.slab.get(caller, *conn)?;
-        held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
-        Ok(0)
+        for (at, conn) in set.iter().enumerate() {
+            let (_, held) = self.slab.get(caller, *conn)?;
+            held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
+            if held.within_due().is_err() {
+                return Ok(at);
+            }
+            // A native entry is named only when its next read will not pend (a piece waiting, ended or failed);
+            // otherwise the ticket's waker is kept on its connection and the next entry is looked at, so the
+            // wait names the connection that answered, not the first of the set.
+            let native = held.native.as_ref().ok_or(ConnError::Closed)?;
+            if native.ready(&waker) {
+                return Ok(at);
+            }
+        }
+        Err(ConnError::Pending)
     }
 
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
@@ -1804,6 +1827,20 @@ impl Conns for Connector {
 impl PollConns for Connector {
     fn failure_cause(&self, caller: InstanceId, conn: ConnId) -> Option<ConnCause> {
         DeclaredConns::cause(self, caller, conn)
+    }
+
+    fn attempt_evidence(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        each: &mut dyn FnMut(busbar_contract::conn::AttemptEvidence),
+    ) {
+        let Ok((_, held)) = self.slab.get(caller, conn) else {
+            return;
+        };
+        if let Some(native) = &held.native {
+            Self::native_evidence(native, each);
+        }
     }
 
     /// The framer the need rides, located at `target`: its own head lines, and whether its head

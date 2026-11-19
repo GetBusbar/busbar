@@ -149,6 +149,54 @@ pub struct Piece {
     pub declared_len: Option<u64>,
 }
 
+/// How much of a request to a far end the operating system accepted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Sent {
+    /// Not one byte of it: the far end received nothing. Another attempt cannot cost twice.
+    None,
+    /// Some of it: the far end received an incomplete request.
+    Part,
+    /// All of it, through its end mark, flushed: the far end may have acted and may charge.
+    Whole,
+}
+
+impl Sent {
+    /// The word the record carries.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Part => "part",
+            Self::Whole => "whole",
+        }
+    }
+}
+
+/// What the engine did about one attempt's end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AttemptEnd {
+    /// A kept connection turned out closed with nothing sent: the request was sent again on a fresh
+    /// connection. The far end is not charged and the walk is not told.
+    Redialled,
+    /// The far end stated it did not act on the request: it was sent again once.
+    RefusedUnprocessed,
+    /// The operator's proxy failed: no far end was reached and none is charged.
+    AtProxy,
+    /// The attempt failed and was left to the walk.
+    Failed,
+    /// The engine's own fault: nobody is charged.
+    Local,
+}
+
+/// The evidence of one attempt at a far end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AttemptEvidence {
+    /// What the operating system accepted of the request.
+    pub sent: Sent,
+    /// What the engine did about the attempt's end.
+    pub end: AttemptEnd,
+}
+
 /// Why a connection operation did not answer with what was asked. The refusals carry the text an
 /// operator reads.
 ///
@@ -1155,6 +1203,20 @@ pub trait PollConns: Conns {
     /// far-end failure (fail-over, breaker charge), never as a local refusal.
     fn failure_cause(&self, _caller: InstanceId, _conn: ConnId) -> Option<ConnCause> {
         None
+    }
+
+    /// THE EVIDENCE OF EACH ATTEMPT `conn` made, in order, told to `each`: what the operating system
+    /// accepted of the request the engine sent (`none` is proof the far end received nothing of it;
+    /// `whole` means it may have acted and may charge), and what the engine did about the attempt's
+    /// end. A request sent again after its first connection failed has two entries. The usage record
+    /// carries them, so a request a provider may have worked on before a failover is visible.
+    /// Default: none known.
+    fn attempt_evidence(
+        &self,
+        _caller: InstanceId,
+        _conn: ConnId,
+        _each: &mut dyn FnMut(AttemptEvidence),
+    ) {
     }
 
     /// SEAL THE TRUST ANCHORS of one destination `owner`'s declared `need` reaches at `target` (a

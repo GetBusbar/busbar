@@ -39,6 +39,19 @@ use super::native_dial::{
 use super::pool::{PoolKey, PoolPosture};
 use super::{class_admits, Answer, Within};
 
+// The open through the operator's proxy (the two judgements, the tunnelled dial).
+#[path = "native_conns/route.rs"]
+mod route;
+// Sending a request again, from the evidence of what was sent of it.
+#[path = "native_conns/again.rs"]
+mod again;
+// Messages on a WebSocket upstream.
+#[path = "native_conns/messages.rs"]
+mod messages;
+// Many requests on one connection, owned by one core.
+#[path = "native_conns/shared.rs"]
+mod shared;
+
 /// The carriers the root assigned at boot and the account every native dial's framer session is charged to.
 pub(crate) struct Natives {
     pub(crate) carriers: Vec<NativeCarrier>,
@@ -71,6 +84,7 @@ pub(crate) struct Placed {
 }
 
 /// A dial whose judgement pended: everything the dial needs once the address is known.
+#[derive(Clone)]
 pub(crate) struct PendingDial {
     pub(crate) carrier: NativeCarrier,
     pub(crate) located: Located,
@@ -90,8 +104,12 @@ pub(crate) enum State {
     Judging {
         answer: Answer,
         dial: PendingDial,
+        /// The operator's proxy this dial goes through, with the judgement of the proxy's own host.
+        via: Option<route::Via>,
     },
     Dialled(NativeConnection),
+    /// A stream on a connection other exchanges on this core ride too (its session multiplexes).
+    Shared(Arc<shared::Shared>),
     /// Failed or handed back.
     Gone,
 }
@@ -118,6 +136,22 @@ pub(crate) struct Exchange {
     /// Where the connection goes back to when the exchange ended whole; `None` = it is never kept. Moved into the
     /// idle set with the connection (never copied).
     pub(crate) key: Option<PoolKey>,
+    /// What it takes to dial this same request again; `None` once it can no longer be sent again.
+    pub(crate) reopen: Option<again::Reopen>,
+    /// The connection was lent (kept idle, or a stream on one in use), not dialled for this exchange.
+    pub(crate) kept: bool,
+    /// The one redial of this exchange is spent.
+    pub(crate) redialled: bool,
+    /// The connector must judge and dial again before the next poll (`Connector::redial_native`).
+    pub(crate) resend: bool,
+    /// Sealed values handed back for the next head (by a busy connection or a failed attempt).
+    pub(crate) sealed: Option<crate::outbound::seal::Slots>,
+    /// What is recorded of each attempt, in order.
+    pub(crate) evidence: smallvec::SmallVec<[crate::outbound::redial::Recorded; 2]>,
+    /// The final failure charges the provider's breaker.
+    pub(crate) charge: bool,
+    /// A WebSocket upstream's states; `None` for an HTTP exchange.
+    pub(crate) ws: Option<crate::outbound::ws::Upstream>,
 }
 
 /// The exchange's slot in its entry: out while a call has it.
@@ -134,11 +168,14 @@ pub(crate) struct NativeHeld {
     /// The core whose idle set the connection goes back to: the core the open ran on, which dialled it or was lent
     /// it from its own set.
     pub(crate) core: usize,
+    /// The upstream is a WebSocket: a write after the open is a message.
+    messages: bool,
 }
 
 impl NativeHeld {
     pub(crate) fn new(exchange: Exchange, core: usize) -> Self {
         Self {
+            messages: exchange.ws.is_some(),
             slot: Mutex::new(Slot {
                 exchange: Some(exchange),
                 out: false,
@@ -146,6 +183,11 @@ impl NativeHeld {
             }),
             core,
         }
+    }
+
+    /// The upstream is a WebSocket: a write after the open is a message.
+    pub(crate) fn carries_messages(&self) -> bool {
+        self.messages
     }
 
     /// Take the exchange out for one call; `None` (with `waker` kept) while another call has it.
@@ -177,6 +219,25 @@ impl NativeHeld {
         for w in missed {
             w.wake();
         }
+    }
+
+    /// Whether the entry's next read will not pend, for a wait over several connections. While another call
+    /// has the exchange out the answer is no, and `waker` is woken when it is back. An exchange that is not
+    /// yet reading an answer (judging, dialling, sending) is named ready, as before: its read is what drives
+    /// it, and that read pends with the waker kept.
+    pub(crate) fn ready(&self, waker: &Waker) -> bool {
+        let Some(mut exchange) = self.begin(waker) else {
+            // Out with another call: not ready, and that call's end wakes `waker`. Gone for good (the entry
+            // is closing): its read answers at once.
+            let slot = self
+                .slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            return !slot.out;
+        };
+        let ready = exchange.read_ready(&mut Context::from_waker(waker));
+        self.end(exchange);
+        ready
     }
 
     /// The exchange for good (the entry is closing); `None` while a call has it out (that call's exchange is
@@ -239,6 +300,7 @@ pub(crate) fn dial_at(
             anchors,
             open_timeout,
             storage: storage.clone(),
+            tunnel: None,
         },
     )
     .map_err(|failure| {
@@ -257,11 +319,18 @@ pub(crate) fn error_of(failure: &NativeFailure) -> ConnError {
 }
 
 impl Exchange {
-    fn fail(&mut self, failure: &NativeFailure) -> ConnError {
-        let error = error_of(failure);
-        self.failed = Some(error);
-        self.cause = Some(failure.cause.clone());
-        error
+    /// Whether the next read will not pend ([`NativeHeld::ready`]).
+    fn read_ready(&mut self, cx: &mut Context<'_>) -> bool {
+        if self.failed.is_some() || self.ended {
+            return true;
+        }
+        match (&mut self.state, self.stream) {
+            (State::Dialled(conn), Some(stream)) => conn.poll_ready(cx, stream),
+            (State::Shared(shared), Some(stream)) => {
+                shared.with(|conn| conn.poll_ready(cx, stream))
+            }
+            _ => true,
+        }
     }
 
     /// Drive the judgement and the dial until a connection exists. `Pending` with `cx`'s waker kept.
@@ -273,13 +342,22 @@ impl Exchange {
         if let Some(error) = self.failed {
             return Poll::Ready(Err(error));
         }
+        // The target's judgement and, where the operator's proxy carries the dial, the judgement of the
+        // proxy's own host: the dial begins when every one asked for has answered.
         let got = match &self.state {
-            State::Dialled(_) => return Poll::Ready(Ok(())),
+            State::Dialled(_) | State::Shared(_) => return Poll::Ready(Ok(())),
             State::Gone => return Poll::Ready(Err(ConnError::Closed)),
-            State::Judging { answer, .. } => {
+            State::Judging {
+                answer,
+                via: Some(via),
+                ..
+            } => route::both_judged(answer, via, cx).map(|(target, proxy)| (target, Some(proxy))),
+            State::Judging {
+                answer, via: None, ..
+            } => {
                 let mut a = answer.lock().expect("judgement");
                 match a.0.take() {
-                    Some(verdict) => Some((verdict, std::mem::take(&mut a.2))),
+                    Some(verdict) => Some(((verdict, std::mem::take(&mut a.2)), None)),
                     None => {
                         let previous = a.1.replace(cx.waker().clone());
                         drop(a);
@@ -289,25 +367,33 @@ impl Exchange {
                 }
             }
         };
-        let Some((verdict, also)) = got else {
+        let Some(((verdict, also), proxy)) = got else {
             return Poll::Pending;
         };
-        let State::Judging { dial, .. } = std::mem::replace(&mut self.state, State::Gone) else {
+        let State::Judging { dial, via, .. } = std::mem::replace(&mut self.state, State::Gone)
+        else {
             return Poll::Ready(Err(ConnError::Closed));
         };
         let mut why = None;
-        let dialled = match verdict {
-            Err(v) => {
-                crate::conns::egress_audit::dial_refused(
-                    &dial.located.authority,
-                    Some(dial.egress_class),
-                    crate::conns::egress_audit::verdict_name(v),
-                    None,
-                    &mut None,
-                );
-                Err(super::pended_verdict(v))
+        let dialled = match (via, proxy) {
+            // Through the proxy: the two judgements, the tunnel's target, the plaintext rule on the
+            // target's own address. A refused target never reaches the proxy.
+            (Some(via), Some(proxy)) => {
+                route::dial_through(dial, via, verdict, proxy, storage, &mut why)
             }
-            Ok(addr) => dial_at(dial, addr, also, storage, &mut why),
+            _ => match verdict {
+                Err(v) => {
+                    crate::conns::egress_audit::dial_refused(
+                        &dial.located.authority,
+                        Some(dial.egress_class),
+                        crate::conns::egress_audit::verdict_name(v),
+                        None,
+                        &mut None,
+                    );
+                    Err(super::pended_verdict(v))
+                }
+                Ok(addr) => dial_at(dial, addr, also, storage, &mut why),
+            },
         };
         match dialled {
             Ok(conn) => {
@@ -315,20 +401,47 @@ impl Exchange {
                 Poll::Ready(Ok(()))
             }
             Err(error) => {
+                // A dial refused or failed at the operator's proxy before any connection existed is the
+                // proxy's: the cause says so, and the walk charges no provider for it.
+                if let Some(NeedRefusal::ProxyPolicy(_) | NeedRefusal::ProxyUnreached(_)) = &why {
+                    self.cause = Some(ConnCause {
+                        stage: stage::PROXY,
+                        text: route::text::PROXY_UNREACHED.to_owned(),
+                        outbound: false,
+                    });
+                    self.evidence
+                        .push(crate::outbound::redial::Recorded::AtProxy);
+                }
                 self.failed = Some(error);
                 Poll::Ready(Err(error))
             }
         }
     }
 
+    /// A failed attempt, decided from what was sent of it (`again::attempt_failed`): `Pending` when the
+    /// same request is being sent again on a fresh dial (the connector's `redial_native` wakes the caller),
+    /// else the failure.
+    fn attempt_ended<T>(&mut self, failure: &NativeFailure) -> Poll<Result<T, ConnError>> {
+        match self.attempt_failed(failure) {
+            ConnError::Pending => Poll::Pending,
+            error => Poll::Ready(Err(error)),
+        }
+    }
+
     /// Hand the request to the connection as far as it takes it: `Ready(Ok)` once all of it was handed over.
+    /// The head and the body stay with the exchange while the request may still be sent again, and are let
+    /// go of (the head wiped) the moment it may not.
     fn send(
         &mut self,
         cx: &mut Context<'_>,
         storage: &StorageSource,
     ) -> Poll<Result<u64, ConnError>> {
+        if self.resend {
+            // The connector dials afresh before the next poll.
+            return Poll::Pending;
+        }
         std::task::ready!(self.connected(cx, storage))?;
-        let State::Dialled(conn) = &mut self.state else {
+        let Some(mut conn) = shared::riding(&mut self.state) else {
             return Poll::Ready(Err(ConnError::Closed));
         };
         let Some(sending) = self.sending.as_mut() else {
@@ -337,10 +450,14 @@ impl Exchange {
         let stream = match self.stream {
             Some(stream) => stream,
             None => {
+                // A head sent again: its sealed values never left the engine and are offered back.
+                if let Some(slots) = self.sealed.take() {
+                    conn.offer_sealed(slots);
+                }
                 let follows = !sending.body.is_empty();
                 match conn.poll_send_head(cx, &mut sending.head, follows) {
                     Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Err(failure)) => return Poll::Ready(Err(self.fail(&failure))),
+                    Poll::Ready(Err(failure)) => return self.attempt_ended(&failure),
                     Poll::Ready(Ok(stream)) => {
                         self.stream = Some(stream);
                         stream
@@ -352,11 +469,12 @@ impl Exchange {
             match conn.poll_send_body(cx, stream, &sending.body[sending.sent..], true) {
                 Poll::Ready(Ok(0)) | Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok(n)) => sending.sent += n,
-                Poll::Ready(Err(failure)) => return Poll::Ready(Err(self.fail(&failure))),
+                Poll::Ready(Err(failure)) => return self.attempt_ended(&failure),
             }
         }
-        // The head and the body were handed over: the opener's body is let go of here.
-        self.sending = None;
+        // The head and the body were handed over: they are let go of as soon as the evidence says the
+        // request can no longer be sent again (the socket accepted a byte of it, or its answer began).
+        self.let_go_of_head(false);
         Poll::Ready(Ok(stream))
     }
 
@@ -374,17 +492,26 @@ impl Exchange {
             Ok(stream) => stream,
             Err(error) => return Poll::Ready(Err(error)),
         };
-        let State::Dialled(conn) = &mut self.state else {
+        let Some(mut conn) = shared::riding(&mut self.state) else {
             return Poll::Ready(Err(ConnError::Closed));
         };
         match conn.poll_read(cx, stream, buf) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(failure)) => Poll::Ready(Err(self.fail(&failure))),
+            Poll::Pending => {
+                self.let_go_of_head(false);
+                Poll::Pending
+            }
+            Poll::Ready(Err(failure)) => self.attempt_ended(&failure),
             Poll::Ready(Ok(piece)) => {
+                // A WebSocket upstream: the answer's head opens (or refuses) the session, its end closes it.
+                self.message_read(&piece);
                 if piece.kind == PieceKind::Completion {
                     self.ended = true;
-                    conn.finish(stream);
+                    if let Some(mut conn) = shared::riding(&mut self.state) {
+                        conn.finish(stream);
+                    }
                 }
+                // An answer has begun: nothing of this request is ever sent again.
+                self.let_go_of_head(self.ended);
                 Poll::Ready(Ok(piece))
             }
         }
@@ -402,6 +529,11 @@ impl Exchange {
             Poll::Pending => Err(ConnError::Pending),
             Poll::Ready(Err(error)) => Err(error),
             Poll::Ready(Ok(_)) if bytes.is_empty() => Ok(0),
+            // A WebSocket upstream carries messages after its open (a binary piece that ends its message;
+            // the connection table'"'"'s typed write is `Connector::write_native_message`).
+            Poll::Ready(Ok(_)) if self.ws.is_some() => {
+                self.write_message(cx, bytes, (false, true), storage)
+            }
             Poll::Ready(Ok(_)) => Err(ConnError::Closed),
         }
     }
@@ -410,7 +542,8 @@ impl Exchange {
     pub(crate) fn connection(&self) -> Option<&NativeConnection> {
         match &self.state {
             State::Dialled(conn) => Some(conn),
-            State::Judging { .. } | State::Gone => None,
+            // A shared connection is not this exchange's alone to describe.
+            State::Shared(_) | State::Judging { .. } | State::Gone => None,
         }
     }
 
@@ -425,9 +558,18 @@ impl Exchange {
             key,
             ..
         } = self;
+        // A stream on a shared connection: only the stream is given up (reset when its answer was not read
+        // to its end; the others finish). The connection stays in its core's set for the opens that follow.
+        if let State::Shared(shared) = &state {
+            if let Some(stream) = stream {
+                shared.leave(stream, !ended);
+            }
+            return Err(None);
+        }
         let State::Dialled(mut conn) = state else {
             return Err(None);
         };
+        // A WebSocket connection is never kept (`conn.reusable()` answers no for its carrier).
         if let Some(key) = key.filter(|_| ended && failed.is_none() && conn.reusable()) {
             return Ok((key, conn));
         }
@@ -440,6 +582,10 @@ impl Exchange {
 
 /// One core's idle connections, by key, and when its next sweep of expired ones is due.
 pub(crate) struct CoreIdle {
+    /// The core's connections in use that other opens to the same key may ride, with what is known of
+    /// each key. Empty until a session states that it multiplexes; a key's entry goes with its last
+    /// connection.
+    pub(crate) in_use: Mutex<shared::InUse<PoolKey, Arc<shared::Shared>>>,
     pub(crate) map: Mutex<HashMap<PoolKey, Vec<(NativeConnection, Instant)>>>,
     /// In nanoseconds since [`Idle::epoch`]; `u64::MAX` = none due.
     pub(crate) sweep_due: AtomicU64,
@@ -448,6 +594,7 @@ pub(crate) struct CoreIdle {
 impl Default for CoreIdle {
     fn default() -> Self {
         Self {
+            in_use: Mutex::new(shared::InUse::new()),
             map: Mutex::new(HashMap::new()),
             sweep_due: AtomicU64::new(u64::MAX),
         }
@@ -478,6 +625,39 @@ impl Default for Idle {
 }
 
 impl Idle {
+    /// A connection in use on `core` to `key` that takes another stream now.
+    pub(crate) fn lend_stream(
+        &self,
+        core: usize,
+        key: &PoolKey,
+        now: Instant,
+        posture: PoolPosture,
+    ) -> Option<Arc<shared::Shared>> {
+        let held = self.core(core)?;
+        let mut set = held.in_use.lock().expect("native connections in use");
+        shared::lend_stream(&mut set, key, false, now, posture.idle_timeout)
+    }
+
+    /// Share `exchange`'s connection on `core` once its session states that it multiplexes.
+    pub(crate) fn share(&self, core: usize, exchange: &mut Exchange, posture: PoolPosture) {
+        if !matches!(&exchange.state, State::Dialled(conn) if conn.multiplexes()) {
+            return;
+        }
+        let cores = self
+            .cores
+            .get_or_init(|| crate::off_path::conns::idle_cores(super::pool::shard_count()));
+        if let Some(held) = cores.get(core) {
+            let mut set = held.in_use.lock().expect("native connections in use");
+            exchange.share(&mut set);
+            // One pass over the core's shared connections, at a promotion (rare, never per request):
+            // those that failed, drained, or idled past the timeout leave the set and are closed.
+            let now = Instant::now();
+            set.sweep(|conn| {
+                !conn.in_use().finished() && !conn.idle_past(now, posture.idle_timeout)
+            });
+        }
+    }
+
     /// `core`'s set, where any connection was ever kept.
     fn core(&self, core: usize) -> Option<&CoreIdle> {
         self.cores.get().and_then(|cores| cores.get(core))
@@ -537,7 +717,11 @@ impl Idle {
         let refused = {
             let mut map = held.map.lock().expect("idle native connections");
             let list = map.entry(key).or_default();
-            if list.len() >= posture.max_idle_per_host {
+            // The stated figure is the deployment's, divided across the cores (at least one per core), as
+            // v1.5.5 divided it across its worker threads: not the whole figure on every core.
+            if list.len()
+                >= crate::outbound::lend::idle_bound(posture.max_idle_per_host, cores.len())
+            {
                 Some(conn)
             } else {
                 list.push((conn, now));
@@ -722,20 +906,9 @@ impl super::Connector {
             *why = Some(NeedRefusal::Policy(super::refusal_text::NO_CARRIER));
             return Err(ConnError::Refused);
         };
-        // The operator's egress proxy is honoured by the framed dial only: a destination it selects is refused here,
-        // never dialled around it.
-        if self
-            .proxy
-            .as_ref()
-            .and_then(|proxy| {
-                proxy.select(located.secure, crate::proxy::host_of(&located.authority))
-            })
-            .is_some()
-        {
-            crate::cold::conns::native_proxy_refused(&located.authority);
-            *why = Some(NeedRefusal::Policy(super::refusal_text::NATIVE_PROXY));
-            return Err(ConnError::Refused);
-        }
+        // The operator's egress proxy is honoured here as on every other dial: a destination its choice
+        // selects is tunnelled through it (`route::dial_through`), never dialled around it and never refused
+        // for it.
         let tls = match &native.tls {
             Some(own) => Some(Arc::clone(own)),
             None => self.tls_for(target)?,
@@ -783,6 +956,11 @@ impl super::Connector {
                 hash: 0,
             })
         });
+        let plain =
+            self.plaintext_accepted(caller, desc) || self.plaintext_admitted(&located.authority);
+        // A WebSocket upstream: the open is the handshake; after its 101 the exchange carries messages both
+        // ways and its connection is never kept or shared.
+        let websocket = located.carrier == busbar_plugin_abi::plane::CARRIER_WEBSOCKET;
         let sending = Sending {
             head: Some(NativeHead {
                 method: crate::off_path::conns::owned_bytes(desc.method),
@@ -790,45 +968,14 @@ impl super::Connector {
                 fields: super::opening_fields(desc.fields, owned),
                 body_len: (!desc.body.is_empty()).then(|| desc.body.len() as u64),
                 budget: (desc.timeout_ms != 0).then(|| Duration::from_millis(desc.timeout_ms)),
+                // A sealed value crosses a connection that is not secured only by the destination's own
+                // acceptance, never the owner-wide one.
+                sealed_in_clear: self.sealed_in_clear(desc, &located.authority),
             }),
             body: desc.body.clone(),
             sent: 0,
         };
-        let held = |state, key| {
-            let exchange = Exchange {
-                state,
-                sending: Some(sending),
-                stream: None,
-                ended: false,
-                failed: None,
-                cause: None,
-                key,
-            };
-            let mut held = super::Held::new().bounded(started, desc.timeout_ms);
-            held.native = Some(NativeHeld::new(exchange, core));
-            held
-        };
-        let plain =
-            self.plaintext_accepted(caller, desc) || self.plaintext_admitted(&located.authority);
-        // HTTP keep-alive: an idle connection this core dialled to the same key carries the exchange (it was judged
-        // when it was dialled, under this very key). A plaintext one is lent only to an open whose own plaintext
-        // admission holds: the key does not carry the opener's acceptance, so an open without it dials and is held
-        // to the plaintext rule.
-        if let Some(conn) = key
-            .as_ref()
-            .filter(|_| located.secure || plain)
-            .and_then(|key| self.native_idle.take(core, key, started, posture))
-        {
-            return Ok(held(State::Dialled(conn), key));
-        }
-        let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
-        let judged = self.judge_into(
-            &located.authority,
-            located.secure,
-            judged_class,
-            reach,
-            &answer,
-        );
+        let secure = located.secure;
         let dial = PendingDial {
             carrier: carrier.clone(),
             plain,
@@ -839,9 +986,75 @@ impl super::Connector {
             egress_class: native.egress_class,
             within: Within::from_slice(desc.within),
         };
-        let state = match judged {
-            None => State::Judging { answer, dial },
-            Some(Err(v)) => {
+        // What it takes to dial this same request again, kept while the evidence may still allow it.
+        let reopen = again::Reopen {
+            dial: dial.clone(),
+            judged_class,
+            reach,
+        };
+        let held = |state, key, kept: bool| {
+            let exchange = Exchange {
+                state,
+                sending: Some(sending),
+                stream: None,
+                ended: false,
+                failed: None,
+                cause: None,
+                key,
+                reopen: Some(reopen),
+                kept,
+                redialled: false,
+                resend: false,
+                sealed: None,
+                evidence: smallvec::SmallVec::new(),
+                charge: false,
+                ws: websocket.then(crate::outbound::ws::Upstream::new),
+            };
+            let mut held = super::Held::new().bounded(started, desc.timeout_ms);
+            held.native = Some(NativeHeld::new(exchange, core));
+            held
+        };
+        // Many requests on one connection: a connection in use on this core to the same key, whose session
+        // multiplexes and takes another stream now, carries this exchange as one more stream. No dial, no
+        // handshake, no socket. The key separates owner, need, trust, seal and reach, so a stream is never
+        // opened on a connection another registration's trust made; the plaintext rule is the idle set's.
+        if let Some(shared) = key
+            .as_ref()
+            .filter(|_| secure || plain)
+            .and_then(|key| self.native_idle.lend_stream(core, key, started, posture))
+        {
+            return Ok(held(State::Shared(shared), None, true));
+        }
+        // HTTP keep-alive: an idle connection this core dialled to the same key carries the exchange (it was judged
+        // when it was dialled, under this very key, and tunnelled then where the operator's proxy carries it:
+        // nothing about the proxy is done again). A plaintext one is lent only to an open whose own plaintext
+        // admission holds: the key does not carry the opener's acceptance, so an open without it dials and is held
+        // to the plaintext rule.
+        if let Some(conn) = key
+            .as_ref()
+            .filter(|_| secure || plain)
+            .and_then(|key| self.native_idle.take(core, key, started, posture))
+        {
+            return Ok(held(State::Dialled(conn), key, true));
+        }
+        let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
+        let judged = self.judge_into(
+            &dial.located.authority,
+            secure,
+            judged_class,
+            reach,
+            &answer,
+        );
+        // The operator's proxy, where its choice selects this destination: the target is judged first, as for
+        // a direct dial, and the proxy's own host second (operator infrastructure). A target the guard refuses
+        // is never shown to the proxy.
+        let via = match &judged {
+            Some(Err(_)) => None,
+            _ => self.via_for(secure, &dial.located.authority)?,
+        };
+        let state = match (judged, via) {
+            (None, via) => State::Judging { answer, dial, via },
+            (Some(Err(v)), _) => {
                 crate::conns::egress_audit::dial_refused(
                     &dial.located.authority,
                     Some(dial.egress_class),
@@ -852,11 +1065,20 @@ impl super::Connector {
                 *why = Some(crate::cold::conns::verdict_reason(v, false));
                 return Err(ConnError::Refused);
             }
-            Some(Ok(addr)) => {
+            (Some(Ok(addr)), None) => {
                 State::Dialled(dial_at(dial, addr, Vec::new(), &natives.storage, why)?)
             }
+            (Some(Ok(addr)), Some(via)) => {
+                // The target answered at once; the dial waits for the proxy's own judgement.
+                answer.lock().expect("judgement").0 = Some(Ok(addr));
+                State::Judging {
+                    answer,
+                    dial,
+                    via: Some(via),
+                }
+            }
         };
-        Ok(held(state, key))
+        Ok(held(state, key, false))
     }
 
     /// One read of a native entry.
@@ -873,7 +1095,16 @@ impl super::Connector {
             return Err(ConnError::Pending);
         };
         let read = exchange.read(&mut Context::from_waker(waker), buf, storage);
+        // A request the evidence allows to be sent again (a kept connection that turned out closed with
+        // nothing sent, a stream the far end refused unprocessed, a busy connection) is judged and dialled
+        // afresh here; the caller's read pends and its ticket is woken to drive the new dial.
+        let again = self.redial_native(&mut exchange, waker);
+        // A connection whose session states that it multiplexes is shared from here on: later opens to the
+        // same key on this core ride it.
+        self.native_idle
+            .share(native.core, &mut exchange, self.pools.posture());
         native.end(exchange);
+        again?;
         match read {
             Poll::Pending => Err(ConnError::Pending),
             Poll::Ready(read) => read,
@@ -893,7 +1124,37 @@ impl super::Connector {
             return Err(ConnError::Pending);
         };
         let wrote = exchange.write(&mut Context::from_waker(Waker::noop()), bytes, storage);
+        let again = self.redial_native(&mut exchange, Waker::noop());
         native.end(exchange);
+        again?;
+        wrote
+    }
+
+    /// One message piece on a native entry whose upstream is a WebSocket (`text` = the message's kind on
+    /// its first piece; `end` = this piece ends the message; an empty piece with `end` after a finished
+    /// message is the engine's close).
+    pub(crate) fn write_native_message(
+        &self,
+        native: &NativeHeld,
+        waker: &Waker,
+        bytes: &[u8],
+        (text, end): (bool, bool),
+    ) -> Result<usize, ConnError> {
+        let Some(storage) = self.native.get().map(|natives| &natives.storage) else {
+            return Err(ConnError::Closed);
+        };
+        let Some(mut exchange) = native.begin(waker) else {
+            return Err(ConnError::Pending);
+        };
+        let wrote =
+            exchange.write_message(&mut Context::from_waker(waker), bytes, (text, end), storage);
+        let again = self.redial_native(&mut exchange, waker);
+        // A connection whose session states that it multiplexes is shared from here on: later opens to the
+        // same key on this core ride it.
+        self.native_idle
+            .share(native.core, &mut exchange, self.pools.posture());
+        native.end(exchange);
+        again?;
         wrote
     }
 
@@ -917,12 +1178,20 @@ impl super::Connector {
                 State::Dialled(conn) => match conn.poll_flushed(&mut cx) {
                     Poll::Pending => Err(ConnError::Pending),
                     Poll::Ready(Ok(())) => Ok(()),
-                    Poll::Ready(Err(failure)) => Err(exchange.fail(&failure)),
+                    Poll::Ready(Err(failure)) => Err(exchange.attempt_failed(&failure)),
                 },
+                // A shared connection landed when the exchange that dialled it did.
+                State::Shared(_) => Ok(()),
                 State::Judging { .. } | State::Gone => Err(ConnError::Closed),
             },
         };
+        let again = self.redial_native(&mut exchange, waker);
+        // A connection whose session states that it multiplexes is shared from here on: later opens to the
+        // same key on this core ride it.
+        self.native_idle
+            .share(native.core, &mut exchange, self.pools.posture());
         native.end(exchange);
+        again?;
         landed
     }
 

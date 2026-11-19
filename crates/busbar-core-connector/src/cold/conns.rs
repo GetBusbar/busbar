@@ -73,16 +73,3 @@ pub(crate) fn no_native_carrier(carrier: u32) {
         "an upstream dial was refused: this build assigns no transport image the destination's carrier"
     );
 }
-
-/// A native open refused because the operator's egress proxy selects its destination.
-#[cold]
-#[inline(never)]
-pub(crate) fn native_proxy_refused(authority: &str) {
-    crate::conns::egress_audit::dial_refused(
-        authority,
-        None,
-        "the egress proxy selects this destination and a native dial does not go through a proxy",
-        None,
-        &mut None,
-    );
-}

@@ -327,4 +327,7 @@ pub mod net {
     pub const CONNECT: &str = "connect";
     /// A deadline that expired.
     pub const TIMEOUT: &str = "timeout";
+    /// The operator's egress proxy failed or refused the tunnel: the member was never reached and is not
+    /// charged.
+    pub const PROXY: &str = "proxy";
 }

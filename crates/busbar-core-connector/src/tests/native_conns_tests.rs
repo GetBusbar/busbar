@@ -274,6 +274,7 @@ async fn connected(addr: SocketAddr) -> NativeConnection {
             anchors: None,
             open_timeout: Duration::from_secs(5),
             storage: storage(),
+            tunnel: None,
         },
     )
     .expect("the connect begins");

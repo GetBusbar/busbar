@@ -259,6 +259,10 @@ pub const CAUSE_EXCHANGE: u64 = 3;
 pub const CAUSE_DEADLINE: u64 = 4;
 /// `ServiceOut::value` on a failure: the open connection's framer failed it; `error` is its own.
 pub const CAUSE_FRAMER: u64 = 5;
+/// On a failure: the operator's egress proxy failed or refused the tunnel (its host unreachable, its
+/// own TLS, its answer to CONNECT). The proxy's, never a provider's: no breaker is charged for it.
+/// Core's own numbering, never lowered to the plugin interface.
+pub const CAUSE_PROXY: u64 = 9;
 
 /// THE CONNECTOR TABLE: one [`ServiceFn`] per [`service`], in index order. A NULL slot is a
 /// service this host does not offer, and a plugin that needs it refuses to open.
