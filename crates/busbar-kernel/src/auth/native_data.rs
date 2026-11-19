@@ -332,6 +332,11 @@ impl NativeDataRoute {
         }))
     }
 
+    /// The route token this completion was bound to.
+    pub fn binding(&self) -> &Arc<RouteBinding> {
+        &self.binding
+    }
+
     /// The route's record, as bound.
     pub fn record(&self) -> &RouteRecord {
         &self.record
@@ -518,7 +523,7 @@ pub(crate) fn refuse_foreign_audience(
 /// bearer the scan below reads), every D_CRED_HEADER its chain's instances declare, and the route's own
 /// D_ROUTE_CRED_HEADER. Built once when the route is bound and kept by the route's completion (released
 /// with its slot); every request on the route withholds exactly these from the plane.
-pub(crate) fn withheld_carriers(chain: &NativeChain, cred_header: Option<&str>) -> Arc<[Box<str>]> {
+pub fn withheld_carriers(chain: &NativeChain, cred_header: Option<&str>) -> Arc<[Box<str>]> {
     let mut carriers: Vec<Box<str>> = Vec::new();
     for name in std::iter::once("authorization")
         .chain(chain.carriers())
@@ -919,7 +924,7 @@ impl DataAuthorization {
 /// replay claim and opens no unit.
 pub async fn judge_unrouted(
     app: &App,
-    chain: &NativeChain,
+    chain: &Arc<NativeChain>,
     binding: &Arc<RequestBinding>,
     cx: CallCx,
 ) -> (Option<Verified>, Option<Policy>) {

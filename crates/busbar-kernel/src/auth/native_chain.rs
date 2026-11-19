@@ -453,7 +453,7 @@ impl PreparedNativeIdentity {
         }
     }
     /// Whether this is the anonymous principal of an explicitly empty data chain.
-    pub(crate) fn is_anonymous(&self) -> bool {
+    pub fn is_anonymous(&self) -> bool {
         self.instance.is_none()
     }
     pub fn identity(&self) -> &busbar_ports::auth::Identity {
