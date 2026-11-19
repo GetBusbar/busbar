@@ -132,8 +132,8 @@ pub(crate) fn dpop_token(headers: &HeaderMap) -> Option<&str> {
     (scheme.eq_ignore_ascii_case(DPOP_SCHEME) && !token.is_empty()).then_some(token)
 }
 
-/// The DPoP-scheme token as a holder keeps it past the request (the candidate's custody, the
-/// caller-token extension): the one owned copy.
+/// The DPoP-scheme token as the candidate's custody keeps it past the request: the one owned copy,
+/// moved at once into a `Secret`.
 pub(crate) fn dpop_credential(headers: &HeaderMap) -> Option<String> {
     dpop_token(headers).map(|token| token.to_string())
 }
