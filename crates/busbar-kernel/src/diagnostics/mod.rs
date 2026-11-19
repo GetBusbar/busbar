@@ -1477,13 +1477,11 @@ diagnostics! {
         example "auth:\n  chain: [keys]          # no signing_key",
         detail "auth.signing_key is required for signed-token auth (auth.chain names the built-in `keys` verifier), but none is set - and busbar no longer auto-generates one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key to a secret reference for it (a shorthand an admitted secret module declares, or `{ module: …, settings: … }`; a SHARED secret across nodes for a fleet)";
 
-    CONFIG_PLANE_OPEN_TO_ANONYMOUS = 3116, Config, Fatal, "config-plane-open-to-anonymous", "1.6.0", false,
-        "A plane is configured while the data-plane auth chain is empty",
-        "A plane section (tools, agents and the like) is configured but `auth.chain` is empty, so the plane would serve anonymous callers with wildcard grants over every registered subject, and outbound credentials would have no inbound grant to bind to.",
-        "Close the data-plane chain (`auth: { chain: [keys] }` or an IdP auth plugin), or remove the plane block if this deployment does not serve it."
-        => config_plane_open_to_anonymous(detail) "{detail}",
-        example "tools:\n  search: { url: https://mcp.example.com }\n# no auth.chain",
-        detail "`tools:` is configured but auth.chain is empty, which serves the MCP endpoint to ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it runs with WILDCARD grants over every registered subject on that plane. It also leaves `upstream::authorise` with no inbound grant to bind busbar's outbound credentials to. Close the data-plane chain (`auth: { chain: [keys] }`, or an IdP auth plugin), or remove the `tools:` block if this deployment is not a MCP endpoint";
+    /// RETIRED before 1.6.0 shipped: auth is plane-agnostic. Nothing emits it. The number is kept so a log line from a pre-release build still resolves to an entry that says what happened.
+    CONFIG_PLANE_OPEN_TO_ANONYMOUS = 3116, Config, Fatal, "config-plane-open-to-anonymous", "1.6.0", true,
+        "A plane is configured while the data-plane auth chain is empty — RETIRED",
+        "RETIRED. Nothing emits this code: auth is plane-agnostic, and no plane has a refusal of its own. An empty `auth.chain` is refused for every plane alike (\"auth.chain is empty: no verifier, so nobody could be admitted\"); an open deployment names `auth: { chain: [anonymous] }` and is narrowed by `role_bindings.anonymous` on every plane (MCP and A2A included).",
+        "Nothing emits this code. To serve callers that present no credential, write `auth: { chain: [anonymous] }` and grant them under `role_bindings.anonymous`; see docs/mcp.md.";
 
     CONFIG_SETTING_OUT_OF_RANGE = 3117, Config, Fatal, "config-setting-out-of-range", "1.6.0", false,
         "A global limit or timing setting is out of range",
