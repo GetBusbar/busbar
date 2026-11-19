@@ -225,7 +225,9 @@ impl<R: UpChunks> Relay<'_, R> {
             return Err(SessionError::Violation(Violation::BadRecords));
         }
         self.effects.observed_usage(task.usage());
-        if !self.gone && !answer.client.is_empty() && !hand_out(self.effects, &mut answer.client).await
+        if !self.gone
+            && !answer.client.is_empty()
+            && !hand_out(self.effects, &mut answer.client).await
         {
             // The caller's side took nothing more: it is gone. The plane is told once, and the far end is
             // let go.

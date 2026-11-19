@@ -1448,3 +1448,171 @@ async fn route_policy_selections_and_rejections_counters_move() {
         "a strategy is never counted under its instance name"
     );
 }
+
+/// Owner decision 18, money on the head of an upgrade: the unit's money is admitted before the walk, as for
+/// any forwarded request. A key the money callback refuses is answered as any refused request is: no member
+/// is dialled, the caller's side is never read for a message, and no 101 is written. (The setup is
+/// `pending_money_refusal`'s, with a client side that takes messages and a walk that could dial.)
+#[test]
+fn an_upgrade_whose_money_is_refused_is_answered_before_any_dial_and_any_101() {
+    use crate::host_services::{
+        InvocationContext, KernelServices, Nest, NestDone, NestRoute, ServingGeneration,
+    };
+    use crate::plane_driver::port_admission::Pending;
+    use crate::plane_driver::port_duplex::{ClientEvent, ClientMessages};
+    use crate::plane_driver::port_session::ClientSink;
+    use crate::plane_driver::request_admission::{RequestAllocation, RequestRoutes};
+    use crate::refusal::RefusalMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll};
+    struct NoChildren;
+    impl NestRoute for NoChildren {
+        fn nest(&self, _: InvocationContext, _: Nest, _: NestDone) {
+            panic!("no child before admission");
+        }
+    }
+    let core = Arc::new(KernelServices::new());
+    let caller = busbar_contract::services::Caller::for_test(
+        Arc::from("seat"),
+        busbar_contract::kinds::codes::KindCode::Plane,
+    );
+    let _lease = core.admit_native_invocation(&caller).unwrap();
+    assert!(core.units().pre_admitted_for(
+        41,
+        &caller,
+        crate::host_units::UnitRecord {
+            principal: Some(Arc::new(busbar_contract::records::VirtualKey {
+                id: "over-budget".into(),
+                enabled: true,
+                ..Default::default()
+            })),
+            depth: 0,
+        }
+    ));
+    let context = InvocationContext::new(
+        Arc::new(ServingGeneration::new(core, Arc::new(NoChildren))),
+        caller,
+        41,
+    )
+    .unwrap();
+    let allocation = RequestAllocation::new(
+        context,
+        Arc::new(crate::cost::CostModel::resolve_parts(
+            None,
+            0,
+            &Default::default(),
+        )),
+        100,
+    )
+    .unwrap();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let count = asked.clone();
+    let pending = Pending::new(
+        allocation,
+        Arc::new(RequestRoutes::new("seat", None, None, None).unwrap()),
+        None,
+        move |_receipt| {
+            count.fetch_add(1, Ordering::SeqCst);
+            // The key's budget is spent.
+            Err(CoreRefusals::new().for_core(0, busbar_plugin_abi::fail::refused::R_RATE_LIMITED))
+        },
+    );
+    /// The caller's side of an upgrade: it takes messages, and counts what it was asked and given.
+    #[derive(Default)]
+    struct Side {
+        read: AtomicUsize,
+        items: Mutex<Vec<ToClient>>,
+    }
+    impl ClientMessages for Side {
+        fn poll_message(&self, _: &mut Context<'_>) -> Poll<ClientEvent> {
+            self.read.fetch_add(1, Ordering::SeqCst);
+            Poll::Pending
+        }
+    }
+    impl ClientSink for Side {
+        fn poll_items(&self, _: &mut Context<'_>, items: &mut Vec<ToClient>) -> Poll<bool> {
+            self.items.lock().unwrap().append(items);
+            Poll::Ready(true)
+        }
+        fn messages(&self) -> Option<&dyn ClientMessages> {
+            Some(self)
+        }
+    }
+    struct Upgrading<'a>(&'a Pending, &'a Side);
+    impl Effects for Upgrading<'_> {
+        fn admission(&self) -> Option<&Pending> {
+            Some(self.0)
+        }
+        fn invocation(&self) -> Option<&InvocationContext> {
+            Some(self.0.context())
+        }
+        fn emit(&self, _: u64, _: &[u8]) {}
+        fn client(&self) -> Option<&dyn ClientSink> {
+            Some(self.1)
+        }
+    }
+    /// A carrier that counts its dials.
+    struct Dialled(usize);
+    impl UpSend for Dialled {
+        type Rest<'a> = Whole;
+
+        async fn open<'a>(
+            &'a mut self,
+            _: &'a Candidate,
+            _: crate::plane_driver::port_session::UpExchange,
+        ) -> Result<UpOpen<Whole>, SendFailed> {
+            self.0 += 1;
+            Err(SendFailed)
+        }
+    }
+    let plane = Plane {
+        request: vec![It::Forward, It::Want(W_MODEL, "m")],
+        ..Plane::default()
+    };
+    let store = Store;
+    let resolver = Resolver::new(&store, None);
+    let refusals = CoreRefusals::new();
+    let side = Side::default();
+    let effects = Upgrading(&pending, &side);
+    let mut walk = Walk {
+        queue: [candidate()].into(),
+        ..Walk::default()
+    };
+    let mut far = Dialled(0);
+    let result = run_walked(
+        &plane,
+        &req(),
+        b"{}",
+        Drive {
+            resolver: &resolver,
+            members: Some(&mut walk),
+            send: Some(&mut far),
+            dialect: "test",
+            refusals: &refusals,
+            effects: &effects,
+            books: &pending,
+            carrier: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(SessionError::AdmissionRefused(_))),
+        "{result:?}"
+    );
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "money is asked once, on the head"
+    );
+    assert_eq!(far.0, 0, "no member is dialled for a refused unit");
+    assert_eq!(
+        side.read.load(Ordering::SeqCst),
+        0,
+        "the caller's side is not read for a message"
+    );
+    assert!(
+        side.items.lock().unwrap().is_empty(),
+        "no 101 and nothing else is written by the session: the refusal is the listener's HTTP answer"
+    );
+    assert_eq!(walk.failed, 0);
+    assert!(walk.served.is_empty());
+}

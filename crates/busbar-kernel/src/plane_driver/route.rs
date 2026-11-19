@@ -55,7 +55,25 @@ pub struct FarPiece {
     /// On the reply's last piece: the answer ended without completing (its connection failed, or
     /// the send's deadline passed, after its head). Pushed with `PIECE_CUT`.
     pub cut: bool,
+    /// On a body piece of a far end that answered a WebSocket handshake with 101: what the piece is of its
+    /// message. `None` on every other piece (a byte stream has no messages).
+    pub message: Option<FarMessage>,
 }
+
+/// One piece of a far end's message (see [`FarPiece::message`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FarMessage {
+    /// The message's kind: `Some(true)` text, `Some(false)` binary; `None` where the connection table does
+    /// not say (`PollConns::message_text`): the piece is then handed on as bytes.
+    pub text: Option<bool>,
+    /// The piece ends its message.
+    pub fin: bool,
+}
+
+/// [`OutboundRequest::need`] of a request that rides the member's WebSocket transport (the plane stated
+/// `CARRIER_WEBSOCKET`): the far end resolves it to the member's need whose transport spells the base URL
+/// `ws://` or `wss://` ([`super::far_end::MemberRoute::websocket_ride`]); a member with none is not sent to.
+pub const RIDE_WEBSOCKET: u32 = u32::MAX;
 
 /// What the walk answers for an attempt: the member to try, or the pool's exhaustion terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,6 +288,15 @@ pub trait FarEnd: Sync {
         token: &'a Pass<Route>,
         request: OutboundRequest,
     ) -> impl Future<Output = bool> + Send + 'a;
+
+    /// The engine closes its side of a held message session (a WebSocket far end that answered 101): the
+    /// far end is written the close and no frame after it. `false` = nothing was open to close, or the close
+    /// could not be written (the connection is gone either way). A far end with no messages (the default)
+    /// closes nothing.
+    fn close<'a>(&'a self, token: &'a Pass<Route>) -> impl Future<Output = bool> + Send + 'a {
+        let _ = token;
+        async { false }
+    }
 }
 
 pub trait CallerEnd: Sync {

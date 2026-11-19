@@ -33,8 +33,7 @@ use busbar_ports::plane::TargetIn;
 use busbar_ports::{FactVal, PortError};
 
 use super::port_session::{
-    hand_out, AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange,
-    Violation,
+    hand_out, AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange, Violation,
 };
 use super::HeadFields;
 use crate::retry::{Retry, RetryPolicy, RetrySite};
@@ -244,7 +243,8 @@ pub trait UpChunks: Send {
     /// taken nothing. A carrier with no messages (the default) hands each body chunk up as one binary message.
     fn next_message(
         &mut self,
-    ) -> impl Future<Output = Result<Option<super::port_duplex::UpMessage>, SendFailed>> + Send {
+    ) -> impl Future<Output = Result<Option<super::port_duplex::UpMessage>, SendFailed>> + Send
+    {
         async move {
             loop {
                 match self.next().await? {

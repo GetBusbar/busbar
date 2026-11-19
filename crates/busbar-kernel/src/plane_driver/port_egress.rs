@@ -36,7 +36,8 @@ use busbar_kernel_egress::ports::{DestinationId, Outcome};
 use busbar_plugin_abi::host_side::caller::Accept;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::plane::{
-    ATT_HARD, CARRIER_DEFAULT, CARRIER_HTTP, FC_RATE_LIMIT, OUTBOUND_NONE,
+    ATT_HARD, CARRIER_DEFAULT, CARRIER_HTTP, CARRIER_WEBSOCKET, FC_RATE_LIMIT, MSG_BINARY, MSG_FIN,
+    MSG_TEXT, OUTBOUND_NONE,
 };
 
 use super::far_end::{Egress, UnitRoute};
@@ -48,7 +49,7 @@ use super::port_upstream::{
     UpReply, UpSend, Wants, Whole,
 };
 use super::request_admission::{AdmittedRequest, RequestPoolReceipt, RequestWalk};
-use super::route::{operator_name, FarEnd, OutboundRequest, Pick};
+use super::route::{operator_name, FarEnd, OutboundRequest, Pick, RIDE_WEBSOCKET};
 use crate::teller::Kernel;
 use crate::upstreams::UpstreamDef;
 
@@ -543,13 +544,20 @@ impl<F: FarEnd + Send> Members for WalkMembers<'_, '_, F> {
 /// in, its header list, method, path, scope and body become the request's own with no copy, and its
 /// outbound mode is the request's `no_member_auth`. `None` = an exchange this carrier does not send
 /// (another carrier, no method or path).
+///
+/// A `CARRIER_WEBSOCKET` exchange (owner decision 18) is the handshake request of a WebSocket far end: it
+/// rides the member's WebSocket transport ([`RIDE_WEBSOCKET`]), its verb is GET when the plane stated none,
+/// and it has no body (a handshake has none: an exchange that states one is not sent). The member's
+/// credential leads its head exactly as an HTTP request's does; the handshake's own lines are the
+/// transport's and are never taken from the plane's head (the connector drops them).
 fn request_of(
     member: &Text,
     pool: &Text,
     attempt: u32,
     exchange: UpExchange,
 ) -> Option<OutboundRequest> {
-    if !matches!(exchange.carrier, CARRIER_DEFAULT | CARRIER_HTTP) {
+    let websocket = exchange.carrier == CARRIER_WEBSOCKET;
+    if !websocket && !matches!(exchange.carrier, CARRIER_DEFAULT | CARRIER_HTTP) {
         return None;
     }
     let UpExchange {
@@ -561,15 +569,23 @@ fn request_of(
         body,
         ..
     } = exchange;
+    if websocket && !body.is_empty() {
+        return None;
+    }
+    let verb = match method {
+        Some(method) => method.into_boxed_bytes().into_vec(),
+        None if websocket => b"GET".to_vec(),
+        None => return None,
+    };
     Some(OutboundRequest {
         member: member.clone(),
         pool: pool.clone(),
         attempt_no: attempt,
-        verb: method?.into_boxed_bytes().into_vec(),
+        verb,
         target: path?.into_boxed_bytes().into_vec(),
         fields,
         body,
-        need: 0,
+        need: if websocket { RIDE_WEBSOCKET } else { 0 },
         text: false,
         scope: scope.map(|scope| scope.into_boxed_bytes().into_vec()),
         no_member_auth: outbound == OUTBOUND_NONE,
@@ -608,6 +624,8 @@ pub struct Chunks<'a, F: FarEnd> {
     token: &'a Pass<Route>,
     pending: Option<Chunk>,
     done: bool,
+    /// The messages the `upstream` answer wrote beside a WebSocket handshake head: written after the 101.
+    queued: Vec<(u32, Vec<u8>)>,
 }
 
 impl<F: FarEnd> UpChunks for Chunks<'_, F> {
@@ -636,6 +654,77 @@ impl<F: FarEnd> UpChunks for Chunks<'_, F> {
             }));
         }
         Ok(None)
+    }
+
+    /// The far end's next message piece. The read is the far end's own (`FarEnd::next`): dropped while it
+    /// waits, it has taken nothing.
+    async fn next_message(&mut self) -> Result<Option<super::port_duplex::UpMessage>, SendFailed> {
+        // Bytes that came with the handshake answer's head are not a message: a 101 has no body.
+        self.pending = None;
+        while !self.done {
+            let Some(piece) = self.far.next(self.token).await else {
+                self.done = true;
+                break;
+            };
+            if piece.last {
+                self.done = true;
+                if piece.cut {
+                    return Err(SendFailed);
+                }
+            }
+            if piece.fields {
+                continue;
+            }
+            let flags = match piece.message {
+                Some(message) => {
+                    let kind = match message.text {
+                        Some(true) => MSG_TEXT,
+                        // A table that does not say what the message is hands it on as bytes.
+                        Some(false) | None => MSG_BINARY,
+                    };
+                    if message.fin {
+                        kind | MSG_FIN
+                    } else {
+                        kind
+                    }
+                }
+                // A far end that states no messages: nothing but its end is read.
+                None if piece.bytes.is_empty() => continue,
+                None => MSG_BINARY | MSG_FIN,
+            };
+            return Ok(Some(super::port_duplex::UpMessage {
+                flags,
+                bytes: piece.bytes,
+            }));
+        }
+        Ok(None)
+    }
+
+    async fn write_message(&mut self, flags: u32, bytes: Vec<u8>) -> bool {
+        if self.done {
+            return false;
+        }
+        self.far
+            .write(
+                self.token,
+                OutboundRequest {
+                    body: bytes,
+                    text: flags & MSG_TEXT != 0,
+                    ..OutboundRequest::default()
+                },
+            )
+            .await
+    }
+
+    async fn close(&mut self) {
+        if !self.done {
+            self.done = true;
+            let _ = self.far.close(self.token).await;
+        }
+    }
+
+    fn take_queued(&mut self) -> Vec<(u32, Vec<u8>)> {
+        std::mem::take(&mut self.queued)
     }
 }
 
@@ -696,6 +785,7 @@ async fn read_open<'a, F: FarEnd>(
             token,
             pending,
             done: first.last,
+            queued: Vec::new(),
         },
     })
 }
@@ -768,8 +858,14 @@ impl<'s, 'w, F: FarEnd + Send> UpSend for WalkSend<'s, 'w, F> {
             return Err(SendFailed);
         }
         let far = s.far.get().ok_or(SendFailed)?;
+        // Messages the plane wrote beside a WebSocket handshake head wait for the 101 (no message is sent
+        // before it): the relay writes them first. On every other carrier the list is empty.
+        let mut exchange = exchange;
+        let queued = std::mem::take(&mut exchange.msgs);
         let request = s.request(exchange).ok_or(SendFailed)?;
-        open_on(far, s.token, request).await
+        let mut opened = open_on(far, s.token, request).await?;
+        opened.rest.queued = queued;
+        Ok(opened)
     }
 }
 
