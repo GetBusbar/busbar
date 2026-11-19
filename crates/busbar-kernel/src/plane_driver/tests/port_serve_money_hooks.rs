@@ -621,13 +621,13 @@ struct Recording(Order);
 impl IntentHost for Recording {
     fn lookup<'a>(
         &'a self,
-        scope: Scope,
-        flags: u32,
-        limit: u32,
-        key: &'a [u8],
-        looked: &'a mut Looked,
+        _: Scope,
+        _: u32,
+        _: u32,
+        _: &'a [u8],
+        _: &'a mut Looked,
     ) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        Store.lookup(scope, flags, limit, key, looked)
+        Box::pin(std::future::ready(Ok(())))
     }
     fn store<'a>(
         &'a self,
@@ -640,28 +640,26 @@ impl IntentHost for Recording {
         self.0.lock().unwrap().push("store".into());
         Box::pin(std::future::ready(Ok(())))
     }
-    fn delete<'a>(&'a self, scope: Scope, key: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        Store.delete(scope, key)
+    fn delete<'a>(&'a self, _: Scope, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
     fn commit<'a>(
         &'a self,
-        scope: Scope,
-        ops: &'a [CommitOp<'a>],
+        _: Scope,
+        _: &'a [CommitOp<'a>],
     ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
-        Store.commit(scope, ops)
+        Box::pin(std::future::ready(Ok(CommitOutcome::Applied)))
     }
     fn work<'a>(
         &'a self,
-        work: &'a crate::plane_driver::port_intents::WorkIntent<'a>,
+        _: &'a crate::plane_driver::port_intents::WorkIntent<'a>,
     ) -> BoxFut<'a, WorkOutcome<'a>> {
-        Store.work(work)
+        Box::pin(std::future::ready(WorkOutcome::unsupported()))
     }
-    fn push<'a>(&'a self, ttl_s: u64, recs: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        Store.push(ttl_s, recs)
+    fn push<'a>(&'a self, _: u64, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn signal(&self, key: &[u8], subject: Option<[u8; 32]>) {
-        Store.signal(key, subject);
-    }
+    fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
 }
 
 /// A native request's record write (the MCP session record an `initialize` stores) is held by the
