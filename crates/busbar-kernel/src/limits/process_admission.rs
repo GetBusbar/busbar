@@ -165,6 +165,17 @@ impl ProcessAdmission {
         Ok(self.lease(class, permits))
     }
 
+    /// A lease for answering one request the gateway had no place for (refusal row 1): it holds
+    /// no place in the process count, so a full gateway can still say so. Its bytes are charged
+    /// like any lease's, so the byte bound of the process still holds; a process out of bytes
+    /// refuses this too and the connection ends as it did before.
+    pub fn shed_lease(
+        self: &Arc<Self>,
+        class: AdmissionClass,
+    ) -> Result<RequestLease, CapacityDenied> {
+        Ok(self.lease(class, Permits::default()))
+    }
+
     fn lease(self: &Arc<Self>, class: AdmissionClass, permits: Permits) -> RequestLease {
         RequestLease(Arc::new(LeaseInner {
             _permits: permits,
