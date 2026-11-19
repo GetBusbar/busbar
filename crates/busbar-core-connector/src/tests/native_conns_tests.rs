@@ -819,7 +819,7 @@ mod declare_open_refusals {
         let far = format!("http://{addr}/v1");
         let nul_target = format!("http://{addr}/v1\0");
         let crlf_target = format!("http://{addr}/v1\r\nX: y");
-        let refused: [(&str, OpenDesc<'_>); 15] = [
+        let refused: &[(&str, OpenDesc<'_>)] = &[
             ("NUL in the target", desc(&nul_target)),
             ("CRLF in the target", desc(&crlf_target)),
             (
@@ -919,7 +919,7 @@ mod declare_open_refusals {
                 },
             ),
         ];
-        for (why, refused) in &refused {
+        for (why, refused) in refused {
             assert_eq!(
                 open(&connector, OWNER, NEED, refused),
                 Err(ConnError::Refused),
