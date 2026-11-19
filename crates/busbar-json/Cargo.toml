@@ -9,6 +9,8 @@ license = "Apache-2.0"
 
 [dependencies]
 busbar-count = { path = "../busbar-count" }
+# The depth guard and the span scanner skip a string body to its next quote or backslash.
+memchr = { workspace = true }
 serde = { workspace = true }
 sonic-rs = { workspace = true }
 jsonschema = { workspace = true, optional = true }

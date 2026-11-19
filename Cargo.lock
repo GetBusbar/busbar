@@ -581,6 +581,7 @@ dependencies = [
  "futures",
  "http",
  "jsonschema",
+ "memchr",
  "serde",
  "sonic-rs",
 ]

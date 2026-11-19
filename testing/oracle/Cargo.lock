@@ -452,6 +452,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-count",
  "jsonschema",
+ "memchr",
  "serde",
  "sonic-rs",
 ]
