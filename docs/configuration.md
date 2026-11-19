@@ -1916,10 +1916,10 @@ Repeated operator requests cannot extend either interval. Reserve at least
 least 31 seconds before margin. The six seconds covers the existing bounded exit handover.
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
-once at process/client construction), so unlike `rate_sweep_interval` they are
-not live-mutable via `PUT /config/settings`. A change takes effect on the next restart.
-(`usage_flush_interval_ms` is accepted by `PUT /config/settings`, but its writer reads the value
-once when it starts, so it too needs a restart to act.) The
+once at process/client construction), so unlike `rate_sweep_interval` and `usage_flush_interval_ms`
+they are not live-mutable via `PUT /config/settings`. A change takes effect on the next restart.
+(The usage writer reads `usage_flush_interval_ms` before each wait, so an applied change is used
+from the next wait on.) The
 `BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time;
 see the [development migration limitation](#environment-variables) before upgrading a launcher
 that sets them. `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
@@ -1979,7 +1979,7 @@ act yet).
 | Key | Type and unit | Default | Allowed range | What it does | Applies |
 |---|---|---|---|---|---|
 | `advanced.wait_for_commit` | boolean | `false` | `true` / `false` | Whether an answer waits until its audit, ledger and usage records are committed. *Arriving with the audit change.* | to be confirmed |
-| `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 1 to 946,080,000,000 (30 years); `0` is raised to 1 with one warning | How often in-memory usage and budget counters are written out. | restart |
+| `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 1 to 946,080,000,000 (30 years); `0` is raised to 1 with one warning | How often in-memory usage and budget counters are written out. | on apply |
 | `advanced.rate_sweep_interval` | integer, count of admissions | `256` | 1 to 4,294,967,295; `0` is refused | How often a budget table drops entries that are no longer needed. | on apply |
 | `advanced.worker_threads` | integer, threads | one per CPU core | 1 to 65,535; `0` means the default, and above 65,535 is lowered to 65,535, each with one warning (`BUSBAR-9008`) | Number of data-plane worker threads. | restart |
 | `advanced.upstream_http1_only` | boolean | `false` | `true` / `false` | Pin the upstream HTTP client to HTTP/1.1. | restart |
@@ -1995,8 +1995,8 @@ act yet).
 | `advanced.tls.destinations` | list of entries | empty list | see [`advanced.tls`](#advancedtls) | Per-destination authorities, key pins and client certificate. | restart |
 
 "Restart" for the keys above is what the code does today: `advanced.rate_sweep_interval` is read
-again on every admission, and the configuration apply republishes it; every other key is read once
-at boot (or, for `usage_flush_interval_ms`, once when the background writer starts). Of the
+again on every admission, `advanced.usage_flush_interval_ms` before each wait of the background
+writer, and the configuration apply republishes both; every other key is read once at boot. Of the
 restart keys, the pending-restart list in the admin API (`reload_to_apply`) reports changes to
 `worker_threads`, `response_headers`, `shutdown.deregister_delay`, `upstream_http1_only` and
 `upstream_h2_prior_knowledge` only; a changed `trusted_proxies`, `forwarded_header`,
@@ -2032,9 +2032,11 @@ advanced:
 #### `advanced.usage_flush_interval_ms`
 
 How often the engine writes its in-memory usage and budget counters to the store, in milliseconds.
-Between writes the counters live only in memory. The writer reads this once when it starts
-(`crates/busbar-kernel/src/governance/mod.rs`, `run_budget_flusher`), so a changed value needs a
-restart even though `PUT /config/settings` accepts it.
+Between writes the counters live only in memory. The writer reads this before each wait
+(`crates/busbar-kernel/src/governance/mod.rs`, `run_budget_flusher`), so a value changed through
+`PUT /config/settings` or the configuration document is used from the next wait on: the wait
+already in progress when the change is applied is the last one on the old value. It applies on a
+configuration apply, with no restart.
 
 When to change it: lower it to shrink the window of lost spend after a crash; raise it to write
 to a slow store less often. Cost: a lower value means more writes to the store; a higher value
