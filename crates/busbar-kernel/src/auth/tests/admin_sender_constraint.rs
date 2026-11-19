@@ -284,14 +284,10 @@ mod native_gate {
             ("authorization", under_authorization),
             (PROVIDER_HEADER, under_provider_header),
         ] {
-            let before = operator.calls.load(Ordering::SeqCst);
+            // The native arm judges the charged request, whose identity the provider already
+            // answered (cached): only the presented headers differ from the identified call.
             let (verdict, carried) = judge(&headers);
             assert_eq!(verdict, ChainVerdict::Denied, "{case}");
-            assert_eq!(
-                operator.calls.load(Ordering::SeqCst),
-                before + 1,
-                "{case}: the provider identified the caller; the gate refused after it"
-            );
             assert!(
                 !carried.no_verdict,
                 "{case}: a refusal, not a missing verdict"
@@ -299,6 +295,13 @@ mod native_gate {
             assert!(carried.native.is_none(), "{case}: nothing is prepared");
             assert!(carried.strips.is_empty(), "{case}");
         }
+        // The same request with the opaque bearer is still identified: the refusals were the
+        // headers', not a provider that stopped identifying.
+        let (verdict, _) = judge(&opaque);
+        assert!(
+            matches!(verdict, ChainVerdict::Identified { .. }),
+            "{verdict:?}"
+        );
     }
 }
 

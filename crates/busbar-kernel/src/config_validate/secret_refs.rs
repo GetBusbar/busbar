@@ -130,7 +130,13 @@ pub(crate) fn registry_refusal_with(
     Ok(())
 }
 
-pub(crate) fn builtins_resolve(cfg: &RootCfg) -> Result<(), String> {
+/// `--validate`'s last step: every reference boot resolves whose module is a LINKED secret image
+/// resolves through the native secret axis (the instances the caller opened for it), naming the
+/// first that does not. A reference served by a dropped-in secret plugin is not resolved here.
+///
+/// # Errors
+/// The first reference that does not resolve, by its config position.
+pub fn builtins_resolve(cfg: &RootCfg) -> Result<(), String> {
     let builtins = crate::config::secret::SecretResolver::builtins_only();
     for (what, r) in boot_resolved_secret_refs(cfg) {
         if !r
