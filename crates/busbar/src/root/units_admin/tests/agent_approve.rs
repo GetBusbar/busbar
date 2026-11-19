@@ -175,28 +175,19 @@ fn approving(fingerprint: &str) -> String {
 }
 
 /// The `(action, outcome)` audit rows `principal` holds for the two actions an agent approval may
-/// write: the kernel's typed `trust_approve` and the route's own `agent_approve`.
-async fn rows_of(router: &axum::Router, principal: &str) -> Vec<(String, String)> {
-    let (status, page) = send(
-        router,
-        "GET",
-        "/api/v1/admin/audit?action=agent_approve,trust_approve&limit=200",
-        "",
-        Some(THE_OPERATORS_CREDENTIAL),
-    )
-    .await;
-    assert_eq!(status, 200, "the audit page answers: {page:?}");
-    page["items"]
-        .as_array()
-        .expect("the page carries items")
-        .iter()
-        .filter(|row| row["principal"].as_str() == Some(principal))
-        .map(|row| {
-            (
-                row["action"].as_str().unwrap_or_default().to_string(),
-                row["outcome"].as_str().unwrap_or_default().to_string(),
-            )
+/// write (the kernel's typed `trust_approve` and the route's own `agent_approve`), newest first.
+async fn rows_of(principal: &str) -> Vec<(String, String)> {
+    busbar_kernel::audit::auditlog::flush_pending()
+        .await
+        .expect("the audit rows settle");
+    busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES, None, None)
+        .into_iter()
+        .filter(|row| {
+            row.principal == principal
+                && matches!(row.action.as_str(), "agent_approve" | "trust_approve")
         })
+        .map(|row| (row.action, row.outcome))
         .collect()
 }
 
@@ -240,7 +231,7 @@ async fn agent_approve_needs_the_operator() {
     let kernel = a_kernel_that_sighted_the_card().await;
     let node = a_node(Arc::clone(&kernel)).await;
     let before = kernel.trust_rows();
-    let rows_before = rows_of(&node, A_READER).await;
+    let rows_before = rows_of(A_READER).await;
     let (status, body) = send(
         &node,
         "POST",
@@ -255,7 +246,7 @@ async fn agent_approve_needs_the_operator() {
     );
     assert_eq!(kernel.trust_rows(), before, "nothing changes");
     assert!(!the_card_is_served(&kernel), "nothing approved");
-    let rows = rows_of(&node, A_READER).await;
+    let rows = rows_of(A_READER).await;
     assert_eq!(
         rows.len() - rows_before.len(),
         1,
@@ -279,7 +270,7 @@ async fn agent_approve_locks_the_card_at_the_reviewed_fingerprint_with_one_audit
     );
 
     // Refused before the trust book: one route row each, nothing decided.
-    let rows_before = rows_of(&node, THE_OPERATOR).await;
+    let rows_before = rows_of(THE_OPERATOR).await;
     for (path, body, status) in [
         (PATH, "not json".to_string(), 400),
         (PATH, r#"{"fingerprint":"abc"}"#.to_string(), 400),
@@ -298,7 +289,7 @@ async fn agent_approve_locks_the_card_at_the_reviewed_fingerprint_with_one_audit
         assert_eq!(got, status, "{path} {body}: {answer:?}");
         assert!(!the_card_is_served(&kernel), "{body}: nothing approved");
     }
-    let rows = rows_of(&node, THE_OPERATOR).await;
+    let rows = rows_of(THE_OPERATOR).await;
     assert_eq!(
         rows.len() - rows_before.len(),
         4,
@@ -312,14 +303,14 @@ async fn agent_approve_locks_the_card_at_the_reviewed_fingerprint_with_one_audit
     );
 
     // A fingerprint other than the card's current one is stale: the trust book refuses it.
-    let rows_before = rows_of(&node, THE_OPERATOR).await;
+    let rows_before = rows_of(THE_OPERATOR).await;
     let (status, answer) = send(&node, "POST", PATH, &approving(CHANGED), op).await;
     assert_eq!(status, 409, "a stale review is refused: {answer:?}");
     assert!(
         !the_card_is_served(&kernel),
         "a stale review approves nothing"
     );
-    let rows = rows_of(&node, THE_OPERATOR).await;
+    let rows = rows_of(THE_OPERATOR).await;
     assert_eq!(rows.len() - rows_before.len(), 1, "{rows:?}");
     assert_eq!(
         rows[0],
@@ -327,7 +318,7 @@ async fn agent_approve_locks_the_card_at_the_reviewed_fingerprint_with_one_audit
     );
 
     // The reviewed fingerprint: the card is approved there, and only the kernel's row is written.
-    let rows_before = rows_of(&node, THE_OPERATOR).await;
+    let rows_before = rows_of(THE_OPERATOR).await;
     let (status, answer) = send(&node, "POST", PATH, &approving(FINGERPRINT), op).await;
     assert_eq!(status, 200, "{answer:?}");
     assert_eq!(answer["agent"].as_str(), Some(AGENT));
@@ -335,7 +326,7 @@ async fn agent_approve_locks_the_card_at_the_reviewed_fingerprint_with_one_audit
     assert_eq!(answer["fingerprint"].as_str(), Some(FINGERPRINT));
     assert_eq!(answer["state"].as_str(), Some("approved"));
     assert!(the_card_is_served(&kernel), "the approved card serves");
-    let rows = rows_of(&node, THE_OPERATOR).await;
+    let rows = rows_of(THE_OPERATOR).await;
     assert_eq!(
         rows.len() - rows_before.len(),
         1,
