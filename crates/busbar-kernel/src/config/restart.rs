@@ -128,6 +128,13 @@ pub(crate) struct Source {
     workers: Option<usize>,
     headers: super::ResponseHeadersCfg,
     admin_mtls: bool,
+    /// The boot-bound security settings: the destination guard, the login-limit source reader
+    /// and the outbound trust store read them once at boot.
+    trusted_proxies: Vec<String>,
+    forwarded_header: Option<String>,
+    block_private_addresses: bool,
+    proxy_resolution: super::tls::ProxyResolution,
+    tls: super::tls::OutboundTlsCfg,
 }
 
 impl Source {
@@ -137,6 +144,11 @@ impl Source {
             workers: cfg.advanced.worker_threads,
             headers: cfg.advanced.response_headers.clone(),
             admin_mtls: cfg.admin_require_mtls,
+            trusted_proxies: cfg.advanced.trusted_proxies.clone(),
+            forwarded_header: cfg.advanced.forwarded_header.clone(),
+            block_private_addresses: cfg.advanced.block_private_addresses,
+            proxy_resolution: cfg.advanced.proxy_resolution,
+            tls: cfg.advanced.tls.clone(),
         }
     }
 
@@ -153,6 +165,21 @@ impl Source {
         }
         if self.admin_mtls != boot.admin_mtls {
             paths.push("/admin_require_mtls".to_owned());
+        }
+        if self.trusted_proxies != boot.trusted_proxies {
+            paths.push("/advanced/trusted_proxies".to_owned());
+        }
+        if self.forwarded_header != boot.forwarded_header {
+            paths.push("/advanced/forwarded_header".to_owned());
+        }
+        if self.block_private_addresses != boot.block_private_addresses {
+            paths.push("/advanced/block_private_addresses".to_owned());
+        }
+        if self.proxy_resolution != boot.proxy_resolution {
+            paths.push("/advanced/proxy_resolution".to_owned());
+        }
+        if self.tls != boot.tls {
+            paths.push("/advanced/tls".to_owned());
         }
         paths
     }

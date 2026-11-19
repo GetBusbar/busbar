@@ -622,6 +622,11 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/advanced/shutdown/deregister_delay",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
+        "/advanced/trusted_proxies",
+        "/advanced/forwarded_header",
+        "/advanced/block_private_addresses",
+        "/advanced/proxy_resolution",
+        "/advanced/tls",
     ];
     paths
         .iter()
@@ -844,6 +849,31 @@ mod tests {
         assert_eq!(
             restart_paths(&paths),
             ["/advanced/worker_threads", "/store/settings", "/listen"]
+        );
+    }
+
+    #[test]
+    fn boot_bound_security_settings_are_pending_restart_when_edited() {
+        let paths = [
+            "/advanced/trusted_proxies",
+            "/advanced/forwarded_header",
+            "/advanced/block_private_addresses",
+            "/advanced/proxy_resolution",
+            "/advanced/tls",
+            "/advanced/tls/roots",
+            "/advanced/usage_flush_interval_ms",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            restart_paths(&paths),
+            [
+                "/advanced/trusted_proxies",
+                "/advanced/forwarded_header",
+                "/advanced/block_private_addresses",
+                "/advanced/proxy_resolution",
+                "/advanced/tls",
+                "/advanced/tls/roots",
+            ]
         );
     }
 

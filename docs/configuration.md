@@ -1996,12 +1996,13 @@ act yet).
 
 "Restart" for the keys above is what the code does today: `advanced.rate_sweep_interval` is read
 again on every admission, `advanced.usage_flush_interval_ms` before each wait of the background
-writer, and the configuration apply republishes both; every other key is read once at boot. Of the
-restart keys, the pending-restart list in the admin API (`reload_to_apply`) reports changes to
-`worker_threads`, `response_headers`, `shutdown.deregister_delay`, `upstream_http1_only` and
-`upstream_h2_prior_knowledge` only; a changed `trusted_proxies`, `forwarded_header`,
-`block_private_addresses`, `proxy_resolution` or `tls` is stored without that flag, so restart
-the engine after editing them.
+writer, and the configuration apply republishes both; every other key is read once at boot. Every
+one of those restart keys is reported by the pending-restart list in the admin API
+(`reload_to_apply`) when an edit changes it: `worker_threads`, `response_headers`,
+`shutdown.deregister_delay`, `upstream_http1_only`, `upstream_h2_prior_knowledge`,
+`trusted_proxies`, `forwarded_header`, `block_private_addresses`, `proxy_resolution` and `tls`.
+`trusted_proxies` and `block_private_addresses` are security settings: an edit to them is stored
+but does not act until the engine restarts, and the list now says so.
 
 #### `advanced.wait_for_commit`
 
