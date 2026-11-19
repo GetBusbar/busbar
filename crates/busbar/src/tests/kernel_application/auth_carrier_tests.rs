@@ -255,4 +255,3 @@ fn test_extract_admin_header_token_empty_filtered() {
     );
     assert_eq!(carried_credential(&carriers, absent.headers()), None);
 }
-

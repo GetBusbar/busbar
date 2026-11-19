@@ -292,4 +292,3 @@ async fn native_pulse_examines_at_most_64_candidates() {
         "a pulse never removes legacy custody"
     );
 }
-

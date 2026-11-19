@@ -403,7 +403,10 @@ async fn nothing_serves_the_admin_listener_before_the_admin_chain_is_installed()
     let Err(refused) = assemble_admin_slot(&before, "admin_listen", transport.clone()) else {
         panic!("an operator slot was assembled before the admin chain was installed");
     };
-    assert_eq!(refused, "operator slot has no actual native admin authority");
+    assert_eq!(
+        refused,
+        "operator slot has no actual native admin authority"
+    );
     assert!(crate::root::serve::native_slot(&before, "admin_listen").is_none());
     assert!(assemble_admin_slot(&installed, "admin_listen", transport).is_ok());
 }

@@ -149,12 +149,8 @@ impl NativeListenerPlan {
                     })
                     .cloned()
                     .collect();
-                let mounts = super::serve::data_mounts(
-                    served.clone(),
-                    &chain,
-                    &route_chains,
-                    &served_core,
-                )?;
+                let mounts =
+                    super::serve::data_mounts(served.clone(), &chain, &route_chains, &served_core)?;
                 let guests = mounts.data.guests.clone();
                 // The projection must not omit a declared route merely because its verbs
                 // are unsupported by the actual HTTP mount. Assembly will check full masks.

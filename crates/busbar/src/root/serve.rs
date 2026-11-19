@@ -330,10 +330,9 @@ impl busbar_kernel::host_services::NestRoute for GenerationNests {
         let routes = Arc::clone(&self.routes);
         let native = Arc::clone(&self.native);
         let child = async move {
-            let answer = native
-                .dispatch(routes, &context, &nest)
-                .await
-                .unwrap_or(busbar_kernel::host_services::NestReply::Unserved(NEST_UNSERVED));
+            let answer = native.dispatch(routes, &context, &nest).await.unwrap_or(
+                busbar_kernel::host_services::NestReply::Unserved(NEST_UNSERVED),
+            );
             done(answer);
         };
         drop(match &self.detached {

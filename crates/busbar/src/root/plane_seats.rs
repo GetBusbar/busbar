@@ -605,7 +605,11 @@ fn pool_members(pool: &busbar_contract::yaml::Value) -> Result<Vec<String>, Stri
             ));
         };
         if let Some(written) = m.get(busbar_contract::section::POOL_MEMBER_TIER_KEY) {
-            if written.as_u64().and_then(|t| u32::try_from(t).ok()).is_none() {
+            if written
+                .as_u64()
+                .and_then(|t| u32::try_from(t).ok())
+                .is_none()
+            {
                 return Err(format!(
                     "member '{name}' has tier {written:?}, which is no unsigned integer that fits u32"
                 ));

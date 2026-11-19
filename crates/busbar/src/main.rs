@@ -1547,10 +1547,8 @@ async fn run(
             Some(Arc::clone(&drain_clock)),
         ))
     });
-    let work_recovery = recovery_served.spawn_work_recovery(
-        app_handle.clone(),
-        shutdown_tx.subscribe(),
-    );
+    let work_recovery =
+        recovery_served.spawn_work_recovery(app_handle.clone(), shutdown_tx.subscribe());
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));

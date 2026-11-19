@@ -44,7 +44,6 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
     }
 }
 
-
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
     guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
         eprintln!(

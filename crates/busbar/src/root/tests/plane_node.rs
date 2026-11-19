@@ -400,7 +400,6 @@ async fn the_nodes_interner_leaks_a_lane_name_once() {
     assert!(std::ptr::eq(first.as_str(), again.as_str()));
 }
 
-
 #[tokio::test]
 async fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
     const SECOND_CARD_MS: u64 = 1_700_000_500_000;

@@ -317,7 +317,8 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
                     .expect("the nonanchor rollback requires the actual built MySQL Store"),
             );
             // The native manifest completes only when the image's stamp states a Store.
-            let manifest = crate::root::test_plugins::native_manifest("store", &target_path, "acme");
+            let manifest =
+                crate::root::test_plugins::native_manifest("store", &target_path, "acme");
             assert_ne!(
                 manifest.name, module,
                 "anchor and nonanchor are actual distinct Store implementations"
