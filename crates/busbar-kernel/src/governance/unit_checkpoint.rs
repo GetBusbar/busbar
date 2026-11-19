@@ -59,6 +59,55 @@ pub struct UnitTarget {
     pub group: Option<String>,
 }
 
+/// A unit's captured audit facts (up to [`partitions::MAX_AUDIT_BYTES`]), shared. They are captured
+/// at admission and again when a preparation or a terminal captures them, and never change in
+/// between: every copy of the checkpoint (each accepted update starts from one) shares the one
+/// capture instead of copying its bytes. Written and read exactly as the byte array (`Vec<u8>`)
+/// they always were, so the stored bytes do not change. The last checkpoint holding them
+/// releases them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AuditFacts(Arc<Vec<u8>>);
+
+impl From<Vec<u8>> for AuditFacts {
+    /// Takes the capture's own buffer: nothing is copied.
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(Arc::new(bytes))
+    }
+}
+
+impl std::ops::Deref for AuditFacts {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for AuditFacts {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for AuditFacts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Serialize for AuditFacts {
+    /// The held `Vec<u8>`'s own encoding.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        Vec::<u8>::serialize(&self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AuditFacts {
+    /// Read as `Vec<u8>` reads it; the decoded buffer is kept, not copied.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<u8>::deserialize(deserializer).map(Self::from)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnitCheckpoint {
@@ -77,7 +126,7 @@ pub struct UnitCheckpoint {
     pub metered: bool,
     pub ended: bool,
     pub terminal: Option<Vec<RecoveryEvent>>,
-    pub audit: Option<Vec<u8>>,
+    pub audit: Option<AuditFacts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measurement: Option<crate::host_measurement::MeasurementEvidence>,
     /// The provider answered but its final stated usage was not billed: the `ReasonCode` name that
