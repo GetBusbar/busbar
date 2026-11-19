@@ -131,11 +131,13 @@ async fn a_node(trust: Arc<busbar_kernel::host_services::KernelServices>) -> axu
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
+    let signing = directory.join("signing-key");
+    std::fs::write(&signing, hex::encode([9u8; 32])).expect("write the configured signing key");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
             // The admin door is this file's own; the app's default admin chain is `[keys]`.
-            "auth": {"chain": ["keys"]},
+            "auth": {"chain": ["keys"], "signing_key": {"file": signing}},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),

@@ -229,7 +229,12 @@ fn runtime() -> tokio::runtime::Runtime {
 fn boot(tag: &str, provider: u16) -> Node {
     realtime(Deployment::new(tag), &format!("ws://127.0.0.1:{provider}"))
         .plugin("transport", WS_TRANSPORT_IMAGE)
-        .section(&streams_section(""))
+        // The fake provider is plaintext `ws://` on loopback: only the streaming plane's own
+        // audited acceptance admits that dial (configuration.md, "The plaintext rule"; no
+        // loopback exemption).
+        .section(&streams_section(
+            "  insecure_transport: { accept: plaintext, reason: \"loopback test provider\" }\n",
+        ))
         .boot()
 }
 
