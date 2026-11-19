@@ -135,7 +135,9 @@ impl<'h> Presented<'h> {
             match credential {
                 Some(token) if token.starts_with(TOKEN_PREFIX) => {
                     presented.core_lines += 1;
-                    presented.core.get_or_insert(token);
+                    if presented.core.is_none() {
+                        presented.core = Some(token);
+                    }
                 }
                 // Another credential, another scheme, or bytes that are not text: not core's,
                 // and beside a core token it makes the head ambiguous.
