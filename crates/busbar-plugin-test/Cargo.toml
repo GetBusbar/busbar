@@ -109,13 +109,10 @@ busbar-kernel = { path = "../busbar-kernel", features = ["conformance"] }
 # axum requests. Dev edges only.
 busbar-core-admin = { path = "../busbar-core-admin" }
 axum = { workspace = true }
-# C-WEBRTC-ICE-RESTART drives the datagram transport over hyper's `rt` read traits. Dev edge only.
-hyper = { workspace = true }
 # The facade's own tests drive its targets; CI's test and red-proof jobs pass none of its features.
-# W1-A12: the case files drive MemIo (IF §9, feature `memio`).
-busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["memio"] }
 busbar-plugin-test = { path = ".", features = ["target-sockets", "target-native-stream", "test-seal"] }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+# C-WEBRTC-ICE-RESTART runs its session over `tokio::io::duplex` (io-util).
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync", "io-util"] }
 
 [lints]
 workspace = true

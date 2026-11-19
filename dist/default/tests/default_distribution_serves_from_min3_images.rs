@@ -59,8 +59,8 @@ impl Node {
     }
 
     /// `planes`: add the data listener's `public_url`, so the routes whose challenge names the plane's public URL
-    /// (mcp) are mounted too. (The documented `mcp: { canonical_uri }` is refused by this build's `mcp:` reader,
-    /// which reads server definitions there: BUSBAR-9007 "expected struct McpServerDefCfg".)
+    /// (mcp) are mounted too, and the documented `mcp: { canonical_uri }` (docs/mcp.md), the audience the MCP
+    /// plane is bound to (RFC 8707): `{MCP_AUDIENCE}` on the data listener.
     fn boot_with_planes(upstream: Option<u16>, operator: bool, planes: bool) -> Self {
         let dir = workdir();
         let (data, admin) = (boot::free_port(), boot::free_port());
@@ -68,7 +68,8 @@ impl Node {
         let settings = format!("{{ sha256: \"{digest}\" }}");
         let sections = if planes {
             format!(
-                "public_url: \"http://127.0.0.1:{data}\"\n"
+                "public_url: \"http://127.0.0.1:{data}\"\nmcp:\n  canonical_uri: \"{}\"\n",
+                mcp_audience(data)
             )
         } else {
             String::new()
@@ -176,6 +177,11 @@ impl Drop for Node {
         let _ = self.process.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// The MCP plane's audience on a data listener: its `canonical_uri`, the endpoint `/mcp`.
+fn mcp_audience(data: u16) -> String {
+    format!("http://127.0.0.1:{data}/mcp")
 }
 
 fn workdir() -> PathBuf {
@@ -578,6 +584,50 @@ fn an_empty_data_chain_is_refused_at_boot_before_any_listener_accepts() {
     );
 }
 
+/// The documented `mcp: { canonical_uri }` is accepted and is the MCP plane's audience (RFC 8707): a key minted for
+/// exactly that audience is admitted at `/mcp` (the plane answers `initialize`); a key minted for another resource,
+/// and a key bound to no audience, are refused there with the one unverified answer (401).
+#[test]
+fn the_documented_mcp_canonical_uri_is_the_planes_audience_and_binds_it() {
+    let node = Node::boot_with_planes(None, true, true);
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"min3-audience","version":"1"}}}"#;
+    let post = |token: &str| {
+        exchange(
+            node.data,
+            "POST",
+            "/mcp",
+            &format!(
+                "Authorization: Bearer {token}\r\nAccept: application/json, text/event-stream\r\n"
+            ),
+            initialize.as_bytes(),
+        )
+    };
+    let bound = node.mint("min3-mcp-bound", Some(&mcp_audience(node.data)));
+    let (status, body) = post(&bound);
+    assert!(
+        (200..300).contains(&status),
+        "a key minted for the configured canonical_uri is admitted at /mcp ({status} {body}); log:\n{}",
+        node.log()
+    );
+    let foreign = node.mint(
+        "min3-mcp-foreign",
+        Some(&format!("http://127.0.0.1:{}/mcp-staging", node.data)),
+    );
+    let (status, body) = post(&foreign);
+    assert_eq!(
+        status,
+        401,
+        "a key minted for another resource is refused at /mcp: {body}"
+    );
+    let unbound = node.mint("min3-mcp-unbound", None);
+    let (status, body) = post(&unbound);
+    assert_eq!(
+        status,
+        401,
+        "a key bound to no audience is refused at /mcp: {body}"
+    );
+}
+
 /// The first boot reaches every linked plane: one request per plane (llm, mcp, a2a, decisions, streaming) carrying the
 /// operator-minted key. Each is admitted and answered by its plane, or its route is refused at boot with a stated
 /// reason (an "is not served" line naming the route in the boot log). A refused plane answer carries its reason.
@@ -586,10 +636,7 @@ fn each_linked_plane_answers_one_keyed_request_or_states_its_refusal() {
     let (upstream, _calls) = spawn_upstream();
     let node = Node::boot_with_planes(Some(upstream), true, true);
     let key = node.mint("min3-planes", None);
-    let mcp_key = node.mint(
-        "min3-planes-mcp",
-        Some(&format!("http://127.0.0.1:{}/mcp", node.data)),
-    );
+    let mcp_key = node.mint("min3-planes-mcp", Some(&mcp_audience(node.data)));
     let chat = format!(r#"{{"model":"{MODEL}","messages":[{{"role":"user","content":"ping"}}]}}"#);
     let decide = format!(r#"{{"model":"{MODEL}","state":{{"amount":7}}}}"#);
     let mint_session = format!(r#"{{"session":{{"type":"realtime","model":"{MODEL}"}}}}"#);

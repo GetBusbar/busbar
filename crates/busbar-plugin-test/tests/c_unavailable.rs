@@ -168,7 +168,6 @@ zeroize = "1"
 [features]
 default = ["host"]
 host = []
-memio = []
 "#,
                 lib = crates.join("busbar-plugin-abi/src/lib.rs").display(),
                 ffi = crates.join("busbar-ffi").display(),

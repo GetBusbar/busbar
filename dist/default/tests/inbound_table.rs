@@ -468,7 +468,7 @@ fn judge(expect: &Expect, got: &Answered) -> Option<String> {
 }
 
 #[test]
-fn every_route_answers_every_caller_as_the_table_says() {
+fn inbound_table_every_route_answers_every_caller_as_the_table_says() {
     let upstream = common::upstream::Responder::start(BTreeMap::new());
     let booted = boot(&upstream.url());
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -618,7 +618,7 @@ const MIGRATION_DOC: &str = include_str!("../../../docs/migration-1.6.md");
 /// A served route is answered by its own handler: not by admission (401/403), not 405, not the
 /// router's not-found, and not a 5xx. A refused route is the router's not-found, byte for byte.
 #[test]
-fn every_v155_route_is_served_or_refused_with_a_stated_reason() {
+fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
     let upstream = common::upstream::Responder::start(BTreeMap::new());
     let booted = boot(&upstream.url());
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -700,7 +700,7 @@ fn every_v155_route_is_served_or_refused_with_a_stated_reason() {
 /// The table itself is well formed without a binary: every row parses, ids are unique, every
 /// body word is known, and an unverified cell is 401 on every row that is not public.
 #[test]
-fn the_table_parses() {
+fn inbound_table_parses() {
     let rows = rows();
     let mut ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
     ids.sort();
