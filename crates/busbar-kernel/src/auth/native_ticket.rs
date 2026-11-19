@@ -281,7 +281,7 @@ impl<T: Tickets> IssuerBound<T> {
             );
             return Err(TicketDenied::Invalid);
         };
-        let Some((binding, plane_record)) = Binding::open(&row) else {
+        let Some((binding, plane_record)) = Binding::open(&row[..]) else {
             tracing::warn!(
                 plane = plane.name,
                 "ticket refused: its issuer binding does not read"
@@ -370,7 +370,7 @@ impl<T: Tickets> Tickets for IssuerBound<T> {
                         ttl_s,
                         // Single use, whatever the plane asked: one ticket admits one request.
                         once: true,
-                        record: &row,
+                        record: &row[..],
                         ..m
                     },
                 )

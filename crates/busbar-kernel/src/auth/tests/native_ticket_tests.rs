@@ -87,7 +87,7 @@ struct Rig {
 async fn rig() -> Rig {
     CLOCK.store(NOW, Ordering::SeqCst);
     let core = crate::real_store::core().await;
-    let sealed = |core| {
+    let sealed = |core: Arc<crate::persistence::facade::CoreStore>| {
         SealedTickets::new(StoreRecords::with_clock(core, clock), &[7u8; 32], clock)
             .expect("a 32-byte key")
     };

@@ -130,8 +130,8 @@ impl SignatureVerifier<Webhook> for Sender {
                 .headers
                 .iter()
                 .map(|(name, value)| Pair {
-                    name: Str::new(name),
-                    value: Bytes::new(value),
+                    name: Str::new(name.as_str()),
+                    value: Bytes::new(value.as_slice()),
                 })
                 .collect();
             if !request
