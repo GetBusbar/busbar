@@ -878,7 +878,10 @@ pub(crate) fn governed_key(
 /// for none, and a credential that states no audience at all (an opaque key), are refused as any
 /// bad credential is: on an audience-bound plane an unbound credential is never enough. A token
 /// core minted is judged by its verifier, which has the signature and the claims. Every
-/// occurrence of `authorization` is scanned, not a decoy first bearer.
+/// carrier the chain reads is scanned, as the request path judged its carried credential
+/// (`auth::carried_credential`): the bearer on `authorization`, and the value of every header a
+/// chain instance declares (D_CRED_HEADER), so a plain key or a foreign token is never admitted
+/// by moving it to another carrier. Every occurrence is scanned, not a decoy first one.
 pub(crate) fn refuse_foreign_audience(
     snapshot: &crate::inbound::request_snapshot::ChargedRequestSnapshot,
     chain: &NativeChain,
@@ -891,18 +894,31 @@ pub(crate) fn refuse_foreign_audience(
     snapshot
         .with_auth_input(|request| {
             for field in request.headers {
-                if !field.name.get().eq_ignore_ascii_case("authorization") {
-                    continue;
-                }
-                let Ok(value) = std::str::from_utf8(field.value.get()) else {
+                let name = field.name.get();
+                let token = if name.eq_ignore_ascii_case("authorization") {
+                    let Ok(value) = std::str::from_utf8(field.value.get()) else {
+                        continue;
+                    };
+                    let Some((scheme, token)) = value.split_once(' ') else {
+                        continue;
+                    };
+                    if !scheme.eq_ignore_ascii_case("Bearer") {
+                        continue;
+                    }
+                    token
+                } else if chain.reads_header(name) {
+                    // An empty line presents nothing; a value that is not text states no
+                    // audience at all.
+                    if field.value.get().is_empty() {
+                        continue;
+                    }
+                    let Ok(value) = std::str::from_utf8(field.value.get()) else {
+                        return Err(DataRefused::Credential);
+                    };
+                    value
+                } else {
                     continue;
                 };
-                let Some((scheme, token)) = value.split_once(' ') else {
-                    continue;
-                };
-                if !scheme.eq_ignore_ascii_case("Bearer") {
-                    continue;
-                }
                 match super::audience::inspect_bearer(token.trim(), audience) {
                     super::audience::Binding::Mismatch | super::audience::Binding::Opaque => {
                         return Err(DataRefused::Credential)
