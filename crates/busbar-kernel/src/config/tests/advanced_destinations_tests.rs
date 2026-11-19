@@ -41,6 +41,10 @@ fn the_1_5_5_security_keys_feed_the_one_guard() {
         Destinations {
             block_private_addresses: true,
             blocked: vec!["imds.corp.example".into()],
+            listens: vec![
+                crate::config::DEFAULT_LISTEN_ADDR.into(),
+                crate::config::DEFAULT_ADMIN_LISTEN_ADDR.into(),
+            ],
         }
     );
 }

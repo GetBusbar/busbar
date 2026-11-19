@@ -323,6 +323,9 @@ pub struct Destinations {
     pub block_private_addresses: bool,
     /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
     pub blocked: Vec<String>,
+    /// The engine's own listen addresses as configured (`listen`, `admin_listen`): the front door
+    /// no plugin connection may reach, in any class (IF 12.1).
+    pub listens: Vec<String>,
 }
 
 impl super::RootCfg {
@@ -334,8 +337,16 @@ impl super::RootCfg {
     pub fn destinations(&self) -> Destinations {
         Destinations {
             blocked: self.blocked_metadata_hosts.clone(),
+            listens: self.own_listens().map(str::to_owned).to_vec(),
             ..self.guard.clone()
         }
+    }
+
+    /// The addresses the engine's own listeners take, as configured: the data door (`listen`)
+    /// and the admin surface (`admin_listen`). The one source of both own-port lists.
+    #[must_use]
+    pub fn own_listens(&self) -> [&str; 2] {
+        [self.listen.as_str(), self.admin_listen.as_str()]
     }
 }
 
