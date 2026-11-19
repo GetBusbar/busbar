@@ -116,6 +116,11 @@ impl TerminalBook {
         }
     }
 
+    /// The Data class's account (a reference count, no copy).
+    pub(super) fn data_source(&self) -> StorageSource {
+        self.data.source.clone()
+    }
+
     fn partition(&self, class: AdmissionClass) -> &Partition {
         match class {
             AdmissionClass::Data => &self.data,
