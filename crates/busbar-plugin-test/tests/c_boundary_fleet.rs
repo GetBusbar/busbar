@@ -183,9 +183,21 @@ fn export_deliver_states_the_batchs_line_count_and_every_head_number() {
 // hook 3.0
 // ---------------------------------------------------------------------------------------------------------
 
+/// The reference hook records every call to any instance in one process-wide log (`ref_hook::SEEN`), and the
+/// tests of this binary run in parallel. Each test that calls the reference holds this for its whole body, so
+/// the call it reads back as the last one is its own.
+static REF_HOOK_CALLS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn own_the_reference_hook() -> std::sync::MutexGuard<'static, ()> {
+    REF_HOOK_CALLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The hook suite on the reference: every view the suite builds (stage taps included) gets a legal verdict.
 #[test]
 fn hook_the_suite_passes_over_the_reference() {
+    let _own = own_the_reference_hook();
     suites::hook(ref_hook::PLUGIN.plugin(), b"{}", FakeNeeds::new());
 }
 
@@ -211,6 +223,7 @@ fn view<'a>(signals: &'a [(u32, FactRef<'a>)], candidates: &'a [CandidateIn<'a>]
 /// three decision points, and each of the three stages reaches it as its own number at POINT_NOTIFY.
 #[test]
 fn hook_the_three_stages_cross_as_themselves_and_no_fact_is_declared() {
+    let _own = own_the_reference_hook();
     let h = Harness::admit(ref_hook::PLUGIN.plugin(), FakeNeeds::new())
         .expect("the reference is admitted");
     let port = h.open_hook("hook", b"{}").expect("opens");
@@ -248,6 +261,7 @@ fn hook_the_three_stages_cross_as_themselves_and_no_fact_is_declared() {
 /// candidates in the order the view listed them, and the adapter returns that order unchanged.
 #[test]
 fn hook_route_hands_over_the_candidates_in_view_order() {
+    let _own = own_the_reference_hook();
     let h = Harness::admit(ref_hook::PLUGIN.plugin(), FakeNeeds::new())
         .expect("the reference is admitted");
     let port = h.open_hook("hook", b"{}").expect("opens");

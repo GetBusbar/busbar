@@ -764,6 +764,47 @@ fn inbound_table_parses() {
     }
 }
 
+/// The operator's config-class mutation budget, as the table spends it (admin-api.md, "Mutation
+/// rate limits": budgeted per principal in fixed one-minute windows, failed attempts included; the
+/// static admin token is one principal). The v1.5.5 table holds more config-class mutations than
+/// one window admits, so a row past the budget waits for the next window: its answer then judges
+/// the route, never the limiter. The class, the budget and the window are the engine's own.
+#[derive(Default)]
+struct ConfigBudget {
+    window: u64,
+    spent: u32,
+}
+
+impl ConfigBudget {
+    fn spend(&mut self, method: &str, path: &str) {
+        use busbar_kernel::ratelimit::{classify_mutation, MutationClass, MUTATION_RATE_WINDOW_SECS};
+        if matches!(method, "GET" | "HEAD") {
+            return;
+        }
+        let rel = path
+            .strip_prefix(busbar_contract::surface::ADMIN_PREFIX)
+            .unwrap_or(path);
+        if classify_mutation(rel) != MutationClass::Config {
+            return;
+        }
+        let window = busbar_kernel::store::now() / MUTATION_RATE_WINDOW_SECS;
+        if window != self.window {
+            *self = ConfigBudget { window, spent: 0 };
+        }
+        if self.spent >= MutationClass::Config.limit() {
+            let next = (window + 1) * MUTATION_RATE_WINDOW_SECS;
+            while busbar_kernel::store::now() < next {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            *self = ConfigBudget {
+                window: window + 1,
+                spent: 0,
+            };
+        }
+        self.spent += 1;
+    }
+}
+
 /// Two admin error bodies are the same refusal when they differ only in `request_id`.
 fn same_refusal(a: &[u8], b: &[u8]) -> bool {
     fn without_request_id(body: &[u8]) -> String {
