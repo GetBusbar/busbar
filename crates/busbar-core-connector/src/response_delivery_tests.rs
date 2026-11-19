@@ -583,7 +583,11 @@ fn the_ledger_holds_no_answer_byte_and_gives_the_callers_own() {
     let mut ledger = ledger();
     let held: &'static [u8] = b"abcdef";
     let items = [part(0, WIRE_CONTROL, held)];
-    let (checked, calls) = crate::support::allocations_during(|| answer(&mut ledger, &items));
+    // The driver's items as the session hands them (made before the count: the helper's own list
+    // is the test's allocation, not the ledger's).
+    let outs = [items[0].0];
+    let (checked, calls) =
+        crate::support::allocations_during(|| ledger.answer(&outs, |index| items[index].1));
     let checked = checked.unwrap();
     assert_eq!(calls, 0, "placing a run makes nothing");
     assert_eq!(checked.bytes(), 6);
