@@ -59,7 +59,8 @@ impl Node {
     }
 
     /// `planes`: add the data listener's `public_url`, so the routes whose challenge names the plane's public URL
-    /// (mcp) are mounted too, and the MCP plane's `canonical_uri`: the audience a key minted for `/mcp` names.
+    /// (mcp) are mounted too. (The documented `mcp: { canonical_uri }` is refused by this build's `mcp:` reader,
+    /// which reads server definitions there: BUSBAR-9007 "expected struct McpServerDefCfg".)
     fn boot_with_planes(upstream: Option<u16>, operator: bool, planes: bool) -> Self {
         let dir = workdir();
         let (data, admin) = (boot::free_port(), boot::free_port());
@@ -67,7 +68,7 @@ impl Node {
         let settings = format!("{{ sha256: \"{digest}\" }}");
         let sections = if planes {
             format!(
-                "public_url: \"http://127.0.0.1:{data}\"\nmcp:\n  canonical_uri: \"http://127.0.0.1:{data}/mcp\"\n"
+                "public_url: \"http://127.0.0.1:{data}\"\n"
             )
         } else {
             String::new()
