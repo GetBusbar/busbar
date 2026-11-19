@@ -766,7 +766,7 @@ mod tests {
         let reset = t::StreamReset {
             stream: 5,
             code: t::RESET_STALLED,
-            _r: 0,
+            flags: 0,
         };
         round_trip(reset, 16);
         round_trip(t::StreamFlow { stream: 7 }, 8);
