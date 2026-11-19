@@ -1,41 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod auth_axis;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod auth_door;
-
 pub mod boot;
 
 #[deny(unsafe_code)]
@@ -60,60 +25,7 @@ mod off_path;
         clippy::allow_attributes_without_reason
     )
 )]
-pub mod dispatch;
-
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
 pub mod durable;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-#[deny(unsafe_code)]
-pub mod export_axis;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod export_door;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -188,42 +100,12 @@ pub mod highwater;
 #[deny(unsafe_code)]
 mod host;
 pub mod migration_secrets;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-#[deny(unsafe_code)]
-pub mod observe;
 #[deny(unsafe_code)]
 pub mod open_once;
 #[deny(unsafe_code)]
 pub mod registry;
 #[deny(unsafe_code)]
 pub mod release_trust;
-
-#[cfg(test)]
-#[path = "tests/needs_restated.rs"]
-mod needs_restated;
-
-#[cfg(test)]
-#[path = "tests/ordinary_load_negatives.rs"]
-mod ordinary_load_negatives;
-
-#[cfg(test)]
-#[path = "tests/sdk_registration_tests.rs"]
-mod sdk_registration_tests;
 
 #[cfg(test)]
 #[path = "tests/artifact_verifier_parity.rs"]
@@ -292,28 +174,12 @@ pub mod rows;
 
 pub use sign::EgressPolicy;
 
-impl LinkedPlugin {
-    #[cfg(test)]
-    pub fn first_party_door(
-        kind: &str,
-        name: &str,
-        alias: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-    ) -> Self {
-        let mut row = LinkedPlugin::door_of_kind(kind, name, door);
-        row.manifest.alias = alias.into();
-        row
-    }
-}
-
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use registry::{
-    inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry, LinkedEntry,
-    LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
+    inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
+    LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
-#[cfg(any(test, feature = "test-support"))]
-pub use stage::keep_door;
 pub use stage::{install_native_load_guard, sweep_dead_staging, NativeLoadGuard};
 
 pub fn intern_name(name: &str) -> &'static str {
@@ -402,149 +268,8 @@ pub fn list_plugin_files(dir: &std::path::Path) -> Vec<String> {
 mod tests;
 
 #[cfg(test)]
-#[path = "tests/export_conformance_tests.rs"]
-mod export_conformance_tests;
-
-#[cfg(test)]
-#[path = "tests/both_ways.rs"]
-#[deny(unsafe_code)]
-mod both_ways;
-
-#[cfg(test)]
-#[path = "tests/open_dropped_image_tests.rs"]
-#[deny(unsafe_code)]
-mod open_dropped_image_tests;
-
-#[cfg(test)]
-#[path = "tests/auth_verify_conformance_tests.rs"]
-mod auth_verify_conformance_tests;
-
-#[cfg(test)]
-#[path = "../tests/fixtures/dispatch_test_plugin.rs"]
-mod dispatch_test_plugin;
-
-#[cfg(test)]
-#[path = "tests/dispatch_tests.rs"]
-mod dispatch_tests;
-
-#[cfg(test)]
-use neutral_plane as plane_door_plugin;
-
-#[cfg(test)]
-#[path = "tests/dispatch_kind_secret_export_tests.rs"]
-mod dispatch_kind_secret_export_tests;
-
-#[cfg(test)]
-#[path = "tests/dispatch_kind_transport_tests.rs"]
-mod dispatch_kind_transport_tests;
-
-#[cfg(test)]
-#[path = "tests/confined_kind_ops_tests.rs"]
-mod confined_kind_ops_tests;
-
-#[cfg(test)]
-#[path = "tests/dispatch_kind_plane_tests.rs"]
-mod dispatch_kind_plane_tests;
-
-#[cfg(test)]
-#[path = "tests/dispatch_kind_hook_tests.rs"]
-mod dispatch_kind_hook_tests;
-
-#[cfg(test)]
-#[path = "tests/dispatch_kind_auth_tests.rs"]
-mod dispatch_kind_auth_tests;
-
-#[cfg(test)]
-#[path = "tests/door_both_ways.rs"]
-mod door_both_ways;
-
-#[cfg(test)]
-#[path = "tests/transport_door_conformance_tests.rs"]
-mod transport_door_conformance_tests;
-
-#[cfg(test)]
-#[path = "tests/transport_door_tests.rs"]
-mod transport_door_tests;
-
-#[cfg(test)]
-#[path = "../tests/fixtures/hook_door_plugin.rs"]
-pub(crate) mod hook_door_plugin;
-
-#[cfg(test)]
-#[path = "tests/conformance_auth_form_tests.rs"]
-mod conformance_auth_form_tests;
-
-#[cfg(test)]
-#[path = "tests/conformance_auth_unjudged_tests.rs"]
-mod conformance_auth_unjudged_tests;
-
-#[cfg(test)]
-#[path = "tests/conformance_export_unjudged_tests.rs"]
-mod conformance_export_unjudged_tests;
-
-#[cfg(test)]
-#[path = "tests/conformance_ready_after_no_ticket_tests.rs"]
-mod conformance_ready_after_no_ticket_tests;
-
-#[cfg(test)]
-#[path = "tests/neutral_plane.rs"]
-mod neutral_plane;
-
-#[cfg(test)]
-#[path = "tests/neutral_plane_identity_tests.rs"]
-mod neutral_plane_identity_tests;
-
-#[cfg(test)]
 #[path = "tests/ordinary_plane_registry.rs"]
 mod ordinary_plane_registry;
-
-#[cfg(test)]
-#[path = "tests/ordinary_plane_lending.rs"]
-mod ordinary_plane_lending;
-
-#[cfg(test)]
-#[path = "tests/ordinary_suite_dispatch_tests.rs"]
-mod ordinary_suite_dispatch_tests;
-
-#[cfg(test)]
-#[path = "tests/ordinary_auth_short.rs"]
-mod ordinary_auth_short;
-
-#[cfg(test)]
-#[path = "tests/ordinary_suite_hook_ticket_tests.rs"]
-mod ordinary_suite_hook_ticket_tests;
-
-#[cfg(test)]
-#[path = "tests/neutral_export.rs"]
-mod neutral_export;
-
-#[cfg(test)]
-#[path = "tests/ordinary_plane_ack_drive.rs"]
-mod ordinary_plane_ack_drive;
-
-#[cfg(test)]
-#[path = "tests/ordinary_plane_lifecycle.rs"]
-mod ordinary_plane_lifecycle;
-
-#[cfg(test)]
-#[path = "tests/ordinary_plane_sessions_actual.rs"]
-mod ordinary_plane_sessions_actual;
-
-#[cfg(test)]
-#[path = "tests/ordinary_plane_deadline.rs"]
-mod ordinary_plane_deadline;
-
-#[cfg(test)]
-#[path = "tests/ordinary_plane_fault_outputs.rs"]
-mod ordinary_plane_fault_outputs;
-
-#[cfg(test)]
-#[path = "tests/neutral_transport.rs"]
-mod neutral_transport;
-
-#[cfg(test)]
-#[path = "tests/neutral_auth.rs"]
-mod neutral_auth;
 
 /// Process-owned MIN-3 resources.
 pub mod process;

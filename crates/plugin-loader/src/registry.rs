@@ -33,16 +33,12 @@ use std::path::{Path, PathBuf};
 
 pub use busbar_artifact_verifier::supported_abi;
 
-/// ONE ROW of the registry: a plugin it resolves by name or alias, loaded through the one loading
-/// path (`load_linked` / `load_dropped`). A DROPPED-IN row passed phases 1 + 2 — its signed
+/// ONE ROW of the registry: a plugin it resolves by name or alias. A row passed phases 1 + 2: its signed
 /// manifest, the trust verdict, and the exact verified library bytes (what the loader will map,
-/// never re-read from disk). A LINKED row ([`LinkedPlugin`], [`PluginRegistry::link`]) states the
-/// same manifest and carries its door instead of bytes. Both are registered by the one [`PluginRegistry`] admission and loaded
-/// by the one load; nothing downstream reads which door a row came in by.
+/// never re-read from disk).
 #[derive(Clone)]
 pub struct LoadablePlugin {
-    /// The tarball filename (diagnostics only - identity is the manifest). A linked row's is
-    /// [`LINKED_FILE`].
+    /// The tarball filename (diagnostics only - identity is the manifest).
     pub file: String,
     pub manifest: Manifest,
     pub verdict: Verdict,
@@ -53,18 +49,14 @@ pub struct LoadablePlugin {
     /// recomputed from the path, which may have been replaced after discovery.
     pub archive_sha256: Option<String>,
     /// Authenticated keys-document version from this exact image's successful first-party seal.
-    /// Never recovered by parsing an unverified signature, and absent for linked/unverified rows.
+    /// Never recovered by parsing an unverified signature, and absent for unverified rows.
     pub verification: crate::sign::Verification,
-    /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
-    /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
+    /// Whether what this plugin holds is lost on restart. A dropped-in row never states it: the plugins
+    /// directory is where a durable store comes from.
     pub ephemeral: bool,
-    /// A linked row's door; `None` for a dropped-in row, whose image is `lib_bytes`.
-    entry: Option<LinkedEntry>,
-    /// [`LinkedPlugin::keyed_by_alias`]: this row's surfaces print its alias ([`Self::key`]).
-    keyed_by_alias: bool,
     /// Validated Statement schema, or the legacy manifest fallback. Never changes signed bytes.
     pub(crate) settings_schema: Option<String>,
-    /// Parsed at admission/link time; admin discovery never calls the door to read declarations.
+    /// Parsed at admission; admin discovery never calls the door to read declarations.
     configuration_statement: Option<Box<busbar_artifact_metadata::rendering::Read>>,
 }
 
@@ -90,32 +82,12 @@ impl LoadablePlugin {
     }
 
     pub fn key(&self) -> &str {
-        match self.keyed_by_alias {
-            true => &self.manifest.alias,
-            false => &self.manifest.name,
-        }
+        &self.manifest.name
     }
 
+    /// The version this plugin states in its manifest's Statement.
     pub fn plugin_version(&self) -> Result<String, String> {
-        if self.entry.is_none() {
-            return stated_version(&self.manifest);
-        }
-        let name = &self.manifest.name;
-        let statement = match self.door() {
-            Some(door) => crate::dispatch::LinkedRow::of_raw(door)
-                .map(|row| row.statement)
-                .map_err(|e| format!("plugin '{name}': its statement cannot be read: {e}"))?,
-            None => return Err(unversioned(name)),
-        };
-        let rendering = busbar_artifact_metadata::rendering::read(&statement).map_err(|e| {
-            format!(
-                "plugin '{name}': its statement cannot be read: expected {} at statement byte {}",
-                e.what, e.at
-            )
-        })?;
-        Some(rendering.version)
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| unversioned(&self.manifest.name))
+        stated_version(&self.manifest)
     }
 
     pub fn candidate(&self) -> Result<Option<crate::boot::Candidate>, String> {
@@ -132,251 +104,29 @@ impl LoadablePlugin {
             .map_err(named)
     }
 
+    /// The Statement bytes this plugin's manifest carries, when it carries one.
     pub fn statement(&self) -> Option<Vec<u8>> {
-        match self.door() {
-            Some(door) => crate::dispatch::LinkedRow::of_raw(door)
-                .ok()
-                .map(|row| row.statement),
-            None => self.manifest.stated_rendering().ok().flatten(),
-        }
+        self.manifest.stated_rendering().ok().flatten()
     }
 
+    /// What this plugin declares it needs: its manifest's declares section.
     pub fn declarations(&self) -> Result<crate::sign::Declares, String> {
-        use busbar_artifact_metadata::{extensions, rendering};
-
-        let Some(door) = self.door() else {
-            return Ok(self.manifest.declares.clone());
-        };
-        let row = crate::dispatch::LinkedRow::of_raw(door).map_err(|e| e.to_string())?;
-        let stated = rendering::read(&row.statement)
-            .map_err(|e| format!("expected {} at statement byte {}", e.what, e.at))?;
-        match extensions::get(&stated.extensions.bytes, extensions::EXT_DECLARES) {
-            Some(bytes) => crate::sign::Declares::from_declares_json(bytes),
-            None => Ok(self.manifest.declares.clone()),
-        }
+        Ok(self.manifest.declares.clone())
     }
 
-    pub fn door(&self) -> Option<busbar_contract::abi::sdk::door::RawDoorFn> {
-        match self.entry {
-            Some(LinkedEntry::Door(door)) => Some(door),
-            _ => None,
-        }
-    }
-
-    pub fn linked(&self) -> bool {
-        self.entry.is_some()
-    }
-
+    /// Whether this plugin is the release's own: its archive verified under the first-party trust root.
     pub fn first_party(&self) -> bool {
-        self.entry.is_some()
-            || matches!(
-                self.verdict,
-                Verdict::Trusted {
-                    first_party: true,
-                    ..
-                }
-            )
+        matches!(
+            self.verdict,
+            Verdict::Trusted {
+                first_party: true,
+                ..
+            }
+        )
     }
-}
-
-/// Why a loadable row did not open: its Statement did not read, it has no door, the site's
-/// `Bind` failed, or the loader refused it. Each site formats it with its own prefix.
-pub enum RowRefusal {
-    Stated(String),
-    NoDoor,
-    Bind(String),
-    Load(crate::dispatch::LoadError),
-}
-
-/// Open a loadable row: its compiled-in door through `LinkedRow::of_raw`, else its stated
-/// rendering and library bytes (shown as `display`). The door is classified first; `bind` is
-/// called only for a row that has one.
-pub fn open_loadable<K: crate::dispatch::Kind>(
-    row: &LoadablePlugin,
-    display: &str,
-    bind: impl FnOnce() -> Result<crate::dispatch::Bind, String>,
-) -> Result<crate::dispatch::Plugin<K>, RowRefusal> {
-    use crate::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
-    if let Some(door) = row.door() {
-        let linked = LinkedRow::of_raw(door).map_err(RowRefusal::Load)?;
-        let bind = bind().map_err(RowRefusal::Bind)?;
-        return load_linked::<K>(&linked, bind).map_err(RowRefusal::Load);
-    }
-    let stated = row
-        .manifest
-        .stated_rendering()
-        .map_err(RowRefusal::Stated)?
-        .ok_or(RowRefusal::NoDoor)?;
-    let bind = bind().map_err(RowRefusal::Bind)?;
-    load_dropped_bytes::<K>(&row.lib_bytes, display, &stated, bind).map_err(RowRefusal::Load)
 }
 
 pub const JSON_SECRET_REFUSED: &str = "it speaks the 1.5.5 JSON secret contract, which this host does not load — rebuild the plugin against the 1.6.0 SDK";
-
-pub const LINKED_FILE: &str = "(linked)";
-
-const LINKED_KINDS: &[&str] = &[kind::SECRET, kind::AUTH, kind::HOOK, kind::EXPORT];
-
-pub struct LinkedPlugin {
-    pub manifest: Manifest,
-    pub entry: LinkedEntry,
-
-    pub ephemeral: bool,
-
-    keyed_by_alias: bool,
-}
-
-/// A linked plugin's door.
-#[derive(Clone, Copy)]
-pub enum LinkedEntry {
-    /// A compiled-in plugin on its kind's memory ABI: the logic crate's `plugin_door!` door function,
-    /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
-    /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
-    Door(busbar_contract::abi::sdk::door::RawDoorFn),
-}
-
-impl LinkedPlugin {
-    #[must_use]
-    pub fn with_former_names<S: AsRef<str>>(mut self, former: impl IntoIterator<Item = S>) -> Self {
-        for word in former {
-            let word = word.as_ref();
-            if !self.manifest.answers_to(word) {
-                self.manifest.former_names.push(word.to_string());
-            }
-        }
-        self
-    }
-
-    pub fn door(manifest: Manifest, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
-        LinkedPlugin {
-            manifest,
-            entry: LinkedEntry::Door(crate::dispatch::load::raw(door)),
-            ephemeral: false,
-            keyed_by_alias: false,
-        }
-    }
-
-    pub fn of_macro(manifest: Manifest, door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
-        Self::door(manifest, door.door_fn())
-    }
-
-    pub fn of_loaded(manifest: Manifest, door: crate::dispatch::LoadedDoor) -> Self {
-        LinkedPlugin {
-            manifest,
-            entry: LinkedEntry::Door(door.door),
-            ephemeral: false,
-            keyed_by_alias: false,
-        }
-    }
-
-    pub fn auth_door_named(
-        name: &str,
-        alias: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-    ) -> Self {
-        Self::auth_entry(name, alias, crate::dispatch::load::raw(door))
-    }
-
-    fn auth_entry(
-        name: &str,
-        alias: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        let abi = supported_abi(kind::AUTH).unwrap_or_default();
-        Self::built_in(
-            name,
-            &[alias],
-            kind::AUTH,
-            abi,
-            LinkedEntry::Door(door),
-            false,
-        )
-    }
-
-    pub fn door_of_kind(
-        kind: &str,
-        name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-    ) -> Self {
-        let abi = supported_abi(kind).unwrap_or_default();
-        let entry = LinkedEntry::Door(crate::dispatch::load::raw(door));
-        Self::built_in(name, &[], kind, abi, entry, false)
-    }
-
-    pub fn built_in(
-        name: &str,
-        aliases: &[&str],
-        kind: &str,
-        abi_version: u32,
-        entry: LinkedEntry,
-        ephemeral: bool,
-    ) -> Self {
-        let alias = aliases.first().copied().unwrap_or(name);
-        let row = LinkedPlugin {
-            manifest: Manifest {
-                name: name.into(),
-                alias: alias.into(),
-                kind: kind.into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                publisher: crate::sign::FIRST_PARTY_PUBLISHER.into(),
-                abi_version,
-                sha256: String::new(),
-                signature: String::new(),
-                description: String::new(),
-                homepage: String::new(),
-                license: String::new(),
-                needs: Default::default(),
-                settings_schema: None,
-                schema_derived: false,
-                host: None,
-                declares: Default::default(),
-                statement: None,
-                former_names: Vec::new(),
-            },
-            entry,
-            ephemeral,
-            keyed_by_alias: alias != name,
-        };
-        row.with_former_names(aliases.iter().skip(1))
-    }
-}
-
-#[cfg(test)]
-impl LinkedPlugin {
-    pub(crate) fn auth_door(
-        name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-    ) -> Self {
-        Self::auth_door_named(name, name, door)
-    }
-
-    pub(crate) fn door_raw(
-        manifest: Manifest,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        LinkedPlugin {
-            manifest,
-            entry: LinkedEntry::Door(door),
-            ephemeral: false,
-            keyed_by_alias: false,
-        }
-    }
-
-    pub(crate) fn auth_door_raw(
-        name: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        Self::auth_entry(name, name, door)
-    }
-
-    pub(crate) fn auth_door_named_raw(
-        name: &str,
-        alias: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        Self::auth_entry(name, alias, door)
-    }
-}
 
 /// A plugin that failed phase 2 (untrusted, no matching opt-in; or an anti-downgrade reject) and is
 /// SKIPPED: recorded for logging/`--list-plugins`, never a load candidate, never `dlopen`ed.
@@ -434,14 +184,9 @@ impl SkippedPlugin {
 /// nothing outside the validated set can ever be selected.
 #[derive(Clone)]
 pub struct PluginRegistry {
-    /// Every row, in registration order: the linked rows, then the plugins directory's.
+    /// Every row, in the plugins directory's order.
     rows: Vec<LoadablePlugin>,
-    /// How many of `rows` are linked (they lead).
-    linked: usize,
     skipped: Vec<SkippedPlugin>,
-    /// The dropped-in copies of plugins this build links at the same version ([`one_version`]):
-    /// validated, admitted once — the linked row serves — so never a row.
-    copies: Vec<LinkedCopy>,
     /// name -> index into `rows`; alias or former name -> index (aliases equal to the own name are
     /// fine).
     by_name: HashMap<String, usize>,
@@ -454,7 +199,6 @@ impl std::fmt::Debug for PluginRegistry {
             rows.iter().map(|p| p.manifest.name.clone()).collect()
         };
         f.debug_struct("PluginRegistry")
-            .field("linked", &names(self.linked()))
             .field("loadable", &names(self.loadable()))
             .field(
                 "skipped",
@@ -470,15 +214,13 @@ impl std::fmt::Debug for PluginRegistry {
 
 impl PluginRegistry {
     pub fn empty() -> Self {
-        Self::of(Vec::new(), 0, Vec::new())
+        Self::of(Vec::new(), Vec::new())
     }
 
-    fn of(rows: Vec<LoadablePlugin>, linked: usize, skipped: Vec<SkippedPlugin>) -> Self {
+    fn of(rows: Vec<LoadablePlugin>, skipped: Vec<SkippedPlugin>) -> Self {
         let mut registry = PluginRegistry {
             rows: Vec::new(),
-            linked,
             skipped,
-            copies: Vec::new(),
             by_name: HashMap::new(),
             by_alias: HashMap::new(),
         };
@@ -495,103 +237,6 @@ impl PluginRegistry {
             self.by_alias.entry(word.to_string()).or_insert(i);
         }
         self.rows.push(row);
-    }
-
-    pub fn link(self, linked: Vec<LinkedPlugin>) -> Result<Self, String> {
-        let mut rows = Vec::with_capacity(linked.len() + self.rows.len());
-        for LinkedPlugin {
-            manifest,
-            entry,
-            ephemeral,
-            keyed_by_alias,
-        } in linked
-        {
-            crate::sign::validate_identity(&manifest, crate::sign::HOST_IDENTITY)
-                .and_then(|()| crate::sign::validate_abi(&manifest, &supported_abi))
-                .and_then(|()| match LINKED_KINDS.contains(&manifest.kind.as_str()) {
-                    true => Ok(()),
-                    false => Err(format!(
-                        "kind '{}' is not linked through this door",
-                        manifest.kind
-                    )),
-                })
-                .map_err(|e| format!("linked plugin '{}': {e}", manifest.name))?;
-            let LinkedEntry::Door(door) = entry;
-            let mut configuration_statement = None;
-            let settings_schema = match crate::dispatch::LinkedRow::of_raw(door) {
-                Ok(rendered) => {
-                    let stated = busbar_artifact_metadata::rendering::read(&rendered.statement)
-                        .map_err(|e| format!("linked Statement byte {} is not {}", e.at, e.what))?;
-                    let schema = crate::settings_schema::statement_schema(&stated.settings_schema)?
-                        .or_else(|| manifest.settings_schema.clone());
-                    configuration_statement = Some(Box::new(stated));
-                    schema
-                }
-                // Registration has historically allowed an unopened/null linked door; loading it
-                // still refuses. It states no schema, unlike a present malformed Statement.
-                Err(crate::dispatch::LoadError::NullDoor) => manifest.settings_schema.clone(),
-                Err(error) => return Err(format!("linked plugin '{}': {error}", manifest.name)),
-            };
-            rows.push(LoadablePlugin {
-                file: LINKED_FILE.to_string(),
-                verdict: Verdict::Trusted {
-                    publisher: manifest.publisher.clone(),
-                    first_party: false,
-                },
-                manifest,
-                lib_bytes: std::sync::Arc::default(),
-                archive_sha256: None,
-                verification: crate::sign::Verification::default(),
-                ephemeral,
-                entry: Some(entry),
-                keyed_by_alias,
-                settings_schema,
-                configuration_statement,
-            });
-        }
-        let new = rows.len();
-        let n = new + self.linked;
-        rows.extend(self.rows);
-        let copies = cross_claim(&rows, new)?;
-        let mut kept = Vec::with_capacity(rows.len());
-        let mut found = self.copies;
-        for (i, row) in rows.into_iter().enumerate() {
-            match copies.iter().find(|(j, _)| *j == i) {
-                Some((_, version)) => found.push(LinkedCopy {
-                    name: row.manifest.name,
-                    version: version.clone(),
-                    file: row.file,
-                }),
-                None => kept.push(row),
-            }
-        }
-        let mut registry = Self::of(kept, n, self.skipped);
-        registry.copies = found;
-        Ok(registry)
-    }
-
-    pub fn linked_copies(&self) -> &[LinkedCopy] {
-        &self.copies
-    }
-
-    pub fn linked_copy(
-        &self,
-        manifest: &Manifest,
-        file: &str,
-    ) -> Result<Option<LinkedCopy>, String> {
-        let Some(linked) = self
-            .linked()
-            .iter()
-            .find(|p| p.manifest.name == manifest.name)
-        else {
-            return Ok(None);
-        };
-        let version = one_version(linked, file, &stated_version(manifest)?)?;
-        Ok(Some(LinkedCopy {
-            name: manifest.name.clone(),
-            version,
-            file: file.to_string(),
-        }))
     }
 
     pub fn resolve(&self, name_or_alias: &str) -> Option<&LoadablePlugin> {
@@ -612,12 +257,9 @@ impl PluginRegistry {
             .find(|s| s.manifest.answers_to(name_or_alias))
     }
 
+    /// Every admitted row.
     pub fn loadable(&self) -> &[LoadablePlugin] {
-        &self.rows[self.linked..]
-    }
-
-    pub fn linked(&self) -> &[LoadablePlugin] {
-        &self.rows[..self.linked]
+        &self.rows
     }
 
     pub fn skipped(&self) -> &[SkippedPlugin] {
@@ -631,7 +273,7 @@ impl PluginRegistry {
     pub fn dropped_image(&self, kind: &str, name: &str) -> Option<String> {
         self.loadable()
             .iter()
-            .find(|row| !row.linked() && row.manifest.kind == kind && row.is_module(name))
+            .find(|row| row.manifest.kind == kind && row.is_module(name))
             .map(|row| row.archive_sha256.clone().unwrap_or_default())
     }
 
@@ -684,177 +326,6 @@ impl PluginRegistry {
     pub fn secret_refusal(&self, name_or_alias: &str) -> String {
         self.kind_refusal(kind::SECRET, "resolve config secrets", name_or_alias)
     }
-
-    pub fn open_transport_entries(
-        &self,
-        bind: &crate::dispatch::Bind,
-        uses: &crate::boot::Uses,
-        logs: &crate::dispatch::PluginLogConfig,
-    ) -> Result<TransportEntries, String> {
-        use crate::dispatch::load::{load_staged, Staging};
-        let mut entries = TransportEntries::default();
-        for p in self
-            .loadable()
-            .iter()
-            .filter(|p| p.manifest.kind == kind::TRANSPORT)
-        {
-            let name = &p.manifest.name;
-            let Some(stated) = p.manifest.stated_rendering()? else {
-                // A MIN-3 transport image states no Statement and exports no door: the MIN-3 boot admits it and
-                // opens it through `instance::Registry::open_transport` (the root's `min3_boot`), so this path
-                // leaves it alone (W2-SW-TRANSPORT). Anything else that states no Statement is still refused.
-                if is_min3(&p.lib_bytes, busbar_plugin_abi::types::KindCode::Transport) {
-                    continue;
-                }
-                return Err(format!(
-                    "transport plugin '{name}' states no Statement in its signed manifest, so it \
-                     exports no memory-ABI door (`busbar_plugin_door`) this host admits: a \
-                     transport loads only through its door"
-                ));
-            };
-            let selected = crate::boot::Candidate::from_manifest(
-                stated.clone(),
-                &p.manifest,
-                crate::boot::Origin::Dropped {
-                    file: p.file.clone(),
-                    bytes: std::sync::Arc::clone(&p.lib_bytes),
-                },
-            )
-            .map_err(|e| format!("transport plugin '{name}': {e}"))?
-            .serves(uses);
-            if !selected {
-                continue;
-            }
-            let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
-            let sink = logs
-                .sink(
-                    name,
-                    busbar_contract::abi::mechanism::KindCode::Transport,
-                    bind.sink.clone(),
-                )
-                .map_err(|e| format!("transport plugin '{name}': {e}"))?;
-            match load_staged::<crate::dispatch::kinds::transport::Transport>(
-                lib,
-                staged,
-                Some(stated.as_slice()),
-                crate::dispatch::Bind {
-                    instance: std::sync::Arc::from(name.as_str()),
-                    sink: std::sync::Arc::new(sink),
-                    ..bind.clone()
-                },
-            )
-            .map_err(|e| format!("transport plugin '{name}' refused at its door: {e}"))?
-            {
-                Staging::Door(plugin) => entries.doors.push(plugin),
-                Staging::NotADoor => {
-                    return Err(format!(
-                        "transport plugin '{name}' exports no memory-ABI door \
-                         (`busbar_plugin_door`): a transport loads only through its door"
-                    ));
-                }
-            }
-        }
-        Ok(entries)
-    }
-
-    pub fn open_planes(
-        &self,
-        linked: &[busbar_contract::abi::mechanism::door::DoorFn],
-    ) -> Result<crate::boot::PlaneSet, String> {
-        let mut set = crate::boot::PlaneSet::default();
-        for door in linked {
-            set.doors.push(crate::boot::Candidate::linked(*door)?);
-        }
-        let planes = self.loadable().iter();
-        for p in planes.filter(|p| p.manifest.kind == kind::PLANE) {
-            let Some(c) = p.candidate()? else {
-                // A MIN-3 plane image states no Statement and exports no door: the MIN-3 registry admits and opens
-                // it (the root's `min3_boot`), so this axis leaves it alone (W2-SW-PLANE). Anything else that
-                // states no Statement is still refused here.
-                if is_min3(&p.lib_bytes, busbar_plugin_abi::types::KindCode::Plane) {
-                    continue;
-                }
-                return Err(format!(
-                    "plugin '{}': states no Statement: a plane loads only through its memory-ABI \
-                     door (`busbar_plugin_door`)",
-                    p.manifest.name
-                ));
-            };
-            set.doors.push(c);
-        }
-        Ok(set)
-    }
-}
-
-/// Whether `lib` is a MIN-3 image of `kind`: exactly one valid stamp (IF §7.4), naming that kind. Admission
-/// (`admit::admit_bytes`) re-verifies it whole; this only tells a door axis (planes, transports) whose image it is.
-fn is_min3(lib: &[u8], kind: busbar_plugin_abi::types::KindCode) -> bool {
-    crate::scan::stamp(lib).is_ok_and(|stamp| stamp.kind == kind as u32)
-}
-
-fn cross_claim(rows: &[LoadablePlugin], new: usize) -> Result<Vec<(usize, String)>, String> {
-    let mut copies = Vec::new();
-    for (i, a) in rows.iter().enumerate().take(new) {
-        for (j, b) in rows.iter().enumerate().skip(i + 1) {
-            if a.manifest.name == b.manifest.name {
-                if b.linked() {
-                    return Err(format!(
-                        "plugin claim conflict: '{}' is declared by two linked rows ({} and {}); \
-                         a canonical name must resolve to one linked plugin",
-                        a.manifest.name, a.manifest.kind, b.manifest.kind
-                    ));
-                }
-                if !copies.iter().any(|(k, _)| *k == j) {
-                    copies.push((j, one_version(a, &b.file, &b.plugin_version()?)?));
-                }
-                continue;
-            }
-            if let Some(word) = a.manifest.identities().find(|w| b.manifest.answers_to(w)) {
-                return Err(format!(
-                    "plugin claim conflict: '{word}' is claimed by both {} ({}) and {} ({}) - \
-                     a name, alias or former name must resolve to one plugin; remove one",
-                    a.file,
-                    a.key(),
-                    b.file,
-                    b.key()
-                ));
-            }
-        }
-    }
-    Ok(copies)
-}
-
-/// A dropped-in tarball that is a COPY of a plugin this build links, at the same version: one
-/// plugin, arriving by both doors, admitted once (the linked row serves it).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinkedCopy {
-    /// The plugin's canonical name.
-    pub name: String,
-    /// The one version both doors carry ([`LoadablePlugin::plugin_version`]).
-    pub version: String,
-    /// The tarball's file name.
-    pub file: String,
-}
-
-impl LinkedCopy {
-    pub fn line(&self) -> String {
-        both_doors(&self.name, &self.version, &self.file)
-    }
-}
-
-pub fn both_doors(name: &str, version: &str, file: &str) -> String {
-    format!(
-        "plugin '{name}' v{version} is linked and also dropped in ({file}); the linked build serves it"
-    )
-}
-
-pub fn one_version(linked: &LoadablePlugin, file: &str, dropped: &str) -> Result<String, String> {
-    two_versions(
-        &linked.manifest.name,
-        &linked.plugin_version()?,
-        file,
-        dropped,
-    )
 }
 
 pub fn unversioned(name: &str) -> String {
@@ -863,28 +334,11 @@ pub fn unversioned(name: &str) -> String {
     )
 }
 
-pub fn two_versions(name: &str, linked: &str, file: &str, dropped: &str) -> Result<String, String> {
-    match linked == dropped {
-        true => Ok(linked.to_string()),
-        false => Err(format!(
-            "plugin '{name}' arrives by both doors at two versions: linked v{linked}, dropped in \
-             v{dropped} ({file}) - one version per plugin: remove one"
-        )),
-    }
-}
-
 pub fn stated_version(manifest: &Manifest) -> Result<String, String> {
     match manifest.stated() {
         Ok(Some(read)) if !read.version.is_empty() => Ok(read.version),
         _ => Err(unversioned(&manifest.name)),
     }
-}
-
-/// The transports a plugins directory contributes ([`PluginRegistry::open_transport_entries`]).
-#[derive(Default)]
-pub struct TransportEntries {
-    /// Memory-ABI transport doors, bound.
-    pub doors: Vec<crate::dispatch::Plugin<crate::dispatch::kinds::transport::Transport>>,
 }
 
 fn archive_filename(path: &Path) -> Option<Result<&str, String>> {
@@ -1035,8 +489,6 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 archive_sha256: Some(crate::sign::sha256_hex(&bytes)),
                 verification,
                 ephemeral: false,
-                entry: None,
-                keyed_by_alias: false,
                 settings_schema,
                 configuration_statement,
             };
@@ -1219,7 +671,7 @@ pub fn scan_and_validate(dir: &Path, policy: &TrustPolicy) -> Result<PluginRegis
     if !errors.is_empty() {
         return Err(errors);
     }
-    Ok(PluginRegistry::of(loadable, 0, skipped))
+    Ok(PluginRegistry::of(loadable, skipped))
 }
 
 pub struct InventoryEntry {

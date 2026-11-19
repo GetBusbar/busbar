@@ -9,7 +9,7 @@ use std::sync::{Mutex, OnceLock};
 // THE ONE LOAD (LINT-RULES R23). Every dynamic library this process loads is opened here, by
 // `dlopen_on_worker`, and libloading is busbar-plugin-loader's alone (cargo-deny). Signed images
 // arrive through `load_library_from_bytes` under the native load guard; the standalone path loads
-// (`dispatch::load`, `keep_door`) are refused once that guard is installed.
+// are refused once that guard is installed.
 
 /// Open the library at `path` on the permanent plugin thread.
 pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
@@ -191,35 +191,6 @@ pub(crate) fn open_image(
             pin: Some(pin),
         },
     ))
-}
-
-/// The door of the library at `path`, loaded through this module and kept for the life of the
-/// process: for a harness that wraps a dropped-in door itself (`dist/default` `tests/canary`).
-/// Refused once the native load guard is installed, like every standalone path load.
-#[cfg(any(test, feature = "test-support"))]
-pub fn keep_door(
-    path: &std::path::Path,
-) -> Result<busbar_contract::abi::sdk::door::RawDoorFn, String> {
-    allow_standalone_path_load()?;
-    let lib = dlopen_on_worker(path.as_os_str())?;
-    // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism, and `lib` is never unloaded
-    // (forgotten below), so the function pointer stays valid for the process.
-    let door = unsafe {
-        lib.get::<busbar_contract::abi::sdk::door::RawDoorFn>(
-            busbar_contract::abi::mechanism::DOOR_SYMBOL,
-        )
-        .map(|s| *s)
-    };
-    match door {
-        Ok(door) => {
-            std::mem::forget(lib);
-            Ok(door)
-        }
-        Err(e) => {
-            dlclose_on_worker(lib);
-            Err(e.to_string())
-        }
-    }
 }
 
 const STAGING_PREFIX: &str = "busbar-plugins-";
