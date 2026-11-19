@@ -15,6 +15,8 @@ members = [
     "crates/busbar-artifact-metadata",
     "crates/busbar-artifact-verifier",
     "crates/busbar-secure",
+    # The capability mint; only busbar-kernel and busbar-contract may list it (deny.toml).
+    "crates/busbar-seal",
     "crates/busbar-crypto",
     "crates/busbar-kernel",
     "crates/busbar-migrate",

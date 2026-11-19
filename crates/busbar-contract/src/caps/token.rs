@@ -5,31 +5,23 @@
 //! Neither `Clone` nor `Copy`: the loop mints a fresh one per step call and drops it when the call
 //! returns, and it is handed to a unit BY REFERENCE, never by value, so a unit never owns one.
 //!
-//! # How the kernel, and only the kernel, holds a seal (#65)
+//! # Who holds a seal (#65)
 //!
 //! A token's real constructor is private to this crate, which is what makes the compile-fail
-//! fixtures below genuine. Every mint takes a [`KernelSeal`] by reference, and the seal's own
-//! constructor is private to this crate too. The kernel is a DIFFERENT crate, and Rust has no way
-//! to say "this public function may be called by exactly one other crate", so the seal does not
-//! cross by a public constructor. It crosses by a SYMBOL only the kernel defines:
-//! [`KernelSeal::deliver`] builds a seal and hands it to `__busbar_kernel_root`, which
-//! `busbar-kernel` alone defines. The kernel wraps the seal in a type private to the kernel and
-//! hands it back opaque; only kernel code can open it. A caller outside the kernel that calls
-//! `deliver` gets a box it cannot open, and a second crate that defines the symbol to catch the
-//! seal fails to link (the kernel's definition is always linked: the kernel's own minter lives
-//! beside it). A release build has no other way to a seal. The fixture below is data,
-//! `fixtures/no_release_seal.md` (like `lint_rules.txt` beside it): the seal scans count every
-//! spelling of the minter in Rust source outside the kernel as a mint, and this one is the proof
-//! that it does NOT compile:
+//! fixtures below genuine. Every mint takes a [`KernelSeal`] by reference. The seal TYPE is
+//! defined in `busbar-seal` and re-exported here; this crate cannot build one in a release build
+//! and neither can any crate that depends on it. The seal's only constructor is the free function
+//! `busbar_seal::mint_kernel`, which a crate can name only if it lists `busbar-seal` in its own
+//! manifest; a free function does not travel with a re-exported type. Two manifests may list it,
+//! `busbar-kernel` (which mints) and this crate (for the type): the `busbar-seal` row of `deny.toml`
+//! and the `tools/ci-checks` test `only_the_named_crates_may_depend_on_the_seal_and_the_kernel`
+//! hold every manifest to that. `busbar-ports` carries the `compile_fail` proof that a crate
+//! without the dependency cannot mint.
 //!
-#![cfg_attr(
-    not(feature = "test-seal"),
-    doc = include_str!("fixtures/no_release_seal.md")
-)]
-//!
-//! `acquire_for_kernel` survives ONLY for tests (the dev-only `test-seal` feature, one of the four
-//! items that feature's exemption names, which `tests/test_seal_is_dev_only.rs` keeps off every non-dev edge), so the test suites that
-//! mint tokens to show a step's shape keep doing so, and nothing that ships can.
+//! `KernelSeal::acquire_for_kernel` survives ONLY for tests (the dev-only `test-seal` feature,
+//! which `tests/test_seal_is_dev_only.rs` keeps off every non-dev edge, and which `busbar-seal`'s
+//! own `compile_fail` fixture proves absent without it), so the test suites that mint tokens to
+//! show a step's shape keep doing so, and nothing that ships can.
 //!
 //! # The unified vocabulary (#73)
 //!
@@ -79,58 +71,18 @@ use crate::caps::capability::Capability;
 use crate::caps::step::Step;
 use std::marker::PhantomData;
 
-/// The proof that the caller is the kernel.
-pub struct KernelSeal(());
-
-impl KernelSeal {
-    /// A seal for TESTS. **Absent from every release build:** it exists only under the dev-only
-    /// `test-seal` feature, and the kernel's production path never names it (it
-    /// takes its seal through [`KernelSeal::deliver`] and the kernel's own symbol, #65).
-    ///
-    /// The seal TRAIT the kernel-built views take, [`KernelSeal`](crate::plugin::KernelSeal), is
-    /// SEALED, and it has exactly three implementors, all at the foot of this file: a real
-    /// [`Pass`], a real [`Grant`], and `plugin::TestKernelSeal`. The third exists only in this
-    /// crate's own unit tests and when the dev-only `test-seal` feature is on — the contract's one named dev-only exemption (#65, item
-    /// 112), declared in the plugin module so a plane's own harness can name it, and absent from
-    /// every release build because no non-dev dependency edge enables the feature. So in a release
-    /// build the only way to obtain a `&dyn KernelSeal` is to hold a real `Pass` or `Grant`, the
-    /// only way to mint one of those is a seal, and the only seal a release build has is the one
-    /// the kernel opens out of its own symbol.
-    #[doc(hidden)]
-    #[cfg(feature = "test-seal")]
-    pub fn acquire_for_kernel() -> Self {
-        KernelSeal(())
-    }
-
-    /// Hand a seal to the kernel, and to nothing else.
-    ///
-    /// The seal goes to `__busbar_kernel_root`, a symbol only `busbar-kernel` defines. The kernel
-    /// wraps it in a type private to the kernel and hands it back boxed as `dyn Any`: the kernel
-    /// downcasts it to that type and takes the seal out; any other caller holds a box it cannot
-    /// open (it cannot name the type to downcast to). A crate that defined the symbol itself to
-    /// catch the seal would be a second definition of a symbol the kernel always links: a link
-    /// error, never a quiet interception.
-    ///
-    /// `#[inline]` on purpose: the call is instantiated only in the crate that calls it, so an
-    /// image with no kernel in it (a dropped plugin, this crate's own tests) never references the
-    /// symbol.
-    ///
-    /// The symbol is declared, and the one `unsafe` call made, in [`crate::abi`]: the contract's
-    /// unsafe lives in that module and nowhere else (the unsafe policy in `lib.rs`), so this
-    /// module stays `forbid(unsafe_code)`.
-    #[doc(hidden)]
-    #[inline]
-    #[must_use]
-    pub fn deliver() -> Box<dyn std::any::Any + Send + Sync> {
-        crate::abi::kernel_root(KernelSeal(()))
-    }
-}
-
-impl std::fmt::Debug for KernelSeal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("KernelSeal")
-    }
-}
+/// The proof that the caller is the kernel: defined in `busbar-seal`, whose free `mint_kernel` is
+/// its only constructor (see the module header for who can name that).
+///
+/// The seal TRAIT the kernel-built views take, [`KernelSeal`](crate::plugin::KernelSeal), is
+/// SEALED, and it has exactly three implementors, all at the foot of this file: a real [`Pass`], a
+/// real [`Grant`], and `plugin::TestKernelSeal`. The third exists only in this crate's own unit
+/// tests and when the dev-only `test-seal` feature is on, declared in the plugin module so a
+/// plane's own harness can name it, and absent from every release build because no non-dev
+/// dependency edge enables the feature. So in a release build the only way to obtain a
+/// `&dyn KernelSeal` is to hold a real `Pass` or `Grant`, the only way to mint one of those is a
+/// seal, and the only way to a seal is `busbar_seal::mint_kernel`.
+pub use busbar_seal::KernelSeal;
 
 /// The per-request generation a capability proof is bound to (#74).
 ///

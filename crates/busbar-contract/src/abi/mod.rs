@@ -190,33 +190,6 @@ pub mod versions;
 
 pub use crate::read_sized_field;
 
-extern "Rust" {
-    fn __busbar_kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync>;
-    fn __busbar_persistence_root(
-        seal: crate::caps::SlotSeal,
-    ) -> Box<dyn std::any::Any + Send + Sync>;
-}
-
-/// Hand `seal` to the kernel's root symbol; [`crate::caps::KernelSeal::deliver`] is the only
-#[inline]
-pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync> {
-    // SAFETY: `__busbar_kernel_root` is defined exactly once, by `busbar-kernel`
-    // (`crates/busbar-kernel/src/seal.rs`), with this exact signature, and both crates are built
-    // together by one compiler in one workspace, so the Rust ABI of the declaration and the
-    // definition agree. The definition takes the seal by value and returns an owned box; it
-    // touches no other state.
-    unsafe { __busbar_kernel_root(seal) }
-}
-
-#[inline]
-pub(crate) fn persistence_root(
-    seal: crate::caps::SlotSeal,
-) -> Box<dyn std::any::Any + Send + Sync> {
-    // SAFETY: busbar-kernel::persistence defines this Rust-ABI symbol exactly once with
-    // this signature and a private return holder, just like the kernel root above.
-    unsafe { __busbar_persistence_root(seal) }
-}
-
 /// The magic value every plugin-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the
 pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
 

@@ -7,7 +7,10 @@
 //! Every port is dyn-compatible and boxes **once** per async call (the adapter's `async` body, which contains
 //! the proxy's unboxed step loop). Sync port methods never box. Header lists cross as `&[abi::Pair<'_>]`, which
 //! core builds once per request from its `HeaderMap` and shares between auth, plane and hooks (no per-port copy).
-
+//!
+//! # Who can mint
+//!
+#![doc = include_str!("cannot_mint.md")]
 #![forbid(unsafe_code)]
 #![doc(test(attr(forbid(unsafe_code))))]
 

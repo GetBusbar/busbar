@@ -18,6 +18,9 @@ foldhash = { workspace = true }
 backon = { workspace = true }
 # `schema`: the binder compiles each secret instance's D_REF_SCHEMA once (IF §12.7, plugin_config).
 busbar-contract = { path = "../busbar-contract", features = ["schema"] }
+# The capability mint (`seal`, `persistence::slot_seal`). Only this crate and busbar-contract may list it
+# (deny.toml, tools/ci-checks).
+busbar-seal = { path = "../busbar-seal" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
