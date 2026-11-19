@@ -690,6 +690,16 @@ fn list_plugins_command() -> i32 {
         dir.display(),
         plugins_cfg.enabled
     );
+    // Which image carries each outbound carrier: two builds may answer differently, so it is printed.
+    match crate::root::min3_framers::listing() {
+        Ok(lines) => {
+            println!("outbound carriers:");
+            for line in lines {
+                println!("{line}");
+            }
+        }
+        Err(e) => println!("outbound carriers: {e}"),
+    }
     let rows = crate::root::loader::inventory_tarballs(&dir, &policy);
     if rows.is_empty() {
         println!("no plugin tarballs found");

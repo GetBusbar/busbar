@@ -65,6 +65,8 @@ pub(crate) fn prepare(
             .map_err(|error| GrammarRefusal(error.to_string()))?;
     }
     let images = builder.finish();
+    // The build's carrier assignment, against these images' described facts (nothing is opened here).
+    crate::root::min3_framers::validate(&images).map_err(GrammarRefusal)?;
     crate::root::settings_public::install_native(&images).map_err(GrammarRefusal)?;
     let grammar = crate::root::secret_grammar::of_images(
         &images,

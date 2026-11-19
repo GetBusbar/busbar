@@ -337,12 +337,11 @@ auth-sigv4 = "min3-images"
 auth-oauth = "min3-images"
 auth-webhook-signature = "auths"
 transport-tcp = "transport transport-door"
-# `connector-door`: the framer's door is opened on the root's one Connector, so an outbound need on
-# its schemes is served compiled-in (the streaming door's ws needs bind on the ws row). Every
-# transport row is a door row (`transport-door`): the seal folds it from its door's Statement, and no
-# transport names another (the carrier is the connector's choice from the target's scheme).
-transport-http = "transport transport-door connector-door"
-transport-ws = "transport transport-door connector-door"
+# Every transport row is a door row (`transport-door`): the seal folds it from its door's Statement,
+# every door is opened on the root's one Connector, and no transport names another (on this old path
+# the carrier is the connector's choice from the target's scheme).
+transport-http = "transport transport-door"
+transport-ws = "transport transport-door"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 transport-webrtc = "transport transport-door"
@@ -433,6 +432,20 @@ auth-webhook-signature = "busbar-auth-webhook-signature"
 # no auth module (`root::auth_bindings::operator_words`; BUSBAR-1.6.0.md l.108-113).
 [package.metadata.busbar.operator-auth]
 row = "auth-admin-tokens"
+
+# THE OUTBOUND CARRIERS (dial decision v2, sections 2.2 to 2.5): `[package.metadata.busbar.carriers]`, one
+# key per carrier (`http`, `grpc`, `websocket`, `rtc`), each naming the linked row whose MIN-3 image
+# carries that dial, stated here in packaging so the root's source names no transport:
+#   [package.metadata.busbar.carriers]
+#   http = "<row key>"
+# The generator (src/linked_gen.rs `carrier_rows`) refuses an unknown key, a key stated twice, a value
+# that is not a linked row on `min3-images`, and one row under two keys (one image frames one carrier);
+# boot and every config read refuse an assigned image that is not an admitted transport with the
+# carrier's role. No transport row of this distribution is a MIN-3 image yet (each is a door row
+# above), so the table is not stated and no carrier is assigned: `busbar --list-plugins` and the boot
+# line print `none` for all four. Each key arrives with its row's move to `min3-images` (http with
+# deletion step E3, grpc E8, websocket E9b, rtc E10). The FIPS build's exclude script must drop an
+# excluded row's key with its row (its post-check refuses any remaining mention of the package).
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
