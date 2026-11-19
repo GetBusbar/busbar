@@ -319,6 +319,36 @@ pub(crate) fn exact_debt_from_signed(delta: &UsageDelta) -> Result<ExactUsageDel
     })
 }
 
+/// `exact_debt`: a signed delta handed over as exact flush debt (a refund parked in a rolled
+/// window). The same checks in the same order and the same error as `exact_debt_from_signed`;
+/// each model and unit name moves into the debt, none is copied.
+pub(crate) fn exact_debt_from_signed_owned(
+    delta: UsageDelta,
+) -> Result<ExactUsageDelta, CountError> {
+    Ok(ExactUsageDelta {
+        requests: i128::from(delta.requests),
+        billable_requests: i128::from(delta.billable_requests),
+        models: delta
+            .models
+            .into_iter()
+            .map(|model| {
+                let scale = model.scale;
+                Ok(ExactModelDelta {
+                    model: model.model,
+                    scale: COUNT_SCALE,
+                    usage_units: model
+                        .usage_units
+                        .into_iter()
+                        .map(|(unit, count)| {
+                            Count::from_stored(count, scale).map(|n| (unit, n.micros()))
+                        })
+                        .collect::<Result<_, _>>()?,
+                })
+            })
+            .collect::<Result<_, CountError>>()?,
+    })
+}
+
 /// `exact_debt`: exact flush debt as the signed wire delta a flush chunk sends, when it fits.
 /// The debt is handed over: each model and unit name moves into the chunk's own rows.
 pub(crate) fn exact_debt_signed(debt: ExactUsageDelta) -> Option<UsageDelta> {

@@ -22,12 +22,6 @@ pub(crate) fn mod_binding_marker(prefix: &str, id: &str, generation: &str) -> St
     format!("{prefix}{id}:{generation}")
 }
 
-/// `mod`: a synthesized principal key's marker (`synthesize_principal_key`, the embedder entry
-/// point; the served path synthesizes bound keys).
-pub(crate) fn mod_principal_marker(prefix: &str, id: &str) -> String {
-    format!("{prefix}{id}")
-}
-
 /// `mod`: a ledger row's stored name, rendered once per durable row write, read or correction.
 pub(crate) fn mod_era_text(name: &dyn std::fmt::Display) -> String {
     name.to_string()

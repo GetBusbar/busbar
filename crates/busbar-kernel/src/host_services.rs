@@ -1787,6 +1787,7 @@ impl KernelServices {
         self
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_demotions(
         mut self,
@@ -1795,7 +1796,7 @@ impl KernelServices {
     ) -> Self {
         self.demotions = Some(Demotions {
             record: demotions,
-            default_instance: Some(crate::off_path::host_services::intern(default_instance)),
+            default_instance: Some(Arc::from(default_instance)),
         });
         self
     }

@@ -4,7 +4,7 @@
 //! The session task core over the plane port (IF §8.6, §11.3, PLANE-DRIVER.md slice 2). One [`Task`] drives one
 //! plane session through `request`, `piece`, `rewrite` and `end`; every answer is decoded once into an [`Answer`]
 //! whose client side is an ordered list of [`ToClient`] items, applied to the client through the existing
-//! [`CallerEnd`] seam ([`deliver`]).
+//! [`ClientSink`] ([`hand_out`]).
 //!
 //! The once rules live in [`Once`], the one place that knows whether this session already forwarded or began its
 //! client response: FORWARD (with its wants and EXPECTs) is accepted in the `request` answer or in a
@@ -22,8 +22,7 @@ use std::sync::Arc;
 
 use busbar_plugin_abi::plane::{
     UsageRec, ATT_DECLINE, ATT_OK, ATT_RELAY, ATT_RETRY, AUDIT_APPLIED, AUDIT_DEGRADED,
-    AUDIT_REJECTED, FROM_CORE, FROM_UPSTREAM, JUDGE_REFUSE_PRIVATE, JUDGE_RESOLVE, MSG_FIN,
-    MSG_TEXT,
+    AUDIT_REJECTED, FROM_CORE, FROM_UPSTREAM, JUDGE_REFUSE_PRIVATE, JUDGE_RESOLVE,
 };
 use busbar_ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
 use busbar_ports::{FactRef, FactVal, PortError};
@@ -32,7 +31,7 @@ use super::port_channels::Channels;
 use super::port_intents::{Detach, Intent, Lent};
 use super::port_money::AuditRow;
 use super::usage::{SessionUsage, UsageInvalid};
-use super::{CallerEnd, HeadFields};
+use super::HeadFields;
 
 #[path = "port_prepared.rs"]
 mod prepared;
@@ -1951,31 +1950,6 @@ pub fn render<K: Calls + ?Sized>(
         return Err(SessionError::NotDriven);
     }
     Ok(answer.client)
-}
-
-/// Applies `items` to the client. False when the client stopped taking bytes.
-pub async fn deliver<C: CallerEnd>(caller: &C, items: Vec<ToClient>) -> bool {
-    for item in items {
-        match item {
-            ToClient::Head { status, fields } => caller.head(u32::from(status), fields),
-            ToClient::Body(bytes) => {
-                if !caller.write_piece(&bytes, false, false).await {
-                    return false;
-                }
-            }
-            ToClient::Msg { flags, bytes } => {
-                if !caller
-                    .write_piece(&bytes, flags & MSG_TEXT != 0, flags & MSG_FIN != 0)
-                    .await
-                {
-                    return false;
-                }
-            }
-            ToClient::Trailers(fields) => caller.trailers(fields),
-            ToClient::End => {}
-        }
-    }
-    true
 }
 
 #[cfg(test)]
