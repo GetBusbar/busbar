@@ -123,7 +123,12 @@ where
         "rate_card": card.lanes,
         "per_request_fee": card.per_request_fee,
     });
-    let deploy = config::deploy_from_deserializer(&document, &root::boot::axis_test_grammar())
+    // The document is read under the grammar of the very plugin policy the Store is admitted
+    // under, so a `{file: …}` reference names the same admitted secret module at open.
+    let plugins = root::test_plugins::trusted_config(&directory);
+    let grammar = root::min3_boot::fixture::grammar(&plugins)
+        .expect("the fixture's admitted images supply its grammar");
+    let deploy = config::deploy_from_deserializer(&document, &grammar)
         .expect("the fixture deployment parses");
     // RootCfg is not Clone (3e5b860ca5): each owner takes its own resolution of the one document.
     let resolve = || {
@@ -140,7 +145,6 @@ where
          instance: it must not silently omit one"
     );
 
-    let plugins = root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (admitted, serving) = root::min3_boot::fixture::open(&cfg, &plugins, rules)
