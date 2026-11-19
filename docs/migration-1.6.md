@@ -557,6 +557,12 @@ address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:808
   There is no opt-out and the boot warns. The digest is never logged; the audit label is
   `sha256[<index>]` plus the generation. Rotate the token through the admin API, not by editing
   the file. Keep the plaintext token wherever your clients read it from: Busbar no longer holds it.
+- **A reload no longer changes the admin credential.** In 1.5.5 a reload or apply that changed
+  the admin token (its `token:` reference, or the secret behind it) took effect at once. In 1.6.0
+  the operator credential is bound at process start: a reload whose operator credential differs
+  from the running one, removes it, or adds one where the process started with none is refused
+  as a whole and the running credential keeps serving. Edit `config.yaml` and restart to change
+  it.
 - **`keys` is still core's.** Virtual keys are minted only by `POST /api/v1/admin/keys` for a
   principal holding `full` admin scope. No authentication plugin mints keys.
 - **Operator plugins are first-party only.** `plugins.trust.operator` is reserved; a
