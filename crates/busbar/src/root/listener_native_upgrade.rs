@@ -31,11 +31,12 @@
 //! caller is verified as before and then refused 501, clearly, before any 101.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use busbar_kernel::auth::admission_table::Refusal;
 use busbar_kernel::auth::native_upgrade::UpgradeRefused;
-use busbar_kernel::inbound::native::{CompletingPhysicalRequest, RouteTarget, StreamOwner};
+use busbar_kernel::inbound::native::{
+    CompletingPhysicalRequest, RequestBinding, RouteTarget, StreamOwner,
+};
 
 use super::data::{DataAuthority, DataPrepareError, DataResponse};
 use super::handover::ADOPTED_STREAM;
@@ -88,15 +89,31 @@ pub(super) fn judge(asks: bool, websocket: Option<&ServedTransport>, stream: u64
     }
 }
 
-/// The session ceiling the route's plane states to core, in seconds; `0` = it states none.
+/// The session ceiling the route's plane states to core (its seat's D_SESSION_CEILING_S), in
+/// seconds; `0` = it states none, or the request names no plane seat.
 ///
 /// OWNER DECISION: an upgraded session's time limit is its PLANE's stated ceiling ("planes
 /// control their timeout as they know the data they deal with"), set in the plane plugin from
-/// its protocol's specification (and optionally overridden by the plane's own setting). The
-/// engine borrows no number for it: not `limits.upstream_request_timeout_secs`, not a default.
-/// The plane ABI does not yet carry a stated ceiling to core (ENGINE-OPEN-3: a describe tag, the
-/// loader's decode, the seat's field), so on this line every plane states none.
-const PLANE_CEILING_SECS: u64 = 0;
+/// its protocol's specification or its own documented default. The engine borrows no number for
+/// it: not `limits.upstream_request_timeout_secs`, not a default.
+fn plane_ceiling_secs(binding: &RequestBinding) -> u64 {
+    let RouteTarget::Plane(target) = binding.route().target() else {
+        return 0;
+    };
+    binding
+        .prepared()
+        .data()
+        .and_then(|data| data.downcast::<crate::root::serve::DataRoutes>().ok())
+        .and_then(|routes| {
+            routes
+                .served
+                .ports
+                .iter()
+                .find(|seat| seat.driver.caller().same_incarnation(target.caller()))
+                .map(|seat| seat.session_ceiling_secs())
+        })
+        .unwrap_or(0)
+}
 
 /// WHEN AN UPGRADED SESSION ENDS AT THE LATEST: the plane's stated ceiling (`plane_secs`, `0` =
 /// none) after its request was taken up (`now`). The limit runs from the request, not from the
@@ -108,10 +125,8 @@ pub(super) fn session_ends(
     now: tokio::time::Instant,
     plane_secs: u64,
 ) -> Option<tokio::time::Instant> {
-    if plane_secs == 0 {
-        return None;
-    }
-    now.checked_add(Duration::from_secs(plane_secs))
+    busbar_kernel::plane_driver::port::session_ends(now.into_std(), plane_secs)
+        .map(tokio::time::Instant::from_std)
 }
 
 /// Serves one upgrade request. The answer and its authority are the data path's own: a refusal
@@ -136,7 +151,7 @@ pub(super) async fn prepare(
     }
     // The session's limit, where its plane states one, is stated before anything of the request
     // is prepared: the caller's side is made with it.
-    if let Some(until) = session_ends(tokio::time::Instant::now(), PLANE_CEILING_SECS) {
+    if let Some(until) = session_ends(tokio::time::Instant::now(), plane_ceiling_secs(&binding)) {
         super::handover::bound(&stream, until);
     }
     let websocket = slot.websocket().cloned();

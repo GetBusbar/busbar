@@ -359,8 +359,8 @@ row = "auth-admin-tokens"
 # that is not a linked row on `min3-images`, and one row under two keys (one image frames one carrier);
 # boot and every config read refuse an assigned image that is not an admitted transport with the
 # carrier's role. http (deletion step E3) and rtc (E10) are assigned with their rows' move to
-# `min3-images`; grpc (E8) and websocket (E9b) are not yet, so `busbar --list-plugins` and the boot line
-# print `none` for them.
+# `min3-images`; grpc and websocket are separate plugins this distribution does not link (owner ruling,
+# PLAN-MECHANICS section 2), so they have no row here and `busbar --list-plugins` and the boot line print `none`.
 [package.metadata.busbar.carriers]
 http = "busbar-transport-http"
 rtc = "busbar-transport-webrtc"
@@ -380,9 +380,10 @@ node = "plane_node"
 # plane is a MIN-3 image since b545082061 and its crate exports no `door`, so the list is gone and
 # `$OUT_DIR/test_linked.rs` folds no plane (as `LINKED.plane_doors` is empty in the product). The
 # tests that read a test-linked plane wait for their port to the linked MIN-3 plane images.
-# Source-owned root fixtures from any plugin kind, compiled only in root test builds.
+# Source-owned root fixtures from any plugin kind, compiled only in root test builds. Each owner
+# declares the file under its own `[package.metadata.busbar.test-sources] root`. busbar-hook-ranking
+# declares none since its MIN-3 port (its root fixture moved to the SDK test host suites), so it has no row.
 [package.metadata.busbar.root-test-sources]
-ranking_hook = "busbar-hook-ranking"
 source_file = "busbar-secret-file"
 
 [package.metadata.busbar.test-source-contexts]
