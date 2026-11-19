@@ -116,6 +116,10 @@ enum It {
     },
     TrustState,
     TrustVerify,
+    /// A TRUST record whose `op` is not one the plane vocabulary admits (a decision a plane tries to relay).
+    TrustOp {
+        op: u32,
+    },
     Rendezvous {
         exchange: u32,
         flags: u32,
@@ -211,6 +215,12 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
                 op: TRUST_STATE,
                 party: "github",
                 item: None,
+            }),
+            It::TrustOp { op } => sink(PlaneOut::Trust {
+                check: *op,
+                op: *op,
+                party: "github",
+                item: Some(("tool", Some([4; 32]))),
             }),
             It::Rendezvous {
                 exchange,
