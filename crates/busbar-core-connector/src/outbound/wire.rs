@@ -187,6 +187,10 @@ impl Wire {
         out: &mut SecureVec,
         flushed: u64,
     ) -> Result<Outcome, Fault> {
+        // Bytes that no answer carries were queued since the last one (a TLS handshake, the CONNECT, a
+        // close): the ledger's queue position is brought to where the queue stands before this answer's
+        // parts are placed, so a stream's first byte is never placed before bytes that are not its own.
+        self.ledger.queued(flushed + out.len() as u64);
         let mut outcome = Outcome::default();
         let mut run: smallvec::SmallVec<[Run; 16]> = smallvec::SmallVec::new();
         for (index, item) in items.iter().enumerate() {
@@ -863,13 +867,60 @@ mod tests {
     }
 
     #[test]
-    fn releasing_the_head_wipes_its_values() {
+    fn releasing_the_head_wipes_its_values_and_it_is_not_sent_again() {
         let mut conn = Conn::new();
         conn.answer(&begin(false)).unwrap();
         conn.wire.offer(sealed_head());
         conn.answer(&head(1, 24)).unwrap();
         conn.wire.release_head(1);
         let (slots, _) = conn.wire.over(1, true);
-        assert!(slots.unwrap().is_empty(), "nothing is left to send again");
+        assert!(slots.is_none(), "nothing is left to send again");
+    }
+
+    #[test]
+    fn bytes_no_answer_carries_are_not_counted_as_a_requests_own() {
+        let mut conn = Conn::new();
+        conn.answer(&begin(false)).unwrap();
+        // A handshake's bytes were queued and taken before the first request.
+        conn.out.extend(&[0_u8; 300]).unwrap();
+        conn.socket_takes(300);
+        conn.wire.offer(Slots::default());
+        conn.answer(&head(1, 0)).unwrap();
+        assert_eq!(
+            conn.wire.state_of(1),
+            State::None,
+            "the socket took the handshake, nothing of the request"
+        );
+        conn.socket_takes(1);
+        assert_eq!(conn.wire.state_of(1), State::Part);
+    }
+
+    #[test]
+    fn a_failed_connection_keeps_the_sealed_values_for_the_request_that_is_sent_again() {
+        let mut conn = Conn::new();
+        conn.answer(&begin(false)).unwrap();
+        conn.wire.offer(sealed_head());
+        conn.answer(&head(1, 24)).unwrap();
+        conn.wire.failed(Reason::CallerGone);
+        assert_eq!(conn.wire.state_of(1), State::None);
+        let (slots, _) = conn.wire.over(1, true);
+        let mut fresh = Conn::new();
+        fresh.answer(&begin(false)).unwrap();
+        fresh.wire.offer(slots.expect("kept through the failure"));
+        fresh.answer(&head(1, 24)).unwrap();
+        assert_eq!(count(fresh.out.as_slice(), KEY), 1);
+    }
+
+    #[test]
+    fn a_head_whose_values_were_wiped_is_never_offered_again() {
+        let mut conn = Conn::new();
+        conn.answer(&begin(false)).unwrap();
+        conn.wire.offer(sealed_head());
+        conn.answer(&head(1, 24)).unwrap();
+        conn.wire.faulted();
+        assert!(
+            conn.wire.over(1, true).0.is_none(),
+            "it would go without its credential"
+        );
     }
 }

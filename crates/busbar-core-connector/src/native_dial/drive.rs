@@ -43,8 +43,12 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use busbar_contract::secure::SecureVec;
+use busbar_plugin_abi::records::tag::{H_SEALED_PAIR, H_SEALED_QUERY};
 use busbar_plugin_abi::records::{record_size, Fixed, Writer};
+// The head vocabulary's sealed record (contract: `vocab::head1`): the name's length and the value's
+// length, then the name. No value bytes, ever.
 use busbar_plugin_abi::transport as wire;
+use busbar_plugin_abi::vocab::head1::SealedPairRec;
 
 use super::{sleep_for, stage, NativeConnection, NativeFailure, NativeHead, Phase};
 use crate::framed_stream::session::Act;
@@ -55,21 +59,6 @@ use crate::outbound::redial::Ended;
 use crate::outbound::seal::{Place, Slots};
 use crate::outbound::tunnel::{ProxyFailure, Step, CAUSE_PROXY};
 use crate::outbound::wire::{Fault, Outcome};
-
-/// The head vocabulary's sealed records (the contract's `vocab::H_SEALED_PAIR` and
-/// `vocab::H_SEALED_QUERY`, with `vocab::SealedPairRec`): replaced by the contract's own names
-/// when the contract crate is the dependency.
-const H_SEALED_PAIR: u16 = 0x0027;
-const H_SEALED_QUERY: u16 = 0x0028;
-
-/// The fixed part of a sealed head record: the name's length and the value's length. Its tail is
-/// the name. No value bytes, ever.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct SealedPairRec {
-    name_len: u32,
-    len: u32,
-}
 
 /// A DIAL THROUGH THE OPERATOR'S PROXY: the new `NativeDial::tunnel` (`None` = straight to the
 /// target). `native_dial.rs` re-exports it (`pub use drive::Tunnel;`). The socket connects to the
