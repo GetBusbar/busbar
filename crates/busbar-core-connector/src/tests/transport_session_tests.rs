@@ -1580,7 +1580,7 @@ async fn an_abandoned_registration_stops_its_answer_and_holds_nothing() {
         inbound
     };
     let (outcome, _inbound) = tokio::time::timeout(Duration::from_secs(1), async {
-        tokio::join!(drive(s.conn, Vec::new(), server, r.wiring), body)
+        tokio::join!(Box::pin(drive(s.conn, Vec::new(), server, r.wiring)), body)
     })
     .await
     .expect("an answer nobody will feed must not keep the connection");
@@ -1624,7 +1624,7 @@ async fn a_registration_for_a_stream_the_transport_never_announced_is_refused() 
         refused
     };
     let (_outcome, refused) = tokio::time::timeout(Duration::from_secs(1), async {
-        tokio::join!(drive(s.conn, Vec::new(), server, r.wiring), body)
+        tokio::join!(Box::pin(drive(s.conn, Vec::new(), server, r.wiring)), body)
     })
     .await
     .expect("refused at once");
@@ -1693,7 +1693,7 @@ async fn an_answer_is_whole_when_its_end_mark_is_out_and_the_engine_holds_the_la
         (peer, inbound, feeds, pieces)
     };
     let (outcome, _kept) = tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::join!(drive(s.conn, Vec::new(), server, r.wiring), body)
+        tokio::join!(Box::pin(drive(s.conn, Vec::new(), server, r.wiring)), body)
     })
     .await
     .expect("an answer makes progress with no release call");
@@ -1769,7 +1769,7 @@ async fn a_breach_of_the_output_model_writes_nothing_charges_the_instance_and_fa
         (written, records, inbound, feeds, pieces)
     };
     let (outcome, (written, records, ..)) = tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::join!(drive(s.conn, Vec::new(), server, r.wiring), body)
+        tokio::join!(Box::pin(drive(s.conn, Vec::new(), server, r.wiring)), body)
     })
     .await
     .expect("a fault ends the session at once");
@@ -1837,7 +1837,7 @@ async fn a_stream_the_engine_reset_that_the_transport_never_ends_closes_the_conn
         )
     };
     let (outcome, (snapshot, record, ..)) = tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::join!(drive(s.conn, Vec::new(), server, r.wiring), body)
+        tokio::join!(Box::pin(drive(s.conn, Vec::new(), server, r.wiring)), body)
     })
     .await
     .expect("bounded by the write timeout");
@@ -2511,7 +2511,7 @@ fn emit_cost(body: &[u8], pieces: usize, rounds: usize) -> EmitCost {
         allocations.push(n);
     }
     let wipes = busbar_contract::secure::wipe_counts().1 - wipes_before;
-    times.sort_unstable();
+    times.sort();
     drop(response);
     EmitCost {
         records: 1 + pieces,
@@ -3049,8 +3049,8 @@ fn the_accept_path_cost() {
     });
     let mut opens: Vec<u64> = eight.iter().map(|cost| cost.open_ns).collect();
     let mut requests: Vec<u64> = eight.iter().map(|cost| cost.request_ns).collect();
-    opens.sort_unstable();
-    requests.sort_unstable();
+    opens.sort();
+    requests.sort();
     println!(
         "ACCEPT-OPEN 8 threads: per-thread medians {opens:?} ns; ACCEPT-REQUEST 8 threads: {requests:?} ns"
     );
@@ -3256,7 +3256,7 @@ struct AcceptCost {
 }
 
 fn median(mut times: Vec<u64>) -> u64 {
-    times.sort_unstable();
+    times.sort();
     times.get(times.len() / 2).copied().unwrap_or(0)
 }
 
@@ -3480,7 +3480,7 @@ async fn a_reset_stream_s_late_body_does_not_close_the_window_of_an_accepted_con
         inbound
     };
     let (_outcome, _inbound) = tokio::time::timeout(Duration::from_secs(30), async {
-        tokio::join!(drive(s.conn, Vec::new(), server, r.wiring), body)
+        tokio::join!(Box::pin(drive(s.conn, Vec::new(), server, r.wiring)), body)
     })
     .await
     .expect("the session ends when its caller goes");

@@ -555,7 +555,12 @@ mod fixed_piece {
             let proxy = Proxy::bind(inst).unwrap();
             let mut initial = Pool::global().acquire(fixture::MAX_OUT);
             let (session, answer) = proxy
-                .request(&mut initial, Mono::NONE, &fixture::plane_req(fixture::ACCEPT_BARE), b"")
+                .request(
+                    &mut initial,
+                    Mono::NONE,
+                    &fixture::plane_req(fixture::ACCEPT_BARE),
+                    b"",
+                )
                 .unwrap();
             assert!(answer.is_ok());
             let mut session = session.unwrap();
@@ -721,7 +726,12 @@ mod fixed_piece {
         let proxy = Proxy::bind(inst).unwrap();
         let mut initial = Pool::global().acquire(fixture::MAX_OUT);
         let (session, answer) = proxy
-            .request(&mut initial, Mono::NONE, &fixture::plane_req(fixture::ACCEPT_BARE), b"")
+            .request(
+                &mut initial,
+                Mono::NONE,
+                &fixture::plane_req(fixture::ACCEPT_BARE),
+                b"",
+            )
             .unwrap();
         assert!(answer.is_ok());
         let adapter = PlaneAdapter::new(

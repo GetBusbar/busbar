@@ -155,7 +155,7 @@ where
     let node = Arc::new(root::plane_node::Node::new());
     node.bind_book(Arc::clone(&book.durability));
     node.bind_response_intents(
-        Arc::clone(&core),
+        &core,
         book.response_intents
             .as_ref()
             .expect("actual response-intent signer")

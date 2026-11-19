@@ -126,7 +126,7 @@ async fn node_refuses_foreign_core_and_mismatched_book_incarnation() {
     let node = crate::root::plane_node::Node::new();
     node.bind_book(Arc::new(std::sync::Mutex::new(fixture.book().await)));
     assert!(node
-        .bind_response_intents(foreign.core, service.clone())
+        .bind_response_intents(&foreign.core, service.clone())
         .is_err());
 
     let mut different_book = fixture.book().await;
@@ -134,7 +134,7 @@ async fn node_refuses_foreign_core_and_mismatched_book_incarnation() {
     let different_node = crate::root::plane_node::Node::new();
     different_node.bind_book(Arc::new(std::sync::Mutex::new(different_book)));
     assert!(different_node
-        .bind_response_intents(fixture.core, service)
+        .bind_response_intents(&fixture.core, service)
         .is_err());
 }
 

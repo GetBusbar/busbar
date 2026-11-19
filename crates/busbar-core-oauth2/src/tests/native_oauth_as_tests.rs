@@ -222,7 +222,10 @@ async fn native_oauth_as_serves_metadata_registration_and_the_token_endpoint() {
 
     let code = approved_code(&plane, &client_id).await;
     let (status, token) = exchange(&plane, &client_id, &code, REDIRECT_URI, Some(VERIFIER)).await;
-    assert_eq!(status, 200, "the code exchanges at the token endpoint: {token}");
+    assert_eq!(
+        status, 200,
+        "the code exchanges at the token endpoint: {token}"
+    );
     let access = token["access_token"]
         .as_str()
         .expect("the token response carries an access token");
@@ -252,7 +255,10 @@ async fn native_oauth_as_admits_a_metadata_document_client_at_the_token_endpoint
     let code = approved_code(&plane, CIMD_CLIENT_ID).await;
     let (status, token) =
         exchange(&plane, CIMD_CLIENT_ID, &code, REDIRECT_URI, Some(VERIFIER)).await;
-    assert_eq!(status, 200, "the metadata document client exchanges its code: {token}");
+    assert_eq!(
+        status, 200,
+        "the metadata document client exchanges its code: {token}"
+    );
     let live = plane
         .server()
         .introspect(token["access_token"].as_str().expect("an access token"))
@@ -282,7 +288,10 @@ async fn native_oauth_as_still_refuses_what_oauth_2_1_refuses() {
     )
     .await;
     assert_eq!(status, 201, "{registered}");
-    let client_id = registered["client_id"].as_str().expect("client_id").to_string();
+    let client_id = registered["client_id"]
+        .as_str()
+        .expect("client_id")
+        .to_string();
 
     // OAuth 2.1 s4.1.3: a code issued with a challenge is never exchanged without its verifier.
     let code = approved_code(&plane, &client_id).await;
@@ -309,7 +318,10 @@ async fn native_oauth_as_still_refuses_what_oauth_2_1_refuses() {
         Some(VERIFIER),
     )
     .await;
-    assert_eq!(status, 400, "a redirect_uri that is not the exact one: {refused}");
+    assert_eq!(
+        status, 400,
+        "a redirect_uri that is not the exact one: {refused}"
+    );
 
     // The registration ceiling: a self-registered client may ask for no scope beyond default_grant.
     let (status, refused) = register(
@@ -324,7 +336,10 @@ async fn native_oauth_as_still_refuses_what_oauth_2_1_refuses() {
         }),
     )
     .await;
-    assert_eq!(status, 400, "a scope over the ceiling is refused: {refused}");
+    assert_eq!(
+        status, 400,
+        "a scope over the ceiling is refused: {refused}"
+    );
 }
 
 struct DocumentHost(json::Value);

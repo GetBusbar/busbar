@@ -1134,7 +1134,7 @@ async fn run(
         .unwrap_or_else(|error| die(format!("native DATA audit custody: {error}")));
     root::plane_node::node()
         .bind_response_intents(
-            store_admission
+            &store_admission
                 .store()
                 .unwrap_or_else(|| die("response intent has no admitted Store")),
             book.response_intents

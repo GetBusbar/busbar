@@ -593,7 +593,7 @@ pub fn resolve_auth(
             );
         }
     }
-    let mut resolve_one =|plane: &str, name: &String| -> AuthChainEntry {
+    let mut resolve_one = |plane: &str, name: &String| -> AuthChainEntry {
         match providers.get(name) {
             Some(def) => {
                 let module = def.module.trim().to_string();
@@ -2141,7 +2141,7 @@ pub fn resolve_with_provider_planes(
         .values()
         .map(|m| m.provider.as_str())
         .collect();
-    reached.sort_unstable();
+    reached.sort();
     reached.dedup();
     for name in reached {
         let Some(provider) = resolved_providers.get(name) else {

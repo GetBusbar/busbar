@@ -126,7 +126,7 @@ impl Shared {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match readers.iter_mut().find(|(id, _)| *id == stream) {
             Some((_, kept)) if kept.will_wake(waker) => {}
-            Some((_, kept)) => *kept = waker.clone(),
+            Some((_, kept)) => kept.clone_from(waker),
             None => readers.push((stream, waker.clone())),
         }
     }

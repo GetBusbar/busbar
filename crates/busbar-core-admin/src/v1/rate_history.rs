@@ -292,7 +292,7 @@ fn in_force(view: &HistoryView<'_>) -> BTreeMap<EntryKey, Vec<RateHistorySpan>> 
         bounds.push(entry.effective_from());
         bounds.extend(entry.effective_until());
     }
-    bounds.sort_unstable();
+    bounds.sort();
     bounds.dedup();
     let mut spans: BTreeMap<EntryKey, Vec<RateHistorySpan>> = BTreeMap::new();
     let mut run: Option<(EntryKey, u64)> = None;

@@ -15,8 +15,8 @@ use busbar_contract::route::{path_matches, METHOD_GET, PATH_PATTERN};
 use busbar_plugin_abi::plane::AUTH_PUBLIC;
 
 use crate::auth::admission_table::{
-    admission_of, decide, mounted, plan, Admission, Authority, BodyRead, Decision, Facts,
-    JudgedAt, Offered, Step, Target, Verified, VerifyBy,
+    admission_of, decide, mounted, plan, Admission, Authority, BodyRead, Decision, Facts, JudgedAt,
+    Offered, Step, Target, Verified, VerifyBy,
 };
 use crate::auth::native_data::NativeDataRoute;
 use crate::auth::reference_plane;
@@ -91,7 +91,10 @@ fn public_metadata_routes_mount_with_no_verifier_and_serve_under_the_public_auth
     // Whatever a caller presents is not read, and it earns nothing: the answer is the public one.
     for presented in [false, true] {
         let mut facts = Facts::arrived(presented, presented);
-        assert_eq!(decide(Target::Route(&record), &facts), Decision::Run(Step::Body));
+        assert_eq!(
+            decide(Target::Route(&record), &facts),
+            Decision::Run(Step::Body)
+        );
         facts.body = Some(BodyRead::Taken);
         for verified in [None, Some(Verified::Identity { shared: false })] {
             facts.verified = verified;
@@ -103,8 +106,14 @@ fn public_metadata_routes_mount_with_no_verifier_and_serve_under_the_public_auth
     }
     // Each pattern serves its own metadata document.
     for (pattern, path) in METADATA {
-        assert!(path_matches(PATH_PATTERN, pattern, path), "{pattern} {path}");
-        assert!(path_matches(PATH_PATTERN, pattern, &format!("{path}/")), "{pattern}");
+        assert!(
+            path_matches(PATH_PATTERN, pattern, path),
+            "{pattern} {path}"
+        );
+        assert!(
+            path_matches(PATH_PATTERN, pattern, &format!("{path}/")),
+            "{pattern}"
+        );
     }
 }
 
@@ -136,11 +145,19 @@ fn public_metadata_route_cannot_reach_a_data_route() {
     per_caller.caller_state = CallerState::Distinct;
     for (what, record, refused) in [
         ("a key beside the public class", keyed, RecordRefused::Who),
-        ("a scope to walk", walked, RecordRefused::OpenRouteCarriesScopeOrMoney),
+        (
+            "a scope to walk",
+            walked,
+            RecordRefused::OpenRouteCarriesScopeOrMoney,
+        ),
         ("money", paid, RecordRefused::OpenRouteCarriesScopeOrMoney),
         ("a credential header", carrier, RecordRefused::CredHeader),
         ("a challenge", challenged, RecordRefused::Challenge),
-        ("per-caller state", per_caller, RecordRefused::DistinctWithoutCaller),
+        (
+            "per-caller state",
+            per_caller,
+            RecordRefused::DistinctWithoutCaller,
+        ),
     ] {
         assert_eq!(record.validate(METHOD_GET, all), Err(refused), "{what}");
     }

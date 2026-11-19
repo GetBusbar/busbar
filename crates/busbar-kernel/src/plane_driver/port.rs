@@ -381,7 +381,7 @@ impl PortDriver {
             .authorization()
             .and_then(|authorization| Some((authorization, authorization.ticket_record()?)))
         else {
-            return self.serve_inner(input, None).await;
+            return Box::pin(self.serve_inner(input, None)).await;
         };
         if !authorization.made_on(self, input.route) {
             return Err(ServeError::Invocation(
@@ -389,7 +389,7 @@ impl PortDriver {
             ));
         }
         let ticket = Admitted::ticket(authorization.identity().clone(), record);
-        self.serve_as(input, None, Some(ticket)).await
+        Box::pin(self.serve_as(input, None, Some(ticket))).await
     }
 
     /// Serves one request of a mounted route: admission (§12.11, the call site of `admit` for HTTP), then the
@@ -399,7 +399,7 @@ impl PortDriver {
     /// # Errors
     /// [`ServeError`]; a refusal is not an error, it is [`Served::Refused`].
     pub async fn serve(&self, input: ServeIn<'_>) -> Result<Served, ServeError> {
-        self.serve_inner(input, None).await
+        Box::pin(self.serve_inner(input, None)).await
     }
 
     /// Consume the actual DATA/physical preparatory owner, retaining its charged original input.
@@ -434,7 +434,7 @@ impl PortDriver {
         input.http.withhold(Arc::clone(data.withheld()));
         input.invocation = Some(data.context().clone());
         input.admission = Some(Arc::clone(data.pending()));
-        let served = self.serve_inner(input, Some(data.clone())).await?;
+        let served = Box::pin(self.serve_inner(input, Some(data.clone()))).await?;
         let decision = match &served {
             Served::Refused(refused) => Some(refused.decision.clone()),
             Served::Ran(_) => None,
@@ -454,7 +454,7 @@ impl PortDriver {
         input: ServeIn<'_>,
         data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
     ) -> Result<Served, ServeError> {
-        self.serve_as(input, data, None).await
+        Box::pin(self.serve_as(input, data, None)).await
     }
 
     /// `ticket`: the admission of a request a core ticket already admitted with no unit
@@ -1322,7 +1322,7 @@ impl UnbilledServe<'_> {
     /// # Errors
     /// [`ServeError`]; a refusal is not an error, it is [`Served::Refused`].
     pub async fn serve(&self, input: ServeIn<'_>) -> Result<Served, ServeError> {
-        self.driver.serve_unbilled(input, self.owner).await
+        Box::pin(self.driver.serve_unbilled(input, self.owner)).await
     }
 }
 

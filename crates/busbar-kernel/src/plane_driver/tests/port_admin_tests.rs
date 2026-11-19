@@ -100,7 +100,7 @@ async fn with_no_plane_installed_no_admin_route_is_answered() {
         request_id: 1,
         now_s: 1,
     };
-    assert!(answer(&[], request).await.is_none());
+    assert!(Box::pin(answer(&[], request)).await.is_none());
 }
 
 /// ci/owed/cut/SECURITY-OWED.tsv `a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_the_actor`,

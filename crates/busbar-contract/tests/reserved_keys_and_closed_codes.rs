@@ -5,8 +5,8 @@
 
 use busbar_contract::transport::registry::facts;
 use busbar_contract::transport::{
-    CloseReason, Decode, Direction, DiscardCode, Encode, Framing, StatusAt,
-    TransportError, Unit0Trigger, WireStatus, WireStatusClass,
+    CloseReason, Decode, Direction, DiscardCode, Encode, Framing, StatusAt, TransportError,
+    Unit0Trigger, WireStatus, WireStatusClass,
 };
 
 /// The six spellings, written out here rather than read off the constants.

@@ -74,7 +74,7 @@ async fn a_native_unit_open_at_exit_is_reported_once_and_an_ended_one_is_not() {
 
     let open = node.native_open_units();
     let mut units: Vec<u64> = open.iter().map(|evidence| evidence.unit.get()).collect();
-    units.sort_unstable();
+    units.sort();
     assert_eq!(
         units,
         [71, 72],
