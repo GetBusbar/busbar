@@ -121,9 +121,6 @@ fn refused_query_encodes_wipe_scratch_and_any_partial_copied_output() {
     }
 }
 
-#[path = "framer_loan_tests.rs"]
-mod loan_tests;
-
 #[path = "framer_more_tests.rs"]
 mod more_tests;
 

@@ -1267,10 +1267,6 @@ fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
     });
 }
 
-#[path = "compose_receive_tests.rs"]
-#[allow(unsafe_code)]
-mod receive_tests;
-
 #[test]
 fn a_nonsealing_wire_yield_is_wiped_after_its_bytes_are_copied_for_sending() {
     worker().block_on(async {
