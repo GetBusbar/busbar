@@ -440,10 +440,12 @@ fn route_chains(
     Ok(chains)
 }
 
-/// The chain entries of `names`, each an opened native auth instance that can verify.
+/// The chain entries of `names`, each an opened native auth instance that can verify. The chain's
+/// built-in members (`anonymous`, `keys`) name no opened instance and are not entries.
 fn chain_points(owners: &SlotOwners, names: &[String]) -> Result<Vec<ChainAuth>, String> {
     names
         .iter()
+        .filter(|name| !busbar_kernel::auth::native_chain::BuiltIn::is(name))
         .map(|name| {
             let instance = owners
                 .auth
