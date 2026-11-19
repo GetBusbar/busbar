@@ -563,7 +563,7 @@ busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webre
 busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "1e4c78245472c22cfcf000a5176362731631b2f0" }
 busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "757ef895a737a130807b5d3af91ceeba2393d973" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "204bce8e9e755aa35127a74fcf8e6a258bac9821" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "794cbd541192798496e5f7b8b8c878c23a6f89d7" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "cdb3f7bbbe7a9a4640e65684358f4947f80ad6ff" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "cdb3f7bbbe7a9a4640e65684358f4947f80ad6ff" }
@@ -612,7 +612,7 @@ busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-compl
 # pinned rev; the logic crate whose `PLUGIN` header the root admits. The pin is its transport 2.0 head f3c2bec (line/all;
 # the image declares its alias `webrtc` as a former name). Its dropped-in cdylib twin and its gates live in
 # that repo's plugin CI. Its media stack (str0m, aes) is pinned in that repo's own manifest.
-busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "0d519c6309f5cab16bcdaddf3a30911777c0b7ce" }
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "f3c2bece2a2f8b42bae0351582025f01d1655357" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its tests link the external testkit's R-FIX3
@@ -861,12 +861,6 @@ busbar-contract = { path = "../../crates/busbar-contract" }
 # Published MIN-3 planes name the GitLab source identity. Resolve their SDK and JSON facade
 # to this same core tree; URL aliases otherwise produce a second SDK/FFI type universe.
 [patch.'https://github.com/GetBusbar/busbar.git']
-busbar-contract = { path = "../../crates/busbar-contract" }
-busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
-
-# The same SDK, named without the `.git` suffix (plane-llm and transport-webrtc at their line/all heads):
-# cargo keys a patch by the URL spelling, so this spelling resolves to the same core tree too.
-[patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 
