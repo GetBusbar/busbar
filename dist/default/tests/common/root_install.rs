@@ -21,7 +21,7 @@ pub fn install() {
             hex::encode(release_key().verifying_key().as_bytes()),
         );
         let destinations = busbar_kernel::config::Destinations {
-            block_private_addresses: busbar_kernel::config::AdvancedCfg::default()
+            block_private_addresses: busbar_kernel::config::sections::OutboundCfg::default()
                 .block_private_addresses,
             blocked: Vec::new(),
             // The deployment below states no listen addresses: the engine's own are the defaults.

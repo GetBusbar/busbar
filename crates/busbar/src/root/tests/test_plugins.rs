@@ -131,12 +131,10 @@ pub(crate) fn trusted_config_with_key(
             plugins: archives
                 .iter()
                 .map(|path| {
-                    tarball::unpack(
-                        &std::fs::read(path).expect("fixture archive reads"),
-                    )
-                    .expect("fixture archive unpacks")
-                    .manifest
-                    .name
+                    tarball::unpack(&std::fs::read(path).expect("fixture archive reads"))
+                        .expect("fixture archive unpacks")
+                        .manifest
+                        .name
                 })
                 .collect(),
             keys: vec![busbar_kernel::config::PluginPublisherKey {

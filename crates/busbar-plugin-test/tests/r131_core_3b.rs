@@ -37,14 +37,6 @@ const LEFT_OUT: &[(&str, &str)] = &[
         "calls the host's raw connector identity service from inside the plugin: needs the scripted-connections row (Gap 2, not built)",
     ),
     (
-        "dist/default/tests/canary/abi.rs",
-        "needs the Recorder row (design §3.4, not built)",
-    ),
-    (
-        "dist/default/tests/canary/recorder.rs",
-        "needs the Recorder row (design §3.4, not built)",
-    ),
-    (
         "dist/default/tests/cli_validate.rs",
         "write_stated_store renders a hand-built Statement with a forged kind ABI: needs a rendering-of-a-mutant row (not built)",
     ),

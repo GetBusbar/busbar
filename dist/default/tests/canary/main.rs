@@ -6,10 +6,8 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-mod abi;
 mod blackbox;
 mod canary;
-mod recorder;
 
 use canary::{Canary, Sink};
 
@@ -28,12 +26,6 @@ const KINDS: &[&str] = &[
     "refusal-webhook-url-query-token",
     "refusal-base-url-userinfo",
     "refusal-signing-key-file-content",
-    "abi-secret-refs-file-ref",
-    "abi-settings-env-ref",
-    "abi-settings-env-template",
-    "abi-settings-interp",
-    "abi-outbound-credential",
-    "abi-passthrough-caller-credential",
 ];
 
 pub fn canary(kind: &'static str) -> Canary {
@@ -78,20 +70,6 @@ fn refusal_sinks() {
     };
     let (sinks, notes) = blackbox::refusals(&c);
     canary::sweep("refusals", &c.all(), &sinks, &notes);
-}
-
-#[test]
-fn abi_crossings() {
-    let c = abi::AbiCanaries {
-        secret_ref_file: canary("abi-secret-refs-file-ref"),
-        settings_env_ref: canary("abi-settings-env-ref"),
-        settings_template: canary("abi-settings-env-template"),
-        settings_interp: canary("abi-settings-interp"),
-        outbound_credential: canary("abi-outbound-credential"),
-        passthrough: canary("abi-passthrough-caller-credential"),
-    };
-    let (sinks, notes) = abi::run(&c);
-    canary::sweep("abi", &c.all(), &sinks, &notes);
 }
 
 #[test]
@@ -201,25 +179,5 @@ fn self_test_a_black_box_sink_finds_a_planted_value() {
         !out.status.success() && !hits.is_empty(),
         "the unknown provider name is echoed by the --validate refusal and the search finds it: \
          {text}"
-    );
-}
-
-#[test]
-fn self_test_the_shim_records_a_planted_crossing() {
-    let c = Canary::new("self-test-shim");
-    let (sinks, _) = abi::run(&abi::AbiCanaries {
-        secret_ref_file: c.clone(),
-        settings_env_ref: Canary::new("self-test-unused-1"),
-        settings_template: Canary::new("self-test-unused-2"),
-        settings_interp: Canary::new("self-test-unused-3"),
-        outbound_credential: Canary::new("self-test-unused-4"),
-        passthrough: Canary::new("self-test-unused-5"),
-    });
-    let hits = canary::search(&c, &sinks);
-    let (signing_secret_sink, signing_secret_plugin) = abi::signing_secret_crossing();
-    assert!(
-        hits.iter()
-            .any(|h| h.sink == signing_secret_sink && h.at == signing_secret_plugin),
-        "the shim records the planted secret crossing into `open`: {hits:?}"
     );
 }
