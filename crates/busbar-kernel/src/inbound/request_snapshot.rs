@@ -166,10 +166,7 @@ impl ChargedRequestSnapshot {
         if !input.query_present && !input.query.is_empty() {
             return Err(SnapshotError::Invalid);
         }
-        let mut extent = add(
-            usize::from(input.query_present),
-            count.checked_mul(16).ok_or(SnapshotError::Overflow)?,
-        )?;
+        let mut extent = usize::from(input.query_present);
         for len in [
             input.method.len(),
             input.path.len(),
@@ -405,6 +402,56 @@ impl ChargedRequestSnapshot {
         drop(credit);
         Ok(result)
     }
+}
+
+/// The packed size of a header block: per field, two 8-byte lengths, its name and its value.
+/// `measure` must yield exactly `count` fields.
+fn header_extent<'a>(
+    measure: impl Iterator<Item = (&'a str, &'a [u8])>,
+    count: usize,
+) -> Result<usize, SnapshotError> {
+    let mut extent = count.checked_mul(16).ok_or(SnapshotError::Overflow)?;
+    let mut observed = 0usize;
+    for (name, value) in measure {
+        observed = add(observed, 1)?;
+        if observed > count {
+            return Err(SnapshotError::Invalid);
+        }
+        u64::try_from(name.len()).map_err(|_| SnapshotError::Overflow)?;
+        u64::try_from(value.len()).map_err(|_| SnapshotError::Overflow)?;
+        extent = add(add(extent, name.len())?, value.len())?;
+    }
+    if observed != count {
+        return Err(SnapshotError::Invalid);
+    }
+    Ok(extent)
+}
+
+/// Pack exactly `count` header fields after what `bytes` holds; the whole buffer must then be
+/// exactly `extent`, the size reserved for it.
+fn pack_headers<'a>(
+    bytes: &mut SecureVec,
+    headers: impl Iterator<Item = (&'a str, &'a [u8])>,
+    count: usize,
+    extent: usize,
+) -> Result<(), SnapshotError> {
+    let mut observed = 0usize;
+    for (name, value) in headers {
+        observed = add(observed, 1)?;
+        if observed > count {
+            return Err(SnapshotError::Invalid);
+        }
+        let name_len = u64::try_from(name.len()).map_err(|_| SnapshotError::Overflow)?;
+        let value_len = u64::try_from(value.len()).map_err(|_| SnapshotError::Overflow)?;
+        append(bytes, &name_len.to_le_bytes(), extent)?;
+        append(bytes, &value_len.to_le_bytes(), extent)?;
+        append(bytes, name.as_bytes(), extent)?;
+        append(bytes, value, extent)?;
+    }
+    if observed != count || bytes.len() != extent {
+        return Err(SnapshotError::Invalid);
+    }
+    Ok(())
 }
 
 struct SnapshotSpan {

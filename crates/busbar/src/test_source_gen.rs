@@ -253,9 +253,7 @@ mod tests {
     fn an_owner_that_declares_test_sources_but_not_this_one_is_refused() {
         let fixture = Fixture::new("missing");
         let owners = Owners(BTreeMap::from([("o".into(), fixture.package())]));
-        assert!(
-            std::panic::catch_unwind(|| owners.module("o", "absent", "root_absent")).is_err()
-        );
+        assert!(std::panic::catch_unwind(|| owners.module("o", "absent", "root_absent")).is_err());
     }
 
     #[test]

@@ -230,6 +230,40 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
     assert!(select(&u, &cands).is_empty());
 }
 
+/// ABI-MECH: the pack tool's renderer stamps busbar-plugin-abi's `versions::CORE` (the mechanism a
+/// native stamp carries and `ci/abi.pin` pins), and admission reads back only that exact number: a
+/// rendering stamped with the previous or the next mechanism is refused.
+#[test]
+fn a_rendering_stamped_with_another_mechanism_is_refused_and_core_is_admitted() {
+    use busbar_plugin_abi::versions::CORE;
+    // SAFETY: a Statement with no lists.
+    let stated = unsafe { render(&statement("the-plugin", "1.0.0", 1)) }.unwrap();
+    assert_eq!(stated[8..12], CORE.to_le_bytes(), "the renderer stamps CORE");
+    let stamped = |mechanism: u32| {
+        let mut bytes = stated.clone();
+        bytes[8..12].copy_from_slice(&mechanism.to_le_bytes());
+        Candidate::from_rendering(
+            bytes,
+            None,
+            Origin::Dropped {
+                file: "f".into(),
+                bytes: Arc::new(Vec::new()),
+            },
+        )
+    };
+    assert!(stamped(CORE).is_ok_and(|c| c.name == "the-plugin"));
+    for wrong in [CORE - 1, CORE + 1] {
+        let refused = stamped(wrong);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("the current mechanism version")),
+            "mechanism {wrong}: {:?}",
+            refused.map(|c| c.name)
+        );
+    }
+}
+
 fn example_cdylib(name: &str) -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary's path");
     let path = exe
