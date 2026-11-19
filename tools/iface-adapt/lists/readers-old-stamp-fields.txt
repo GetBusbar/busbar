@@ -1,0 +1,7 @@
+crates/busbar-artifact-metadata/src/rendering.rs
+crates/busbar-contract/tests/abi_versions.rs
+crates/busbar-ffi/src/lib.rs
+crates/busbar-plugin-abi/src/lib.rs
+crates/busbar-plugin-abi/src/stamp.rs
+crates/busbar-plugin-abi/src/types.rs
+crates/busbar-plugin-abi/tests/c_header/asserts.rs

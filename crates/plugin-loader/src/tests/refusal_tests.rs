@@ -25,7 +25,7 @@ fn every_code_is_busbar_6013() {
         RefusalCode::StampAmbiguous,
         RefusalCode::StampMalformed {
             byte: 16,
-            rule: "format is not 2",
+            rule: "format is not 3",
         },
         RefusalCode::KindUnknown,
         RefusalCode::KindAbi,

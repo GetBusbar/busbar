@@ -360,6 +360,10 @@ impl Shared {
                 .map_or(timeout, |d| d.min(timeout)),
             request_id: delivery,
             stack: CallStack::default(),
+            // The pump made one clock reading for this delivery, the deadline above, on the
+            // standard clock; none on the host's monotonic clock is handed in, and an exporter that
+            // needs one asks the host once.
+            mono_ns: 0,
         }
     }
 

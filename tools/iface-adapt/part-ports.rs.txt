@@ -1,0 +1,156 @@
+// PARTS for `crates/busbar-ports` (not this line's files). Each block names its file and its place.
+// `crates/plugin-loader` on `house/d-adapt` is written against exactly these shapes.
+
+// ===================================================================================================
+// 1. src/lib.rs, `pub struct CallCx`: the operation's one clock reading, made by the caller of the port
+//    and handed to the plugin in the call (`plugin_loader::call::at`). One more field:
+//
+//        /// The operation's one monotonic clock reading, in nanoseconds; 0: none was made.
+//        pub mono_ns: u64,
+//
+//    Every `CallCx { deadline, request_id, stack }` literal gains `mono_ns` from the reading the caller
+//    already holds for the operation (the kernel's request context), never from a new clock call.
+//    Tests: `mono_ns: 0`.
+
+// ===================================================================================================
+// 2. src/lib.rs: the session handle of a kind. A session is the host's instance record and the
+//    boundary crate's live session; both types live below this crate, so the handle is defined here
+//    and the loader's `call::Sess` becomes `pub use busbar_ports::KindSession as Sess;` (same two public
+//    fields, same `instance()`), and the loader's `call::kinds::transport::SessionHandle` becomes
+//    `pub use busbar_ports::transport::TransportSession as SessionHandle;`.
+//    Cargo.toml gains `busbar-ffi = { path = "../busbar-ffi", features = ["host"] }`.
+
+/// A live session of kind `K` and the instance it runs on. `Send`, not `Sync`: every call takes
+/// `&mut`, so one entry per token runs at a time; dropping it cancels the token.
+pub struct KindSession<K: busbar_ffi::Kind> {
+    pub inst: std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance>,
+    pub session: busbar_ffi::host::Session<K>,
+}
+
+impl<K: busbar_ffi::Kind> KindSession<K> {
+    pub fn instance(&self) -> &std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance> {
+        &self.inst
+    }
+}
+
+//    src/plane.rs:13 becomes
+//        pub type PlaneSession = crate::KindSession<busbar_ffi::kind::Plane>;
+//
+//    src/transport.rs:12 becomes (a transport session carries its output-model validator):
+
+/// One live transport session (a connection) and its output state.
+pub struct TransportSession {
+    pub s: crate::KindSession<busbar_ffi::kind::Transport>,
+    /// The session's one validator of the output model: what the engine asked of each stream and what
+    /// the session has written for it (rules L1 to L7 and L9).
+    pub wire: busbar_plugin_abi::wire::Wire,
+}
+
+impl TransportSession {
+    pub fn instance(&self) -> &std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance> {
+        self.s.instance()
+    }
+}
+
+// ===================================================================================================
+// 3. src/transport.rs, `pub enum TransportOut<'o>`: the one output model. REMOVE the variants `Write`,
+//    `ResponseAbort`, `ResponseQuiescent`, `Pause`, `Resume`. REPLACE `WirePart`, `WireEnd` and
+//    `StreamReset` and ADD the four below. (`WireClass` and `CompletionRequirement` of
+//    `busbar_contract::response_delivery` are no longer named by this enum; `codec::transport::wire_class`
+//    and `completion_requirement` lose their last caller.)
+
+pub enum TransportOutNewVariants<'o> {
+    /// Write these bytes; they belong to `stream` (0 = the connection). `payload`: a body byte the
+    /// engine gave for that stream, one for one; else control (heads, framing, trailers, settings).
+    WirePart {
+        stream: u64,
+        payload: bool,
+        bytes: &'o [u8],
+    },
+    /// Write bytes `offset..offset + len` of the engine's sealed value `slot` of `stream` here, in order
+    /// with the parts around it. The transport never held the value.
+    WireSealed {
+        stream: u64,
+        slot: u32,
+        offset: u32,
+        len: u32,
+    },
+    /// Nothing more will name `stream`. `how` = END_FLUSH, END_SHUTDOWN or END_FAILED; `arg` =
+    /// END_NO_BODY or 0 on a successful end, an opaque protocol diagnostic on END_FAILED.
+    WireEnd {
+        stream: u64,
+        how: u32,
+        arg: u32,
+    },
+    /// `begin`'s statement of what the session is: whether it carries several streams at once and, if
+    /// so, the bytes of inbound body the engine can be made to hold for one stream and for the
+    /// connection. The engine never compares a protocol name to learn any of this.
+    Session {
+        multiplex: bool,
+        stream_window: u32,
+        conn_window: u32,
+    },
+    /// The answer of an `emit` that asked a dialled session to open a stream when it can carry no more
+    /// now: nothing was taken; the engine uses another connection or waits.
+    StreamBusy,
+    /// The session will open no further stream; the streams it carries go on.
+    NoNewStreams,
+    /// `not_processed`: the far end guarantees it did not act on the stream, so the engine may send the
+    /// request once more on another connection, recorded, never silently.
+    StreamReset {
+        stream: u64,
+        code: u32,
+        not_processed: bool,
+    },
+}
+
+// ===================================================================================================
+// 4. src/transport.rs, `trait TransportPort`: `emit` is the one output call. Replace its signature:
+//
+//        fn emit(
+//            &self,
+//            s: &mut TransportSession,
+//            stream: u64,
+//            pieces: u32,
+//            arg: u32,
+//            credit: u64,
+//            parts: EmitParts<'_>,
+//            sink: &mut dyn FnMut(TransportOut<'_>),
+//        ) -> Result<(), PortError>;
+//
+//    `pieces` = the contract's piece set (E_HEAD 1 | E_BODY 2 | E_TRAILERS 4 | E_END 8, or E_RESET,
+//    E_REFUSE, E_CLOSE, E_CONSUMED); `credit` = the bytes of credit given with E_CONSUMED, else 0.
+//    `EmitParts` moves here from the loader (`call::kinds::transport::Pieces` becomes a re-export):
+
+/// The byte-carrying pieces of one `emit`, in the contract's fixed order. `None`: the piece is not in
+/// this call. `end` is `Some(&[])` when E_END is in the set (END's entry is empty).
+#[derive(Clone, Copy, Default)]
+pub struct EmitParts<'a> {
+    pub head: Option<&'a [u8]>,
+    pub body: Option<&'a [u8]>,
+    pub trailers: Option<&'a [u8]>,
+    pub end: Option<&'a [u8]>,
+}
+
+// ===================================================================================================
+// 5. src/plane.rs, `pub struct RouteInfo`: nothing changes. A route's stated admission and challenge
+//    (plane 2.0's D_ROUTE_ADMISSION 0x019A and D_ROUTE_CHALLENGE 0x019B) are decoded by the loader's
+//    plane adapter into `PlaneDescribe::route_admissions` / `route_challenges` and read through
+//    `PlaneAdapter::route_admission(route)` / `route_challenge(route)`; the kernel builds its
+//    `RouteRecord::from_wire` from those with the `RouteInfo` it already has. To reach them through the
+//    port (the kernel holds `dyn PlanePort`), `trait PlanePort` gains two provided methods:
+//
+//        /// The admission `route` states (words: scope, money, callers; and the walk kind), if any.
+//        fn route_admission(&self, route: u32) -> Option<(u32, u32, u32, &str)> { let _ = route; None }
+//        /// The `WWW-Authenticate` text `route` states for its refusal, if any.
+//        fn route_challenge(&self, route: u32) -> Option<&str> { let _ = route; None }
+//
+//    and `impl PlanePort for PlaneAdapter` forwards them:
+//
+//        fn route_admission(&self, route: u32) -> Option<(u32, u32, u32, &str)> {
+//            PlaneAdapter::route_admission(self, route)
+//                .map(|a| (a.scope, a.money, a.callers, &*a.walk_kind))
+//        }
+//        fn route_challenge(&self, route: u32) -> Option<&str> {
+//            PlaneAdapter::route_challenge(self, route)
+//        }
