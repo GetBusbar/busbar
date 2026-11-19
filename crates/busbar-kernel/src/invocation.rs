@@ -128,6 +128,13 @@ pub struct InvocationContext {
     signed_authority: Option<Arc<crate::governance::current_credential::VerifiedKeyAuthority>>,
 }
 
+/// One hook notification's authority ([`InvocationContext::hook_grant`]): the exact request it
+/// was taken from, and nothing a caller can build. One stage event's taps share one grant.
+#[derive(Clone)]
+pub(crate) struct HookGrant {
+    record: Arc<crate::host_units::UnitRecord>,
+}
+
 impl InvocationContext {
     pub fn new(
         generation: Arc<ServingGeneration>,
@@ -232,12 +239,58 @@ impl InvocationContext {
             && Arc::ptr_eq(&self.phase, &other.phase)
     }
 
+    /// Whether core may call one of the operator's hooks for this request now. A hook is heard
+    /// in two places and nowhere else: once the request's walk is resolved and before its money
+    /// is asked (a hook that refuses has then spoken before any unit is opened), and while the
+    /// request's unit runs. Before the walk is resolved the key's grant of it has not been judged,
+    /// and no hook is shown the request. A DATA request adds its own conditions
+    /// ([`crate::auth::native_data::NativeDataEffectGate::hooks_allowed`]): one that selected
+    /// resources runs under its descriptor's authority alone and is never shown to a hook.
+    pub(crate) fn hooks_allowed(&self) -> bool {
+        if !self.is_live() {
+            return false;
+        }
+        let before_money = self.phase.before_money();
+        if !before_money && !self.phase.effects_allowed() {
+            return false;
+        }
+        self.data_gate
+            .as_ref()
+            .is_none_or(|gate| gate.hooks_allowed(before_money))
+    }
+
+    /// The authority for one hook notification, taken while the request allows its hooks. The
+    /// notification itself runs detached and may start after the request has ended (the
+    /// response-stage tap of a refusal always does): it is handed over under this grant, which
+    /// is the request's own and cannot be made any other way.
+    pub(crate) fn hook_grant(&self) -> Option<HookGrant> {
+        self.hooks_allowed().then(|| HookGrant {
+            record: Arc::clone(&self.record),
+        })
+    }
+
     /// Keep hook work on the exact retained generation's bounded executor, including after
     /// the request stops waiting for a tap or an expired call.
     pub(crate) fn offload_hook(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), &'static str> {
-        if self.data_gate.is_some() || !self.effects_allowed() {
+        if !self.hooks_allowed() {
             return Err(NEST_NO_UNIT);
         }
+        self.run_hook(job)
+    }
+
+    /// [`Self::offload_hook`] for a notification whose authority was taken when it was fired.
+    pub(crate) fn offload_granted_hook(
+        &self,
+        grant: &HookGrant,
+        job: Box<dyn FnOnce() + Send>,
+    ) -> Result<(), &'static str> {
+        if !Arc::ptr_eq(&grant.record, &self.record) {
+            return Err(NEST_NO_UNIT);
+        }
+        self.run_hook(job)
+    }
+
+    fn run_hook(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), &'static str> {
         self.generation.core.pool().ok_or(super::NO_POOL)?.run(job);
         Ok(())
     }

@@ -10,7 +10,7 @@ use super::super::port_upstream::{Members, UpSend, Wants};
 use super::{
     call, CandidateView, Candidates, Invocation, Projection, RouteCounters, Selected, Selection,
 };
-use crate::host_services::InvocationContext;
+use crate::host_services::{HookGrant, InvocationContext};
 use busbar_plugin_abi::kinds::hook::hook as abi;
 use busbar_ports::{plane::PlaneIn, FactVal, PortError};
 
@@ -28,15 +28,53 @@ pub(crate) struct Stage {
     scope: Arc<super::super::RoutedScope>,
     dialect: Arc<str>,
     principal: Option<super::super::port_auth::Subject>,
-    identity: Arc<busbar_contract::secure::SecureVec>,
     request_id: u64,
     context: InvocationContext,
     journal: Option<Arc<dyn super::HookJournal>>,
     unit: busbar_contract::UnitKey,
+    /// The hook records of a stage that ran before its request's unit was open ([`Early`]);
+    /// `None` for a stage whose unit was open before it ran, and for a node that keeps no journal.
+    early: Option<Arc<Early>>,
 }
+
+/// Where a hook stage stands to its request's unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum When {
+    /// The request's walk is resolved and its money has not been asked
+    /// (`port_admission::Pending::resolve_walk`): a hook that refuses here has spoken before any
+    /// unit is opened and before anything is charged.
+    BeforeMoney,
+    /// The request already runs as an open unit.
+    UnitOpen,
+}
+
+/// The hook records made before the request's unit is open. The journal seals a hook's record
+/// under its OPEN unit and has nowhere to put one for a unit it does not hold, and a stage that
+/// runs before the request's money has no open unit yet: its records wait here and are handed
+/// to the journal, in the order they were made, when the unit opens ([`Stage::unit_opened`]).
+/// `Some`: still waiting. `None`: the unit is open and a record goes straight to the journal. A
+/// request refused before its unit opened leaves them here: it has no unit record to seal them
+/// under.
+struct Early(std::sync::Mutex<Option<Vec<busbar_kernel_audit::record::HookApplied>>>);
+
+impl Early {
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<Vec<busbar_kernel_audit::record::HookApplied>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 impl Stage {
     /// The stage as one hook call is shown it; `stage` is a tap's facts, absent on a request call.
-    fn input<'a>(&'a self, stage: Option<&'a Arc<call::StageFacts>>) -> call::Input<'a> {
+    /// `grant`: a tap's authority, taken when it was fired.
+    fn input<'a>(
+        &'a self,
+        stage: Option<&'a Arc<call::StageFacts>>,
+        grant: Option<&'a HookGrant>,
+    ) -> call::Input<'a> {
         call::Input {
             projection: &self.projection,
             selected: &self.selected,
@@ -44,14 +82,16 @@ impl Stage {
             dialect: &self.dialect,
             principal: self.principal.as_ref(),
             request_id: self.request_id,
-            identity: Some(&self.identity),
+            grant,
             candidates: &self.candidates,
             quantities: &self.quantities,
             stage,
             context: &self.context,
         }
     }
-    fn response_tap(&self, status: u16, gate: bool, output: Option<u64>) {
+    /// The response stage, as v1.5.5 gave it: the status the client was answered and the outcome
+    /// (`ok`, `failed`, or `rejected_by_gate` for a refusal a hook itself made).
+    fn response_tap(&self, status: u16, gate: bool, granted: Option<&HookGrant>) {
         // No response tap is configured: no facts are made.
         if self.selected.taps.response.is_empty() {
             return;
@@ -67,37 +107,93 @@ impl Stage {
         facts.push((abi::S_STAGE, FactVal::U(abi::STAGE_RESPONSE)));
         facts.push((abi::S_STATUS, FactVal::U(status.into())));
         facts.push((abi::S_OUTCOME, FactVal::Text(outcome.into())));
-        if let Some(output) = output {
-            facts.push((abi::S_RESPONSE_TOKENS_OUT, FactVal::U(output)));
+        self.taps(&self.selected.taps.response, facts, granted);
+    }
+    /// The authority to tell the response taps how the request ended if its money refuses it.
+    /// Taken while the request still allows its hooks, before the money is asked: a money
+    /// refusal ends the request's admission, and nothing can be taken after it. `None` when no
+    /// response tap is configured: nothing is taken for a stage nobody listens to.
+    pub(crate) fn completion(&self) -> Option<HookGrant> {
+        if self.selected.taps.response.is_empty() {
+            return None;
         }
-        self.taps(&self.selected.taps.response, facts);
+        self.context.hook_grant()
+    }
+    /// The request's hooks allowed it and its money then refused it at `status`: the response
+    /// taps, which saw the request, are told how it ended (`failed`). v1.5.5 asked the money
+    /// first and so never showed a hook such a request; now that a hook is heard before the
+    /// money, a tap that saw the request stage is not left without its completion.
+    pub(crate) fn money_refused(&self, status: u16, completion: Option<&HookGrant>) {
+        if completion.is_some() {
+            self.response_tap(status, false, completion);
+        }
     }
     fn report(&self, hooks: &[busbar_kernel_audit::record::HookApplied]) {
-        if let Some(journal) = &self.journal {
+        let Some(journal) = &self.journal else {
+            return;
+        };
+        if let Some(early) = &self.early {
+            if let Some(waiting) = early.lock().as_mut() {
+                waiting.extend_from_slice(hooks);
+                return;
+            }
+        }
+        journal.hooks_ran(&HooksRan {
+            unit: self.unit,
+            hooks,
+        });
+    }
+    /// The request's unit is open: the records its hooks made before that are handed to the
+    /// journal, in the order they were made, and every later one goes straight to it. The
+    /// records are handed over under their lock, so a tap that finishes meanwhile is recorded
+    /// after them, never before and never twice.
+    pub(crate) fn unit_opened(&self) {
+        let Some(early) = &self.early else {
+            return;
+        };
+        let mut waiting = early.lock();
+        let Some(records) = waiting.take() else {
+            return;
+        };
+        if let (Some(journal), false) = (&self.journal, records.is_empty()) {
             journal.hooks_ran(&HooksRan {
                 unit: self.unit,
-                hooks,
+                hooks: &records,
             });
         }
     }
-    /// Every tap of one stage event shares the event's one list of facts.
-    fn taps(&self, calls: &[Arc<super::Call>], facts: call::StageFacts) {
+    /// Every tap of one stage event shares the event's one list of facts and its one authority:
+    /// `granted` when it was taken earlier, else the request's own, taken now, while the request
+    /// allows its hooks. The notifications themselves run detached and may start after the
+    /// request has ended. A request that allows no hook fires none, and says so in its record.
+    fn taps(
+        &self,
+        calls: &[Arc<super::Call>],
+        facts: call::StageFacts,
+        granted: Option<&HookGrant>,
+    ) {
         if calls.is_empty() {
             return;
         }
+        let Some(grant) = granted.cloned().or_else(|| self.context.hook_grant()) else {
+            for call in calls {
+                self.report(&[call::record(call, None)]);
+            }
+            return;
+        };
         let shared = (!facts.is_empty()).then(|| Arc::new(facts));
         for call in calls {
-            self.tap(call, shared.clone());
+            self.tap(call, shared.clone(), grant.clone());
         }
     }
-    fn tap(&self, call: &Arc<super::Call>, facts: Option<Arc<call::StageFacts>>) {
+    fn tap(&self, call: &Arc<super::Call>, facts: Option<Arc<call::StageFacts>>, grant: HookGrant) {
         let mut held = self.clone();
         if facts.is_some() {
             held.projection.shape();
         }
         let call = Arc::clone(call);
         crate::hooks::taps::spawn_bounded_tap(async move {
-            let input = held.input(facts.as_ref());
+            let input = held.input(facts.as_ref(), Some(&grant));
             let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
             held.report(&[call::record(
                 &call,
@@ -112,7 +208,6 @@ pub(crate) struct Observed<'a> {
     pub(crate) inner: &'a dyn Effects,
     pub(crate) stage: Stage,
     responded: Owned<bool>,
-    output: Owned<Option<u64>>,
 }
 impl<'a> Observed<'a> {
     pub(crate) fn new(inner: &'a dyn Effects, stage: Stage) -> Self {
@@ -120,7 +215,6 @@ impl<'a> Observed<'a> {
             inner,
             stage,
             responded: Owned::new(false),
-            output: Owned::new(None),
         }
     }
 }
@@ -157,33 +251,36 @@ impl Effects for Observed<'_> {
             if let Some(failed) = failed {
                 facts.push((abi::S_PREVIOUS_FAILURE, FactVal::Text(failed.into())));
             }
-            self.stage.taps(&self.stage.selected.taps.routing, facts);
+            self.stage
+                .taps(&self.stage.selected.taps.routing, facts, None);
         }
         self.inner.routing(attempt, model, remaining, failed);
     }
+    // Hook 3.0 retired the response stage's output-token fact (no shipped hook read it and
+    // v1.5.5's response stage carried the outcome and the status only), so the stage keeps no
+    // count of the usage it is shown.
     fn observed_usage(&self, usage: &super::super::usage::SessionUsage) {
-        let output = usage
-            .last()
-            .iter()
-            .find(|reported| {
-                &*reported.class == "output"
-                    && reported.source == busbar_plugin_abi::plane::SRC_REPORTED
-            })
-            .and_then(|reported| {
-                let divisor = 10_u64.pow(reported.scale);
-                (reported.amount % divisor == 0).then_some(reported.amount / divisor)
-            });
-        self.output.set(output);
         self.inner.observed_usage(usage);
     }
     fn response(&self, status: u16) {
         if !self.responded.replace(true) {
-            self.stage.response_tap(status, false, self.output.get());
+            self.stage.response_tap(status, false, None);
         }
         self.inner.response(status);
     }
 }
 
+/// One request's hook stage, in v1.5.5's order: each rewrite in turn (a rewrite the operator
+/// granted `rw` is applied to the plane's request), the request taps, the gates at once and
+/// judged in their priority order (a reject first, then every restriction, then an order), the
+/// pool's routing policy when no gate ordered, the candidate taps. A hook that refuses ends the
+/// stage as the caller's refusal at the hook's own status; one that fails or times out is
+/// answered by its fallbacks and then by the operator's `on_error` (`weighted`: the request goes
+/// on as if the hook had no opinion; `reject`: 503-class refusal; `first`: the candidates in
+/// their configured order), exactly as v1.5.5 did.
+///
+/// `when` says where the request's unit stands. [`When::BeforeMoney`]: nothing is opened or
+/// charged yet, and a refusal here leaves it so.
 pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
     invocation: &Invocation,
     task: &mut Task<'_, K>,
@@ -191,6 +288,7 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
     req: &PlaneIn<'_>,
     drive: &mut Drive<'_, M, S>,
     effects: &dyn Effects,
+    when: When,
 ) -> Result<Stage, SessionError> {
     let context = effects
         .invocation()
@@ -249,21 +347,24 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
         scope: Arc::new(scope),
         dialect: drive.dialect.into(),
         principal: invocation.principal.clone(),
-        identity: Arc::new(req.identity.to_vec().into()),
         request_id: req.request_id,
         context,
         journal: invocation.journal.clone(),
         unit: invocation.unit,
+        // Only a journal has records to keep, and only a unit that is not open yet makes them
+        // wait.
+        early: (when == When::BeforeMoney && invocation.journal.is_some())
+            .then(|| Arc::new(Early(std::sync::Mutex::new(Some(Vec::new()))))),
     };
     let mut ran: Vec<busbar_kernel_audit::record::HookApplied> = Vec::new();
     let result = async {
         // The stage is rewritten inside the loop, so each rewrite call is held by its own Arc.
         for at in 0..stage.selected.rewrites.len() {
             let rewrite = Arc::clone(&stage.selected.rewrites[at]);
-            let input = stage.input(None);
+            let input = stage.input(None, None);
             let (called, mut answer) = call::chain(&rewrite, abi::POINT_REWRITE, &input, &mut ran)
                 .await
-                .map_err(|_| unavailable(req.route, drive.refusals))?;
+                .map_err(|_| unavailable())?;
             if answer.verb == abi::VERB_REJECT {
                 return Err(rejected(
                     &called,
@@ -280,6 +381,21 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
                 let bytes = busbar_contract::secure::SecureVec::from(bytes);
                 match task.rewrite(&bytes, effects) {
                     Ok(answer) => {
+                        // Before the money, the request's walk is already resolved and the
+                        // key's grant of it judged: a rewrite cannot restate the FORWARD onto
+                        // another walk. (With the unit open the task checks the same against
+                        // the admitted request.)
+                        if when == When::BeforeMoney {
+                            if let Some(forward) = &answer.forward {
+                                let stated = Wants::from_facts(&forward.wants);
+                                if !wants.as_ref().is_some_and(|resolved| {
+                                    resolved.model == stated.model
+                                        && resolved.upstream == stated.upstream
+                                }) {
+                                    return Err(SessionError::NotDriven);
+                                }
+                            }
+                        }
                         stage.projection.rewritten(bytes, &answer);
                         answers.push(answer);
                     }
@@ -300,8 +416,8 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
             &mut quantities,
         )?;
         stage.quantities = Arc::from(quantities);
-        stage.taps(&stage.selected.taps.request, call::StageFacts::new());
-        let input = stage.input(None);
+        stage.taps(&stage.selected.taps.request, call::StageFacts::new(), None);
+        let input = stage.input(None, None);
         let gate_results = futures::future::join_all(stage.selected.gates.iter().map(|gate| {
             let input = &input;
             async move {
@@ -320,8 +436,7 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
         }
         let mut judged = smallvec::SmallVec::<[_; 8]>::new();
         for outcome in outcomes {
-            let (called, mut answer) =
-                outcome.map_err(|_| unavailable(req.route, drive.refusals))?;
+            let (called, mut answer) = outcome.map_err(|_| unavailable())?;
             normalize(&mut answer, &stage.candidates);
             if answer.verb == abi::VERB_REJECT {
                 return Err(rejected(
@@ -356,7 +471,7 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
                     .iter()
                     .map(|c| (c.facts.idx, c.facts.tags.as_slice())),
             )
-            .map_err(|_| unavailable(req.route, drive.refusals))?;
+            .map_err(|_| unavailable())?;
         stage.candidates.keep_only(&kept);
         for (called, answer) in &mut judged {
             if matches!(answer.verb, abi::VERB_PREFER | abi::VERB_PRIORITIZE) {
@@ -371,12 +486,12 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
                 )?;
             }
         }
-        let input = stage.input(None);
+        let input = stage.input(None, None);
         if constraint.order.is_none() {
             if let Some(policy) = &stage.selected.policy {
                 let (called, mut answer) = call::chain(policy, abi::POINT_ROUTE, &input, &mut ran)
                     .await
-                    .map_err(|_| unavailable(req.route, drive.refusals))?;
+                    .map_err(|_| unavailable())?;
                 normalize(&mut answer, &stage.candidates);
                 apply(
                     &mut constraint,
@@ -396,7 +511,7 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
                     .iter()
                     .map(|c| (c.facts.idx, c.facts.tags.as_slice())),
             )
-            .map_err(|_| unavailable(req.route, drive.refusals))?;
+            .map_err(|_| unavailable())?;
         if !constraint.restricts.is_empty() {
             stage.candidates.keep_only(&kept);
             constraint.keep = Some(kept);
@@ -423,13 +538,16 @@ pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
                 abi::S_REMAINING_CANDIDATES,
                 FactVal::U(stage.candidates.len() as u64),
             ));
-            stage.taps(&stage.selected.taps.candidate, facts);
+            stage.taps(&stage.selected.taps.candidate, facts, None);
         }
         Ok(())
     }
     .await;
     stage.report(&ran);
     if let Err(SessionError::HookRefused(refusal)) = &result {
+        // The synthetic completion that lets an audit tap see a denial. Its authority is taken
+        // here, while the refused request still allows its hooks: the caller ends the request's
+        // admission as soon as this returns.
         stage.response_tap(refusal.status, true, None);
     }
     result?;
@@ -537,22 +655,105 @@ fn normalize(answer: &mut busbar_ports::hook::HookAnswer, candidates: &[Candidat
     }
 }
 
-fn unavailable(route: u32, refusals: &dyn crate::refusal::RefusalMap) -> SessionError {
-    SessionError::HookRefused(refusals.for_port(
-        route,
-        &PortError::Failed {
-            code: busbar_plugin_abi::fail::failed::F_UNAVAILABLE,
-            text: "a required native hook could not complete".into(),
-            retry_after_s: None,
-            backend_status: None,
-            error: None,
-        },
-    ))
+/// A hook the operator made required (`on_error: reject`, or a restriction whose `on_empty` is
+/// `reject`) could not decide: v1.5.5's answer, a 503 with its own words. It is core's refusal,
+/// never the hook's: nothing the hook said reaches the caller. (The port map's reading of an
+/// unavailable backend is 502, which is an upstream's failure and not this.)
+fn unavailable() -> SessionError {
+    SessionError::HookRefused(crate::refusal::ClientRefusal {
+        status: 503,
+        code: busbar_plugin_abi::fail::failed::F_UNAVAILABLE,
+        text: std::borrow::Cow::Borrowed(
+            "A required gate could not complete. Please retry shortly.",
+        ),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::restrict_tags;
+
+    /// A hook's record is sealed under its request's OPEN unit. A stage that runs before the
+    /// request's money has no open unit yet: its records wait and reach the journal, in the
+    /// order they were made, when the unit opens, once; a tap's copy of the stage shares the
+    /// wait. A stage whose unit was open before it ran records at once, as it always did.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn records_made_before_the_unit_opens_reach_the_journal_when_it_opens_and_not_before() {
+        use super::{Early, Stage};
+        use crate::plane_driver::hooks::{HookJournal, HooksRan};
+        use crate::plane_driver::port_hooks::tests::Fixture;
+        use crate::plane_driver::port_hooks::{Candidates, Projection};
+        use busbar_kernel_audit::record::{HookApplied, HookHead};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Kept(Mutex<Vec<(u64, String)>>);
+        impl HookJournal for Kept {
+            fn hooks_ran(&self, record: &HooksRan<'_>) {
+                self.0.lock().unwrap().extend(
+                    record
+                        .hooks
+                        .iter()
+                        .map(|hook| (record.unit.get(), hook.hook.as_str().to_owned())),
+                );
+            }
+        }
+        let fixture = Fixture::new();
+        let row = |name: &str| HookApplied {
+            hook: busbar_contract::kept::Text::from(Arc::<str>::from(name)),
+            head: HookHead::Pass,
+            failed: false,
+        };
+        let stage = |journal: &Arc<Kept>, before_money: bool| Stage {
+            selected: Arc::new(fixture.selected.clone()),
+            projection: Projection::default(),
+            candidates: Candidates::new(Vec::new()),
+            quantities: Arc::default(),
+            scope: Arc::default(),
+            dialect: Arc::from("test"),
+            principal: None,
+            request_id: 7,
+            context: fixture.context.clone(),
+            journal: Some(journal.clone()),
+            unit: busbar_contract::UnitKey::new(7),
+            early: before_money.then(|| Arc::new(Early(Mutex::new(Some(Vec::new()))))),
+        };
+        let seen = |journal: &Kept| {
+            journal
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(unit, name)| format!("{unit}:{name}"))
+                .collect::<Vec<_>>()
+        };
+
+        let journal = Arc::new(Kept::default());
+        let early = stage(&journal, true);
+        let tap = early.clone();
+        early.report(&[row("gate")]);
+        tap.report(&[row("request-tap")]);
+        assert!(
+            seen(&journal).is_empty(),
+            "no unit is open: nothing is sealed under one"
+        );
+        early.unit_opened();
+        assert_eq!(seen(&journal), ["7:gate", "7:request-tap"]);
+        tap.report(&[row("response-tap")]);
+        early.unit_opened();
+        assert_eq!(
+            seen(&journal),
+            ["7:gate", "7:request-tap", "7:response-tap"],
+            "after the unit opens a record goes straight to the journal, once"
+        );
+
+        let journal = Arc::new(Kept::default());
+        let open = stage(&journal, false);
+        open.report(&[row("gate")]);
+        assert_eq!(seen(&journal), ["7:gate"]);
+        open.unit_opened();
+        assert_eq!(seen(&journal), ["7:gate"]);
+    }
 
     #[test]
     fn a_restricts_tags_are_the_hooks_own_trimmed_with_the_empty_ones_dropped() {
