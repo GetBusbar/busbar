@@ -565,8 +565,24 @@ mod declare_open_refusals {
         DeclaredConns::declare(connector, OWNER, need, spec, target, None)
     }
 
+    /// An auth instance's token request to `far` with `fields`.
+    fn token<'a>(far: &'a str, fields: &'a [(&'a str, &'a [u8])]) -> OpenDesc<'a> {
+        OpenDesc {
+            fields,
+            method: b"POST",
+            head_target: b"/token",
+            body: Bytes::from_static(b"grant_type=authorization_code"),
+            ..desc(far)
+        }
+    }
+
     /// The open of `need` at `desc`, its connection id dropped.
-    fn open(connector: &Connector, owner: InstanceId, need: NeedId, desc: &OpenDesc<'_>) -> Result<(), ConnError> {
+    fn open(
+        connector: &Connector,
+        owner: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+    ) -> Result<(), ConnError> {
         connector.open(owner, need, desc).map(drop)
     }
 
@@ -649,9 +665,14 @@ mod declare_open_refusals {
         );
         assert_eq!(
             connector.refusal(OWNER, restricted),
-            Some(NeedRefusal::Policy(crate::conns::verdict_text(DEST_INTERNAL)))
+            Some(NeedRefusal::Policy(crate::conns::verdict_text(
+                DEST_INTERNAL
+            )))
         );
-        assert!(!dialled(&listener, SETTLE), "the refused need dialled nothing");
+        assert!(
+            !dialled(&listener, SETTLE),
+            "the refused need dialled nothing"
+        );
 
         let conn = connector
             .open(OWNER, NEED, &desc(&target))
@@ -685,7 +706,10 @@ mod declare_open_refusals {
                 format!("http://127.0.0.2:{}/v1", addr.port()),
                 "another host",
             ),
-            (format!("http://127.0.0.1:{}/v1", other.port()), "another port"),
+            (
+                format!("http://127.0.0.1:{}/v1", other.port()),
+                "another port",
+            ),
             (format!("https://{addr}/v1"), "the same authority secured"),
         ] {
             assert_eq!(
@@ -699,7 +723,10 @@ mod declare_open_refusals {
             judged_at_declare,
             "a target off the pin is refused before the judge"
         );
-        assert!(!dialled(&other_listener, SETTLE), "another port is never dialled");
+        assert!(
+            !dialled(&other_listener, SETTLE),
+            "another port is never dialled"
+        );
         assert!(!dialled(&listener, SETTLE));
 
         let conn = connector
@@ -746,7 +773,10 @@ mod declare_open_refusals {
             Err(ConnError::Refused),
             "the old pin"
         );
-        assert!(!dialled(&first_listener, SETTLE), "the old pin is not dialled");
+        assert!(
+            !dialled(&first_listener, SETTLE),
+            "the old pin is not dialled"
+        );
         let conn = connector
             .open(OWNER, NEED, &desc(&moved))
             .expect("the re-declared target opens");
@@ -802,8 +832,8 @@ mod declare_open_refusals {
             );
             assert_eq!(
                 open(&connector, OWNER, never, &desc(target)),
-                Err(ConnError::Refused),
-                "{target:?}"
+                Err(ConnError::UndeclaredNeed),
+                "{target:?}: a need never admitted is not declared"
             );
         }
         assert_eq!(judge.count(), judged, "the refused needs reach no judge");
@@ -954,8 +984,7 @@ mod declare_open_refusals {
         let connector = judged_by(&judge);
         DeclaredConns::hold_authority(&connector, OWNER);
         for owner in [OWNER, OTHER] {
-            DeclaredConns::declare(&connector, owner, NEED, &need(), None, None)
-                .expect("the need");
+            DeclaredConns::declare(&connector, owner, NEED, &need(), None, None).expect("the need");
         }
         let far = format!("http://{addr}/token");
         let far = far.as_str();
@@ -980,10 +1009,13 @@ mod declare_open_refusals {
             .open(
                 OWNER,
                 NEED,
-                &token(&[(
-                    "content-type",
-                    b"application/x-www-form-urlencoded".as_slice(),
-                )]),
+                &token(
+                    far,
+                    &[(
+                        "content-type",
+                        b"application/x-www-form-urlencoded".as_slice(),
+                    )],
+                ),
             )
             .expect("the auth instance's clean head opens");
         assert!(dialled(&listener, LANDS));
@@ -993,7 +1025,7 @@ mod declare_open_refusals {
             .open(
                 OTHER,
                 NEED,
-                &token(&[("host", b"upstream.example.com".as_slice())]),
+                &token(far, &[("host", b"upstream.example.com".as_slice())]),
             )
             .expect("an owner whose authority is not held states its own host field");
         assert!(dialled(&listener, LANDS));
@@ -1017,7 +1049,12 @@ mod declare_open_refusals {
             (format!("http://{USER}@{addr}"), format!("http://{addr}")),
         ] {
             assert_eq!(
-                declare(&connector, NEED, &pinned(EGRESS_DEFAULT), Some(&credentialed)),
+                declare(
+                    &connector,
+                    NEED,
+                    &pinned(EGRESS_DEFAULT),
+                    Some(&credentialed)
+                ),
                 Ok(()),
                 "a settings-derived target is declared"
             );
@@ -1081,7 +1118,10 @@ mod declare_open_refusals {
             (NeedId(11), format!("http://{addr}/v1/traces")),
         ] {
             let before = judge.count();
-            assert_eq!(declare(&connector, id, &pinned(EGRESS_DEFAULT), Some(&pin)), Ok(()));
+            assert_eq!(
+                declare(&connector, id, &pinned(EGRESS_DEFAULT), Some(&pin)),
+                Ok(())
+            );
             assert_eq!(DeclaredConns::declared(&connector, OWNER, id), Some(Ok(())));
             let conn = connector
                 .open(OWNER, id, &desc(""))
@@ -1248,7 +1288,9 @@ mod declare_open_refusals {
             );
             assert_eq!(
                 connector.refusal(OWNER, id),
-                Some(NeedRefusal::Policy(crate::conns::verdict_text(DEST_INTERNAL))),
+                Some(NeedRefusal::Policy(crate::conns::verdict_text(
+                    DEST_INTERNAL
+                ))),
                 "{pin}"
             );
             assert!(connector.native_need(OWNER, id).is_none(), "{pin}");
@@ -1267,7 +1309,10 @@ mod declare_open_refusals {
             EGRESS_OPEN_WEB,
             EGRESS_LOOPBACK_ALLOWED,
         ] {
-            for pin in ["https://169.254.169.254:443", "https://169.254.169.254/latest"] {
+            for pin in [
+                "https://169.254.169.254:443",
+                "https://169.254.169.254/latest",
+            ] {
                 id += 1;
                 let need = NeedId(id);
                 assert_eq!(
@@ -1281,7 +1326,9 @@ mod declare_open_refusals {
                 );
                 assert_eq!(
                     connector.refusal(OWNER, need),
-                    Some(NeedRefusal::Policy(crate::conns::verdict_text(DEST_METADATA))),
+                    Some(NeedRefusal::Policy(crate::conns::verdict_text(
+                        DEST_METADATA
+                    ))),
                     "class {class}: {pin}"
                 );
                 assert!(connector.native_need(OWNER, need).is_none());
@@ -1992,4 +2039,926 @@ async fn a_target_the_guard_refuses_never_reaches_the_proxy() {
         0,
         "the proxy was never asked for a tunnel"
     );
+}
+
+/// THE `Connector::anchor` FIXTURE (P095-1): anchors sealed per destination and per registration, held to a real
+/// TLS handshake against a far end on loopback. What these prove ends where a transport session begins: the
+/// connection's security (the key pin, the identity presented, the trust a line was verified under, the reach a
+/// registration holds) is settled before a request byte could leave, so no session is needed here. A line is kept
+/// for the next exchange when its answer was read whole; the session that reads it is the linked http image's, so
+/// the pooled tests mark the exchange answered (`Exchange::ended`) and close it through the connection table's own
+/// close, which keeps it exactly as a whole answer would.
+mod anchor_seals {
+    use std::io::Read as _;
+    use std::net::TcpStream;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::task::Waker;
+
+    use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+    use busbar_contract::conn::{Bytes, ConnId, NO_TICKET};
+    use busbar_contract::crypto::testing::rcgen;
+    use busbar_contract::transport::trust::{Anchors, ClientIdentity, EgressTrust};
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    use super::*;
+
+    /// Another instance, which declared nothing.
+    const OTHER: InstanceId = InstanceId(8);
+    /// `OWNER`'s plaintext need (`NEED` is its secure one).
+    const PLAIN: NeedId = NeedId(4);
+
+    const POOLED: PoolPosture = PoolPosture {
+        max_idle_per_host: 8,
+        idle_timeout: Duration::from_secs(60),
+    };
+
+    /// A private root, under a subject no other root of this process carries.
+    struct Pki {
+        params: rcgen::CertificateParams,
+        key: rcgen::KeyPair,
+        der: Vec<u8>,
+        pem: String,
+    }
+
+    /// A leaf a [`Pki`] signed: its certificate, its key (PKCS#8 DER) and its key pin.
+    struct Leaf {
+        der: Vec<u8>,
+        key: Vec<u8>,
+        pin: String,
+    }
+
+    impl Pki {
+        fn new() -> Self {
+            static ROOTS: AtomicUsize = AtomicUsize::new(0);
+            let n = ROOTS.fetch_add(1, Ordering::Relaxed);
+            let key = rcgen::KeyPair::generate().expect("a root key");
+            let mut params =
+                rcgen::CertificateParams::new(Vec::<String>::new()).expect("root params");
+            params.distinguished_name.push(
+                rcgen::DnType::CommonName,
+                format!("anchor seal test root {n}"),
+            );
+            params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            let cert = params.self_signed(&key).expect("the root");
+            Self {
+                der: cert.der().to_vec(),
+                pem: cert.pem(),
+                params,
+                key,
+            }
+        }
+
+        fn leaf(&self, name: &str) -> Leaf {
+            let key = rcgen::KeyPair::generate().expect("a leaf key");
+            let issuer = rcgen::Issuer::from_params(&self.params, &self.key);
+            let cert = rcgen::CertificateParams::new(vec![name.to_owned()])
+                .expect("leaf params")
+                .signed_by(&key, &issuer)
+                .expect("the leaf");
+            Leaf {
+                der: cert.der().to_vec(),
+                key: key.serialize_der(),
+                pin: busbar_contract::transport::trust::key_pin(&key.subject_public_key_info()),
+            }
+        }
+
+        /// The connector's trust: the public roots and this root.
+        fn trust(&self) -> EgressTrust {
+            EgressTrust {
+                extra_anchors: vec![self.der.clone()],
+                ..EgressTrust::default()
+            }
+        }
+    }
+
+    fn identity(leaf: &Leaf) -> ClientIdentity {
+        ClientIdentity {
+            cert_chain: vec![leaf.der.clone()],
+            private_key: leaf.key.clone().into(),
+        }
+    }
+
+    fn pinned(leaf: &Leaf) -> Anchors {
+        Anchors {
+            key_pin: Some(leaf.pin.clone()),
+            ..Anchors::default()
+        }
+    }
+
+    /// What a TLS far end met on one connection, in the order it accepted them.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Met {
+        /// The handshake completed; the client certificate presented, if any.
+        Secured { presented: Option<Vec<u8>> },
+        /// The handshake failed.
+        Refused,
+    }
+
+    /// A far end on loopback: its URL, what it met, how many connections it accepted and how many
+    /// application bytes reached it.
+    struct FarEnd {
+        target: String,
+        met: Arc<Mutex<Vec<Met>>>,
+        accepted: Arc<AtomicUsize>,
+        app_bytes: Arc<AtomicUsize>,
+    }
+
+    impl FarEnd {
+        /// What it met, once `count` connections were met (or ten seconds passed).
+        async fn meetings(&self, count: usize) -> Vec<Met> {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let met = self.met.lock().expect("meetings").clone();
+                if met.len() >= count || Instant::now() >= deadline {
+                    return met;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+
+        /// The connections it accepted, once at least `count` were (or ten seconds passed).
+        async fn accepted(&self, count: usize) -> usize {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let accepted = self.accepted.load(Ordering::SeqCst);
+                if accepted >= count || Instant::now() >= deadline {
+                    return accepted;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+
+        fn app_bytes(&self) -> usize {
+            self.app_bytes.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Accept on a loopback port, counting, handing each connection to `each` on its own thread.
+    fn listening(
+        scheme: &str,
+        each: impl Fn(TcpStream, Arc<Mutex<Vec<Met>>>, Arc<AtomicUsize>) + Send + Sync + 'static,
+    ) -> FarEnd {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let port = listener.local_addr().expect("its address").port();
+        let host = if scheme == "https" {
+            "localhost"
+        } else {
+            "127.0.0.1"
+        };
+        let far = FarEnd {
+            target: format!("{scheme}://{host}:{port}/v1"),
+            met: Arc::default(),
+            accepted: Arc::default(),
+            app_bytes: Arc::default(),
+        };
+        let (met, accepted, app_bytes) = (
+            Arc::clone(&far.met),
+            Arc::clone(&far.accepted),
+            Arc::clone(&far.app_bytes),
+        );
+        let each = Arc::new(each);
+        std::thread::spawn(move || {
+            for tcp in listener.incoming() {
+                let Ok(tcp) = tcp else { return };
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let (each, met, app_bytes) =
+                    (Arc::clone(&each), Arc::clone(&met), Arc::clone(&app_bytes));
+                std::thread::spawn(move || each(tcp, met, app_bytes));
+            }
+        });
+        far
+    }
+
+    /// A plaintext far end that holds each connection open and counts what it reads.
+    fn plain_far_end() -> FarEnd {
+        listening("http", |mut tcp, _, app_bytes| {
+            let mut buf = [0_u8; 256];
+            while let Ok(n @ 1..) = tcp.read(&mut buf) {
+                app_bytes.fetch_add(n, Ordering::SeqCst);
+            }
+        })
+    }
+
+    /// A TLS far end serving `leaf` as `localhost`, asking for a client certificate under `asks`
+    /// (and taking a connection that presents none), holding each connection open after its
+    /// handshake and counting the application bytes it reads.
+    fn tls_far_end(leaf: &Leaf, asks: Option<&Pki>) -> FarEnd {
+        let chain = vec![CertificateDer::from(leaf.der.clone())];
+        let key = PrivateKeyDer::try_from(leaf.key.clone()).expect("the leaf's key");
+        let verifier = asks.map(|pki| {
+            let mut roots = rustls::RootCertStore::empty();
+            roots
+                .add(CertificateDer::from(pki.der.clone()))
+                .expect("the client root");
+            busbar_contract::crypto::tls::client_verifier(Arc::new(roots), |b| {
+                b.allow_unauthenticated()
+            })
+            .expect("a client verifier")
+        });
+        let config = busbar_contract::crypto::tls::server_config(|builder| {
+            let builder = match verifier {
+                Some(verifier) => builder.with_client_cert_verifier(verifier),
+                None => builder.with_no_client_auth(),
+            };
+            builder.with_single_cert(chain, key)
+        })
+        .expect("a server config");
+        listening("https", move |mut tcp, met, app_bytes| {
+            let Ok(mut tls) = rustls::ServerConnection::new(Arc::clone(&config)) else {
+                return;
+            };
+            while tls.is_handshaking() {
+                if tls.complete_io(&mut tcp).is_err() {
+                    met.lock().expect("meetings").push(Met::Refused);
+                    return;
+                }
+            }
+            let presented = tls
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .map(|leaf| leaf.to_vec());
+            met.lock()
+                .expect("meetings")
+                .push(Met::Secured { presented });
+            let mut stream = rustls::Stream::new(&mut tls, &mut tcp);
+            let mut buf = [0_u8; 256];
+            while let Ok(n @ 1..) = stream.read(&mut buf) {
+                app_bytes.fetch_add(n, Ordering::SeqCst);
+            }
+        })
+    }
+
+    /// `localhost:<port>` is loopback; an IP literal is judged as [`loopback`] judges it.
+    fn named_loopback(
+        target: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        match target
+            .strip_prefix("localhost:")
+            .and_then(|port| port.parse::<u16>().ok())
+        {
+            Some(port) => Some(Ok(SocketAddr::from(([127, 0, 0, 1], port)))),
+            None => loopback(target, class, done),
+        }
+    }
+
+    /// A connector trusting `trust` (with its policy known when `known`: member roots can be sealed
+    /// on it; otherwise its client config is opaque), keeping lines under `posture`, carrying http
+    /// natively, with `OWNER`'s secure `NEED` and plaintext `PLAIN` declared.
+    fn anchoring(trust: EgressTrust, known: bool, posture: PoolPosture) -> Connector {
+        let c = if known {
+            Connector::serving_with_trust(Arc::new(named_loopback), trust, Arc::new(|_, _| {}))
+                .expect("a usable trust")
+        } else {
+            let config =
+                crate::tls::client::build_client_config(&trust).expect("a usable client config");
+            Connector::serving(
+                Arc::new(named_loopback),
+                Some(Arc::new(config)),
+                Arc::new(|_, _| {}),
+            )
+        }
+        .pooling(posture);
+        c.carry_natively(vec![carrier(CARRIER_HTTP)], storage())
+            .expect("the carriers");
+        DeclaredConns::declare(&c, OWNER, NEED, &secure_need(), None, None).expect("declared");
+        DeclaredConns::declare(&c, OWNER, PLAIN, &need(), None, None).expect("declared");
+        c
+    }
+
+    fn secure_need() -> ReadNeed {
+        ReadNeed {
+            transport: "https".into(),
+            ..need()
+        }
+    }
+
+    /// `owner`'s open of `need` at `target` naming `member`, with a five-byte body.
+    fn open_as(
+        c: &Connector,
+        (owner, need): (InstanceId, NeedId),
+        target: &str,
+        member: &str,
+    ) -> Result<ConnId, ConnError> {
+        c.open(
+            owner,
+            need,
+            &OpenDesc {
+                member,
+                body: Bytes::from_static(b"first"),
+                ..desc(target)
+            },
+        )
+    }
+
+    /// Drive `conn`'s dial until it has landed (dialled, secured, nothing queued) or failed.
+    async fn land(c: &Connector, owner: InstanceId, conn: ConnId) -> Result<(), ConnError> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match DeclaredConns::landed(c, owner, conn, NO_TICKET) {
+                Err(ConnError::Pending) if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                landed => return landed,
+            }
+        }
+    }
+
+    /// Open as `member` and land: the facts of the landed connection, or why it did not land.
+    async fn landed_as(
+        c: &Connector,
+        target: &str,
+        member: &str,
+    ) -> Result<busbar_contract::transport::ConnFacts, ConnError> {
+        let conn = open_as(c, (OWNER, NEED), target, member)?;
+        let landed = land(c, OWNER, conn).await;
+        let facts = landed.and_then(|()| c.facts(OWNER, conn));
+        c.close(OWNER, conn).expect("closed");
+        facts
+    }
+
+    /// Whether `conn`'s exchange rides a kept line (lent from the idle set), not one dialled for it.
+    fn lent(c: &Connector, conn: ConnId) -> bool {
+        let (_, held) = c.slab.get(OWNER, conn).expect("held");
+        let native = held.native.as_ref().expect("a native entry");
+        let exchange = native.begin(Waker::noop()).expect("the exchange is in");
+        let kept = exchange.kept;
+        native.end(exchange);
+        kept
+    }
+
+    /// `conn`'s answer read whole (what the http session states at its end), then the connection
+    /// table's close, which keeps the line for the next exchange to the same key.
+    fn answered_and_closed(c: &Connector, conn: ConnId) {
+        {
+            let (_, held) = c.slab.get(OWNER, conn).expect("held");
+            let native = held.native.as_ref().expect("a native entry");
+            let mut exchange = native.begin(Waker::noop()).expect("the exchange is in");
+            exchange.ended = true;
+            native.end(exchange);
+        }
+        c.close(OWNER, conn).expect("closed");
+    }
+
+    #[tokio::test]
+    async fn prepared_request_tls_facts_precede_application_bytes_on_same_connection() {
+        let pki = Pki::new();
+        let leaf = pki.leaf("localhost");
+        let far = tls_far_end(&leaf, None);
+        let c = anchoring(pki.trust(), false, PoolPosture::NONE);
+        assert_eq!(
+            DeclaredConns::prepare_request(&c, OWNER, NEED, &desc(&far.target), 0),
+            Err(ConnError::Refused),
+            "a native need prepares nothing apart from its open"
+        );
+        let conn = open_as(&c, (OWNER, NEED), &far.target, "").expect("opens");
+        land(&c, OWNER, conn)
+            .await
+            .expect("the handshake completes");
+        let facts = c.facts(OWNER, conn).expect("the landed connection's facts");
+        assert_eq!(facts.sni.as_deref(), Some("localhost"));
+        assert_eq!(
+            facts.peer_key_pin.as_deref(),
+            Some(leaf.pin.as_str()),
+            "the key of the handshake that completed"
+        );
+        assert!(!facts.client_identity);
+        assert_eq!(
+            far.meetings(1).await,
+            vec![Met::Secured { presented: None }]
+        );
+        assert_eq!(
+            far.app_bytes(),
+            0,
+            "the facts are read before any application byte"
+        );
+        assert_eq!(
+            c.facts(OWNER, conn),
+            Ok(facts),
+            "the same connection states the same facts"
+        );
+        c.close(OWNER, conn).expect("closed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            far.accepted.load(Ordering::SeqCst),
+            1,
+            "one connection: the refused prepare and the facts dialled no other"
+        );
+        assert_eq!(far.app_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_far_end_serving_the_pinned_key_is_reached_and_its_key_is_the_facts() {
+        let pki = Pki::new();
+        let leaf = pki.leaf("localhost");
+        let far = tls_far_end(&leaf, None);
+        let c = anchoring(pki.trust(), false, PoolPosture::NONE);
+        let anchors = Anchors {
+            key_pin: Some(format!(" {} ", leaf.pin)),
+            ..Anchors::default()
+        };
+        c.anchor(OWNER, NEED, "", &far.target, &anchors)
+            .expect("sealed");
+        let facts = landed_as(&c, &far.target, "")
+            .await
+            .expect("the far end serving the pinned key is reached");
+        assert_eq!(facts.peer_key_pin.as_deref(), Some(leaf.pin.as_str()));
+        assert!(!facts.client_identity);
+        assert_eq!(
+            far.meetings(1).await,
+            vec![Met::Secured { presented: None }]
+        );
+
+        // Twin: the same far end, the seal naming another key of the same root, is refused.
+        c.anchor(
+            OWNER,
+            NEED,
+            "",
+            &far.target,
+            &pinned(&pki.leaf("localhost")),
+        )
+        .expect("sealed again");
+        assert!(
+            landed_as(&c, &far.target, "").await.is_err(),
+            "held to the pin, not to the chain"
+        );
+        assert_eq!(far.app_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn two_registrations_at_one_authority_each_present_their_own_identity() {
+        let pki = Pki::new();
+        let server = pki.leaf("localhost");
+        let planner = pki.leaf("planner.client");
+        let auditor = pki.leaf("auditor.client");
+        let far = tls_far_end(&server, Some(&pki));
+        let c = anchoring(pki.trust(), false, PoolPosture::NONE);
+        c.anchor(
+            OWNER,
+            NEED,
+            "planner",
+            &far.target,
+            &Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(identity(&planner)),
+                ..Anchors::default()
+            },
+        )
+        .expect("sealed");
+        c.anchor(
+            OWNER,
+            NEED,
+            "auditor",
+            &far.target,
+            &Anchors {
+                client_identity: Some(identity(&auditor)),
+                ..Anchors::default()
+            },
+        )
+        .expect("sealed");
+        c.anchor(OWNER, NEED, "bare", &far.target, &Anchors::default())
+            .expect("sealed");
+
+        for (n, (member, own)) in [
+            ("planner", Some(&planner)),
+            ("auditor", Some(&auditor)),
+            ("bare", None),
+            ("planner", Some(&planner)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let facts = landed_as(&c, &far.target, member)
+                .await
+                .unwrap_or_else(|e| panic!("{member} lands: {e:?}"));
+            assert_eq!(facts.client_identity, own.is_some(), "{member}");
+            assert_eq!(
+                far.meetings(n + 1).await.get(n),
+                Some(&Met::Secured {
+                    presented: own.map(|leaf| leaf.der.clone())
+                }),
+                "{member} presents its own identity, and one holding none presents none"
+            );
+        }
+        assert_eq!(far.app_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_pinned_destination_over_plaintext_is_refused_and_a_bad_identity_refuses_the_seal() {
+        let pki = Pki::new();
+        let leaf = pki.leaf("localhost");
+        let plain = plain_far_end();
+        let c = anchoring(pki.trust(), false, PoolPosture::NONE);
+
+        // Control: unsealed, the plaintext open (its opener accepting plaintext) is dialled.
+        let conn = open_as(&c, (OWNER, PLAIN), &plain.target, "").expect("opens");
+        assert_eq!(plain.accepted(1).await, 1, "the unsealed open dials");
+        c.close(OWNER, conn).expect("closed");
+
+        c.anchor(OWNER, PLAIN, "", &plain.target, &pinned(&leaf))
+            .expect("sealed");
+        assert_eq!(
+            open_as(&c, (OWNER, PLAIN), &plain.target, "").map(|_| ()),
+            Err(ConnError::Refused),
+            "a pin has no key to hold over plaintext: the open is refused, whatever the opener accepts"
+        );
+        let bad = Anchors {
+            client_identity: Some(ClientIdentity {
+                cert_chain: vec![leaf.der.clone()],
+                private_key: b"not a key".to_vec().into(),
+            }),
+            ..Anchors::default()
+        };
+        let secure = format!("https://localhost:{}/v1", 443);
+        assert_eq!(
+            c.anchor(OWNER, NEED, "", &secure, &bad),
+            Err(ConnError::Refused),
+            "an identity that does not parse refuses the seal"
+        );
+        assert_eq!(
+            c.anchor(OWNER, NEED, "planner", &secure, &bad),
+            Err(ConnError::Refused)
+        );
+        for member in ["", "planner"] {
+            assert_eq!(
+                c.anchor(OTHER, NEED, member, &plain.target, &pinned(&leaf)),
+                Err(ConnError::Refused),
+                "another owner's need is never sealed ({member:?})"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            plain.accepted.load(Ordering::SeqCst),
+            1,
+            "nothing was dialled for a refusal"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pooled_line_is_never_lent_once_its_destination_is_sealed_again() {
+        let pki = Pki::new();
+        let served = pki.leaf("localhost");
+        let other = pki.leaf("localhost");
+        let far = tls_far_end(&served, None);
+        let c = anchoring(pki.trust(), false, POOLED);
+        c.anchor(OWNER, NEED, "", &far.target, &pinned(&served))
+            .expect("sealed");
+
+        let first = open_as(&c, (OWNER, NEED), &far.target, "").expect("opens");
+        assert!(!lent(&c, first), "nothing is kept yet: dialled");
+        land(&c, OWNER, first).await.expect("lands");
+        answered_and_closed(&c, first);
+
+        // Control: under the same seal the kept line is lent.
+        let again = open_as(&c, (OWNER, NEED), &far.target, "").expect("opens");
+        assert!(lent(&c, again), "the same seal rides its kept line");
+        land(&c, OWNER, again).await.expect("lands");
+        assert_eq!(
+            c.facts(OWNER, again).map(|f| f.peer_key_pin),
+            Ok(Some(served.pin.clone()))
+        );
+        answered_and_closed(&c, again);
+        assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "one line so far");
+
+        c.anchor(OWNER, NEED, "", &far.target, &pinned(&other))
+            .expect("sealed again");
+        let resealed = open_as(&c, (OWNER, NEED), &far.target, "").expect("opens");
+        assert!(
+            !lent(&c, resealed),
+            "the line the old seal verified is never lent under the new one"
+        );
+        assert!(
+            land(&c, OWNER, resealed).await.is_err(),
+            "the open is held to the new pin, which the far end does not serve"
+        );
+        assert!(far.accepted(2).await >= 2, "it dialled afresh");
+        c.close(OWNER, resealed).expect("closed");
+        assert_eq!(far.app_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_pooled_line_is_never_lent_once_its_need_trusts_another_operator_ca() {
+        let pki = Pki::new();
+        let another = Pki::new();
+        let far = tls_far_end(&pki.leaf("localhost"), None);
+        // The connector's own trust is the public roots alone: only the need's CA verifies the far end.
+        let c = anchoring(EgressTrust::default(), false, POOLED);
+        let declare = |pem: &str| {
+            let need = ReadNeed {
+                trust_from: "settings.ca".into(),
+                ..secure_need()
+            };
+            DeclaredConns::declare(&c, OWNER, NEED, &need, None, Some(pem))
+        };
+        declare(&pki.pem).expect("declared under its CA");
+
+        let first = open_as(&c, (OWNER, NEED), &far.target, "").expect("opens");
+        land(&c, OWNER, first)
+            .await
+            .expect("the need's CA verifies the far end");
+        answered_and_closed(&c, first);
+        let again = open_as(&c, (OWNER, NEED), &far.target, "").expect("opens");
+        assert!(
+            lent(&c, again),
+            "control: under the same CA the kept line is lent"
+        );
+        land(&c, OWNER, again).await.expect("lands");
+        answered_and_closed(&c, again);
+        assert_eq!(far.accepted.load(Ordering::SeqCst), 1);
+
+        declare(&another.pem).expect("declared again under another CA");
+        let moved = open_as(&c, (OWNER, NEED), &far.target, "").expect("opens");
+        assert!(
+            !lent(&c, moved),
+            "the line the old CA verified is never lent under the new one"
+        );
+        assert!(
+            land(&c, OWNER, moved).await.is_err(),
+            "the open is held to the need's new CA, which did not sign the far end"
+        );
+        assert!(far.accepted(2).await >= 2, "it dialled afresh");
+        c.close(OWNER, moved).expect("closed");
+        assert_eq!(far.app_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn member_ca_public_connector_opens_only_its_sealed_member() {
+        let base = Pki::new();
+        let member = Pki::new();
+        let leaf = member.leaf("localhost");
+        let far = tls_far_end(&leaf, None);
+        let c = anchoring(base.trust(), true, PoolPosture::NONE);
+        c.anchor(
+            OWNER,
+            NEED,
+            "member",
+            &far.target,
+            &Anchors {
+                extra_anchors: vec![member.der.clone()],
+                key_pin: Some(leaf.pin.clone()),
+                ..Anchors::default()
+            },
+        )
+        .expect("the member's root is sealed on the known policy");
+        c.anchor(OWNER, NEED, "sibling", &far.target, &Anchors::default())
+            .expect("sealed");
+
+        let facts = landed_as(&c, &far.target, "member")
+            .await
+            .expect("the member's own root verifies its far end");
+        assert_eq!(facts.peer_key_pin.as_deref(), Some(leaf.pin.as_str()));
+        assert_eq!(
+            far.meetings(1).await,
+            vec![Met::Secured { presented: None }]
+        );
+        assert!(
+            landed_as(&c, &far.target, "sibling").await.is_err(),
+            "another registration at the authority is not lent the member's root"
+        );
+        assert_eq!(far.meetings(2).await.get(1), Some(&Met::Refused));
+        assert_eq!(
+            open_as(&c, (OWNER, NEED), &far.target, "").map(|_| ()),
+            Err(ConnError::Refused),
+            "nor is an open naming no registration"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(far.accepted.load(Ordering::SeqCst), 2);
+        assert_eq!(far.app_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn member_ca_fails_closed_for_plaintext_and_opaque_base() {
+        let pki = Pki::new();
+        let roots = Anchors {
+            extra_anchors: vec![pki.der.clone()],
+            ..Anchors::default()
+        };
+        let secure = "https://localhost:443/v1";
+
+        // An opaque base (a client config whose policy is not known) cannot carry a member root.
+        let opaque = anchoring(pki.trust(), false, PoolPosture::NONE);
+        for member in ["member", ""] {
+            assert_eq!(
+                opaque.anchor(OWNER, NEED, member, secure, &roots),
+                Err(ConnError::Refused),
+                "opaque base ({member:?})"
+            );
+        }
+
+        let c = anchoring(pki.trust(), true, PoolPosture::NONE);
+        // A target that names no locatable authority (the (None, false) arm).
+        for target in ["localhost:443", "gopher://localhost/x", ""] {
+            assert_eq!(
+                c.anchor(OWNER, NEED, "member", target, &roots),
+                Err(ConnError::Refused),
+                "no locatable authority ({target:?})"
+            );
+        }
+
+        // Plaintext: the member's root has no handshake to verify, so its open is refused.
+        let plain = plain_far_end();
+        let control = open_as(&c, (OWNER, PLAIN), &plain.target, "member").expect("opens");
+        assert_eq!(plain.accepted(1).await, 1, "control: unsealed, it dials");
+        c.close(OWNER, control).expect("closed");
+        c.anchor(OWNER, PLAIN, "member", &plain.target, &roots)
+            .expect("sealed");
+        assert_eq!(
+            open_as(&c, (OWNER, PLAIN), &plain.target, "member").map(|_| ()),
+            Err(ConnError::Refused),
+            "a member root over plaintext fails closed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(plain.accepted.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_registration_holding_no_anchors_never_borrows_one_sealed_after_it() {
+        let pki = Pki::new();
+        let server = pki.leaf("localhost");
+        let planner = pki.leaf("planner.client");
+        let far = tls_far_end(&server, Some(&pki));
+        let c = anchoring(pki.trust(), false, PoolPosture::NONE);
+        c.anchor(OWNER, NEED, "bare", &far.target, &Anchors::default())
+            .expect("sealed");
+        c.anchor(
+            OWNER,
+            NEED,
+            "planner",
+            &far.target,
+            &Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(identity(&planner)),
+                ..Anchors::default()
+            },
+        )
+        .expect("sealed after it");
+
+        let bare = landed_as(&c, &far.target, "bare")
+            .await
+            .expect("the bare registration dials under the default trust");
+        assert!(!bare.client_identity);
+        assert_eq!(
+            far.meetings(1).await,
+            vec![Met::Secured { presented: None }],
+            "it never borrows the identity sealed after it"
+        );
+        let own = landed_as(&c, &far.target, "planner").await.expect("lands");
+        assert!(own.client_identity);
+        assert_eq!(
+            far.meetings(2).await.get(1),
+            Some(&Met::Secured {
+                presented: Some(planner.der.clone())
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_open_naming_no_registration_is_refused_where_the_registrations_at_its_authority_disagree(
+    ) {
+        let pki = Pki::new();
+        let server = pki.leaf("localhost");
+        let planner = pki.leaf("planner.client");
+        let far = tls_far_end(&server, Some(&pki));
+        let c = anchoring(pki.trust(), false, PoolPosture::NONE);
+        c.anchor(
+            OWNER,
+            NEED,
+            "planner",
+            &far.target,
+            &Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(identity(&planner)),
+                ..Anchors::default()
+            },
+        )
+        .expect("sealed");
+        landed_as(&c, &far.target, "")
+            .await
+            .expect("control: one registration at the authority is the destination's anchors");
+        assert_eq!(far.meetings(1).await.len(), 1);
+
+        c.anchor(OWNER, NEED, "bare", &far.target, &Anchors::default())
+            .expect("sealed");
+        assert_eq!(
+            open_as(&c, (OWNER, NEED), &far.target, "").map(|_| ()),
+            Err(ConnError::Refused),
+            "two registrations disagree: an open naming neither is refused"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            far.accepted.load(Ordering::SeqCst),
+            1,
+            "nothing was dialled for the refusal"
+        );
+        landed_as(&c, &far.target, "planner")
+            .await
+            .expect("a named registration still opens under its own seal");
+    }
+
+    #[tokio::test]
+    async fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
+        let far = plain_far_end();
+        let strict = Arc::new(crate::conns::LiteralsOnly(
+            crate::conns::guard::Guard::default(),
+        ));
+        let c = Connector::serving(strict, None, Arc::new(|_, _| {}));
+        c.carry_natively(vec![carrier(CARRIER_HTTP)], storage())
+            .expect("the carriers");
+        let provider = ReadNeed {
+            egress_class: EGRESS_PROVIDER,
+            ..need()
+        };
+        for n in [NEED, PLAIN] {
+            DeclaredConns::declare(&c, OWNER, n, &provider, None, None).expect("declared");
+        }
+        let open = |need: NeedId, target: &str, member: &str| {
+            open_as(&c, (OWNER, need), target, member).map(|conn| {
+                c.close(OWNER, conn).expect("closed");
+            })
+        };
+        let reach = Anchors {
+            private_reach: true,
+            ..Anchors::default()
+        };
+        assert_eq!(
+            open(NEED, &far.target, "inside"),
+            Err(ConnError::Refused),
+            "no reach yet: the guard refuses the private address"
+        );
+        assert_eq!(
+            c.anchor(OWNER, NEED, "", &far.target, &reach),
+            Err(ConnError::Refused),
+            "a reach is a registration's, never a destination's"
+        );
+        c.anchor(OWNER, NEED, "inside", &far.target, &reach)
+            .expect("sealed");
+        c.anchor(OWNER, NEED, "outside", &far.target, &Anchors::default())
+            .expect("sealed");
+        assert_eq!(
+            open(NEED, &far.target, "inside"),
+            Ok(()),
+            "the registration's own open reaches"
+        );
+        assert_eq!(far.accepted(1).await, 1);
+        for (need, target, member, why) in [
+            (
+                NEED,
+                "http://127.0.0.1:1/v1",
+                "inside",
+                "another port on the same host",
+            ),
+            (
+                NEED,
+                far.target.as_str(),
+                "outside",
+                "another registration at the authority",
+            ),
+            (
+                NEED,
+                far.target.as_str(),
+                "",
+                "an open naming no registration",
+            ),
+            (
+                PLAIN,
+                far.target.as_str(),
+                "inside",
+                "the same member name on another need",
+            ),
+        ] {
+            assert_eq!(open(need, target, member), Err(ConnError::Refused), "{why}");
+        }
+        assert_eq!(
+            c.seal_reach(OWNER, NEED, "inside", &far.target, false),
+            Ok(())
+        );
+        assert_eq!(
+            open(NEED, &far.target, "inside"),
+            Err(ConnError::Refused),
+            "a withdrawn reach admits nothing"
+        );
+        assert_eq!(
+            c.seal_reach(OWNER, NEED, "inside", &far.target, true),
+            Ok(())
+        );
+        assert_eq!(open(NEED, &far.target, "inside"), Ok(()));
+        assert_eq!(far.accepted(2).await, 2);
+        let metadata = "http://169.254.169.254:80/latest";
+        c.anchor(OWNER, NEED, "inside", metadata, &reach)
+            .expect("sealed");
+        assert_eq!(
+            open(NEED, metadata, "inside"),
+            Err(ConnError::Refused),
+            "a reach never admits cloud metadata"
+        );
+        assert_eq!(
+            open(NEED, &far.target, "inside"),
+            Err(ConnError::Refused),
+            "the registration's reach moved with its seal"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(far.accepted.load(Ordering::SeqCst), 2);
+    }
 }
