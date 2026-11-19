@@ -415,7 +415,9 @@ async fn admin_door(app: Arc<App>, bearer: Option<&str>) -> busbar_kernel::auth:
             query: "",
             query_present: false,
             authority: "",
-            headers: value.iter().map(|value| ("authorization", value.as_bytes())),
+            headers: value
+                .iter()
+                .map(|value| ("authorization", value.as_bytes())),
             peer: "",
             tls_peer_cert: &[],
             body: b"",
@@ -624,8 +626,10 @@ impl busbar_ports::auth::AuthPort for Module {
     fn refresh<'a>(
         &'a self,
         _: busbar_ports::CallCx,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<Option<u32>, busbar_ports::PortError>>
-    {
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Option<u32>, busbar_ports::PortError>,
+    > {
         Box::pin(async { Err(not_declared()) })
     }
     fn serve<'a>(
