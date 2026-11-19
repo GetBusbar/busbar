@@ -7,7 +7,13 @@
 //! answer, with nothing about which of the two it was.
 
 #![cfg(unix)]
-#![cfg(linked_every_plane_door)]
+#![cfg(all(
+    linked_section_pools,
+    linked_section_tools,
+    linked_section_agents,
+    linked_section_decisions,
+    linked_section_streams
+))]
 
 mod common;
 mod e2e_support;

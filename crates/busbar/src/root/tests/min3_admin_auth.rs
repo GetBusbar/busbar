@@ -208,7 +208,6 @@ impl OperatorReload {
     fn new() -> Self {
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
-        crate::root::test_plane_registry::register();
         let operator = crate::root::test_plugins::bind_operator();
         assert!(!operator.is_empty(), "the linked operator credential binds");
         crate::root::native_operator::NATIVE

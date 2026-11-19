@@ -2462,7 +2462,7 @@ pub(super) async fn finish_with_store(
             let framers = super::min3_framers::NativeFramers::new(transports::table(
                 transports::opened(&walked.opened, &specs),
             )?)
-            .carrying(&super::min3_framers::assigned(crate::LINKED_CARRIERS)?)?;
+            .carrying_assigned()?;
             tracing::info!("{}", framers.carrier_line());
             // The hand-over: the connector dials each assigned carrier through its instance, its sessions charged
             // to the boot's process admission (Data class), once for the process. (A process boots once; only a

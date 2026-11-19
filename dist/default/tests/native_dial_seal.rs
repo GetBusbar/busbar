@@ -7,11 +7,16 @@
 //! http image as its HTTP carrier (as the root does at boot), is given the image behind an observer that keeps every
 //! byte core hands the instance (`begin`, `ingest`, `emit`) and can make the image's output misbehave.
 //!
-//! - the transport sees only filler, as long as the credential and fresh for every value of every request; the
-//!   upstream receives each real credential exactly once, in its place (the header's value, the target's query), and
-//!   none of the host's sealing metadata;
-//! - a framer whose output drops, duplicates, re-encodes or splits a filler fails the exchange with the SEAL_BROKEN
-//!   refusal (core's own fault, not the far end's), and not one byte reaches the upstream.
+//! A sealed value is a mark, not a filler (`busbar-core-connector` `outbound::seal`): the head the transport is
+//! handed declares each sealed slot by place, name and length (`H_SEALED_PAIR`, `H_SEALED_QUERY`), and the
+//! transport's output names where each run of a slot goes (`WireSealed`); the engine writes the value itself.
+//!
+//! - the transport is handed no credential byte, only each slot's name and length; the upstream receives each real
+//!   credential exactly once, in its place (the header's value, the target's query), and none of the host's sealing
+//!   metadata;
+//! - a framer whose marks leave a slot uncovered, cover it twice or run past its end breaks the sealed grammar: the
+//!   exchange fails at the framer, the transport is charged, and not one byte reaches the upstream;
+//! - a framer that covers a slot in two runs, in order, is served whole.
 
 #![cfg(unix)]
 
@@ -22,7 +27,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_DEFAULT, KEEP_NAMED};
+use busbar_contract::abi::host::conn::connector::{
+    CAUSE_FRAMER, DIRECTION_OUTBOUND, EGRESS_DEFAULT, KEEP_NAMED,
+};
 use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
@@ -34,10 +41,11 @@ use busbar_core_connector::{Connector, Judged, Verdict};
 use busbar_plugin_abi::plane::CARRIER_HTTP;
 use busbar_plugin_abi::records::{tag, Records};
 use busbar_plugin_abi::transport as wire;
+use busbar_plugin_abi::vocab::head1::SealedPairRec;
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::Harness;
 use busbar_ports::transport::{
-    ConnIn, TransportEvent, TransportOut, TransportPort, TransportSession,
+    ConnIn, EmitParts, TransportEvent, TransportOut, TransportPort, TransportSession,
 };
 use busbar_ports::PortError;
 
@@ -51,8 +59,8 @@ const KEY: &[u8] = b"HSECRETkeyHSECRETkeyHSECRET0123";
 const QUERY_NAME: &str = "api_key";
 const QUERY: &[u8] = b"QSECRETqueryQSECRETquery987654";
 
-/// The SEAL_BROKEN refusal's text (the connector's `SEAL_BROKEN`).
-const SEAL_BROKEN: &str = "the framer did not render a sealed value verbatim exactly once";
+/// The framer fault's text for a broken sealed grammar (the connector's `fault_text` of `Fault::Sealed`).
+const SEAL_BROKEN: &str = "the transport broke the sealed-value grammar";
 
 /// A storage account that keeps no count.
 struct Free;
@@ -64,19 +72,18 @@ impl StorageAccount for Free {
     fn release(&self, _: usize) {}
 }
 
-/// What the observer does to the image's output bytes that carry the value the framer was handed for a sealed
-/// credential.
+/// What the observer does to the image's marks (`WireSealed`) for the aimed sealed slot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tamper {
     /// Nothing: the image's own output.
     None,
-    /// The value is replaced by other bytes of its length.
+    /// The slot's marks are swallowed: the slot is never covered.
     Drop,
-    /// The value is written twice, back to back.
+    /// Each mark is handed on twice, back to back.
     Duplicate,
-    /// The value's first byte is percent-encoded.
-    ReEncode,
-    /// The bytes are handed on as two WRITEs, cut in the middle of the value.
+    /// Each mark claims one byte more than it covers: it runs past the value's end.
+    Overrun,
+    /// Each mark is handed on as two marks, cut in its middle, in order (the grammar admits it).
     Split,
 }
 
@@ -87,13 +94,22 @@ enum Aim {
     Query,
 }
 
-/// The real image behind an observer: every byte core hands the instance is kept; the value the framer was handed
-/// for each sealed credential is kept per request head; the image's WRITEs are tampered with as `tamper` says.
+/// One sealed slot a request head declared to the transport: its record tag (`H_SEALED_PAIR` or
+/// `H_SEALED_QUERY`), its name and its value's length. No value byte.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Declared {
+    tag: u16,
+    name: Vec<u8>,
+    len: u32,
+}
+
+/// The real image behind an observer: every byte core hands the instance is kept; the sealed slots each request
+/// head declared are kept; the image's marks are tampered with as `tamper` says.
 struct Observed {
     inner: Arc<dyn TransportPort>,
     seen: Mutex<Vec<u8>>,
-    /// Per request head: the value the framer was handed for the sealed header, and the query value it was handed.
-    handed: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    /// Per request head: the sealed slots it declared, in slot order.
+    declared: Mutex<Vec<Vec<Declared>>>,
     tamper: Mutex<(Tamper, Aim)>,
 }
 
@@ -105,89 +121,77 @@ impl Observed {
             .extend_from_slice(bytes);
     }
 
-    /// The value the last head handed the framer for the aimed credential.
-    fn aimed(&self, aim: Aim) -> Option<Vec<u8>> {
-        let handed = self.handed.lock().expect("the observer");
-        let (header, query) = handed.last()?;
-        Some(match aim {
-            Aim::Header => header.clone(),
-            Aim::Query => query.clone(),
-        })
+    /// The slot index the last head declared for the aimed credential.
+    fn aimed(&self, aim: Aim) -> Option<u32> {
+        let wanted = match aim {
+            Aim::Header => tag::H_SEALED_PAIR,
+            Aim::Query => tag::H_SEALED_QUERY,
+        };
+        let declared = self.declared.lock().expect("the observer");
+        let slots = declared.last()?;
+        let at = slots.iter().position(|slot| slot.tag == wanted)?;
+        u32::try_from(at).ok()
     }
 
-    /// Read a request head's records: the sealed header's value and the target's `api_key` value.
+    /// Read a request head's records: the sealed slots it declares, in slot order.
     fn note_head(&self, records: &[u8]) {
-        let mut header = Vec::new();
-        let mut query = Vec::new();
+        let mut slots = Vec::new();
         for record in Records::new(records).flatten() {
-            if record.tag == tag::PAIR {
-                if let Ok((name, value)) = record.pair() {
-                    if name.eq_ignore_ascii_case(KEY_NAME) {
-                        header = value.to_vec();
-                    }
-                }
-            } else if record.tag == tag::H_PATH {
-                if let Ok(path) = record.text() {
-                    let needle = format!("{QUERY_NAME}=");
-                    if let Some(at) = path.find(&needle) {
-                        let rest = &path[at + needle.len()..];
-                        let end = rest.find(['&', '#']).unwrap_or(rest.len());
-                        query = rest.as_bytes()[..end].to_vec();
-                    }
-                }
+            if record.tag == tag::H_SEALED_PAIR || record.tag == tag::H_SEALED_QUERY {
+                let (fixed, name) = record
+                    .pod_tail::<SealedPairRec>()
+                    .expect("a sealed record reads");
+                slots.push(Declared {
+                    tag: record.tag,
+                    name: name.to_vec(),
+                    len: fixed.len,
+                });
             }
         }
-        self.handed
-            .lock()
-            .expect("the observer")
-            .push((header, query));
+        self.declared.lock().expect("the observer").push(slots);
     }
 
-    /// Hand `out` on, tampered with where it carries the aimed value.
+    /// Hand `out` on, tampered with where it marks the aimed slot.
     fn pass(&self, out: TransportOut<'_>, sink: &mut dyn FnMut(TransportOut<'_>)) {
         let (tamper, aim) = *self.tamper.lock().expect("the observer");
-        let TransportOut::Write(bytes) = out else {
+        let TransportOut::WireSealed {
+            stream,
+            slot,
+            offset,
+            len,
+        } = out
+        else {
             sink(out);
             return;
         };
-        let Some(value) = self.aimed(aim).filter(|v| !v.is_empty()) else {
-            sink(TransportOut::Write(bytes));
-            return;
+        let mark = |offset: u32, len: u32| TransportOut::WireSealed {
+            stream,
+            slot,
+            offset,
+            len,
         };
-        let Some(at) = bytes.windows(value.len()).position(|w| w == value) else {
-            sink(TransportOut::Write(bytes));
+        if self.aimed(aim) != Some(slot) {
+            sink(mark(offset, len));
             return;
-        };
-        let end = at + value.len();
-        let mut made = Vec::with_capacity(bytes.len() + value.len() + 2);
+        }
         match tamper {
-            Tamper::None => {
-                sink(TransportOut::Write(bytes));
-                return;
-            }
-            Tamper::Drop => {
-                made.extend_from_slice(&bytes[..at]);
-                made.extend(std::iter::repeat_n(b'z', value.len()));
-                made.extend_from_slice(&bytes[end..]);
-            }
+            Tamper::None => sink(mark(offset, len)),
+            Tamper::Drop => {}
             Tamper::Duplicate => {
-                made.extend_from_slice(&bytes[..end]);
-                made.extend_from_slice(&value);
-                made.extend_from_slice(&bytes[end..]);
+                sink(mark(offset, len));
+                sink(mark(offset, len));
             }
-            Tamper::ReEncode => {
-                made.extend_from_slice(&bytes[..at]);
-                let _ = write!(made, "%{:02X}", value[0]);
-                made.extend_from_slice(&bytes[at + 1..]);
-            }
+            Tamper::Overrun => sink(mark(offset, len + 1)),
             Tamper::Split => {
-                let cut = at + value.len() / 2;
-                sink(TransportOut::Write(&bytes[..cut]));
-                sink(TransportOut::Write(&bytes[cut..]));
-                return;
+                let half = len / 2;
+                if half == 0 {
+                    sink(mark(offset, len));
+                } else {
+                    sink(mark(offset, half));
+                    sink(mark(offset + half, len - half));
+                }
             }
         }
-        sink(TransportOut::Write(&made));
     }
 }
 
@@ -239,18 +243,33 @@ impl TransportPort for Observed {
         &self,
         s: &mut TransportSession,
         stream: u64,
-        piece: u32,
+        pieces: u32,
         arg: u32,
-        bytes: &[u8],
+        credit: u64,
+        parts: EmitParts<'_>,
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
-        self.keep(bytes);
-        if piece == wire::E_HEAD {
-            self.note_head(bytes);
+        for bytes in [
+            parts.head,
+            parts.body,
+            parts.trailers,
+            parts.end,
+            parts.refuse,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.keep(bytes);
         }
-        self.inner.emit(s, stream, piece, arg, bytes, &mut |out| {
-            self.pass(out, sink)
-        })
+        if pieces & wire::E_HEAD != 0 {
+            if let Some(head) = parts.head {
+                self.note_head(head);
+            }
+        }
+        self.inner
+            .emit(s, stream, pieces, arg, credit, parts, &mut |out| {
+                self.pass(out, sink)
+            })
     }
     fn timer(
         &self,
@@ -400,7 +419,7 @@ fn fixture() -> Fixture {
     let observed = Arc::new(Observed {
         inner,
         seen: Mutex::new(Vec::new()),
-        handed: Mutex::new(Vec::new()),
+        declared: Mutex::new(Vec::new()),
         tamper: Mutex::new((Tamper::None, Aim::Header)),
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -410,7 +429,6 @@ fn fixture() -> Fixture {
         .expect("a runtime");
     busbar_core_connector::io::install_process_reactor(runtime.handle().clone());
     let connector = Connector::serving(
-        busbar_core_connector::registry::Transports::default(),
         Arc::new(loopback),
         None,
         Arc::new(|_, _| {}),
@@ -557,24 +575,31 @@ fn a_sealed_credential_never_reaches_the_transport_and_reaches_the_upstream_once
         !saw_key && !saw_query,
         "the transport instance was handed a sealed credential: {facts}"
     );
-    let handed = fixture
+    let declared = fixture
         .observed
-        .handed
+        .declared
         .lock()
         .expect("the observer")
         .clone();
-    assert_eq!(handed.len(), 2, "two request heads");
-    for (header, query) in &handed {
+    assert_eq!(declared.len(), 2, "two request heads");
+    for slots in &declared {
         assert_eq!(
-            header.len(),
-            KEY.len(),
-            "the filler is as long as the credential"
+            slots,
+            &vec![
+                Declared {
+                    tag: tag::H_SEALED_PAIR,
+                    name: KEY_NAME.as_bytes().to_vec(),
+                    len: KEY.len() as u32,
+                },
+                Declared {
+                    tag: tag::H_SEALED_QUERY,
+                    name: QUERY_NAME.as_bytes().to_vec(),
+                    len: QUERY.len() as u32,
+                },
+            ],
+            "the head declares each sealed slot by place, name and length, and nothing else of it"
         );
-        assert_eq!(query.len(), QUERY.len());
     }
-    assert_ne!(handed[0].0, handed[1].0, "a fresh filler per request");
-    assert_ne!(handed[0].1, handed[1].1, "a fresh filler per request");
-    assert_ne!(handed[0].0, handed[0].1, "a fresh filler per value");
 
     assert_eq!(requests.len(), 2);
     for request in &requests {
@@ -613,8 +638,8 @@ fn a_sealed_credential_never_reaches_the_transport_and_reaches_the_upstream_once
     );
 }
 
-/// One exchange through a framer whose output is tampered with as `tamper` says: it fails with the SEAL_BROKEN
-/// refusal, charged to core, and the upstream is sent nothing.
+/// One exchange through a framer whose marks are tampered with as `tamper` says: it fails at the framer with the
+/// sealed-grammar fault, charged to the transport, and the upstream is sent nothing.
 fn broken(tamper: Tamper, aim: Aim) {
     let fixture = fixture();
     *fixture.observed.tamper.lock().expect("the observer") = (tamper, aim);
@@ -632,12 +657,13 @@ fn broken(tamper: Tamper, aim: Aim) {
     let cause = cause.expect("the failure keeps its cause");
     assert!(
         cause.text.contains(SEAL_BROKEN),
-        "{tamper:?} on the {aim:?} value: refused SEAL_BROKEN, not {:?}",
+        "{tamper:?} on the {aim:?} value: refused for the sealed grammar, not {:?}",
         cause.text
     );
-    assert!(
-        cause.outbound,
-        "core's own refusal: no destination is charged"
+    assert_eq!(
+        (cause.stage, cause.outbound),
+        (CAUSE_FRAMER, false),
+        "{tamper:?} on the {aim:?} value: the transport's fault, charged to it"
     );
     // The connection was dropped: the upstream sees its end, having been sent nothing.
     let waited = Instant::now();
@@ -653,26 +679,48 @@ fn broken(tamper: Tamper, aim: Aim) {
 }
 
 #[test]
-fn a_framer_that_drops_the_header_filler_is_refused_seal_broken_and_sends_nothing() {
+fn a_framer_that_leaves_the_header_slot_uncovered_is_refused_and_sends_nothing() {
     broken(Tamper::Drop, Aim::Header);
 }
 
 #[test]
-fn a_framer_that_drops_the_query_filler_is_refused_seal_broken_and_sends_nothing() {
+fn a_framer_that_leaves_the_query_slot_uncovered_is_refused_and_sends_nothing() {
     broken(Tamper::Drop, Aim::Query);
 }
 
 #[test]
-fn a_framer_that_duplicates_the_filler_is_refused_seal_broken_and_sends_nothing() {
+fn a_framer_that_covers_a_slot_twice_is_refused_and_sends_nothing() {
     broken(Tamper::Duplicate, Aim::Header);
 }
 
 #[test]
-fn a_framer_that_re_encodes_the_filler_is_refused_seal_broken_and_sends_nothing() {
-    broken(Tamper::ReEncode, Aim::Query);
+fn a_framer_whose_mark_runs_past_the_value_is_refused_and_sends_nothing() {
+    broken(Tamper::Overrun, Aim::Query);
 }
 
 #[test]
-fn a_framer_that_splits_the_filler_across_writes_is_refused_seal_broken_and_sends_nothing() {
-    broken(Tamper::Split, Aim::Header);
+fn a_framer_that_covers_a_slot_in_two_ordered_runs_is_served_whole() {
+    let fixture = fixture();
+    *fixture.observed.tamper.lock().expect("the observer") = (Tamper::Split, Aim::Header);
+    let up = upstream();
+    let target = format!("http://{}/v1/chat", up.addr);
+    let conn = fixture.open(&target);
+    let read = fixture.read(conn);
+    fixture.close(conn);
+    assert_eq!(read.ended, Ok(()), "the exchange ended whole");
+    assert_eq!(read.status, Some(200));
+    assert!(!fixture.transport_saw(KEY), "the transport was handed the credential");
+    let requests = up.requests.lock().expect("the requests").clone();
+    assert_eq!(requests.len(), 1);
+    let header = format!("{KEY_NAME}: {}\r\n", String::from_utf8_lossy(KEY));
+    assert_eq!(
+        count(
+            &requests[0].to_ascii_lowercase(),
+            header.to_ascii_lowercase().as_bytes()
+        ),
+        1,
+        "the header credential is in its field, whole, once: {}",
+        String::from_utf8_lossy(&requests[0])
+    );
+    assert_eq!(count(&requests[0], KEY), 1, "the header credential once");
 }

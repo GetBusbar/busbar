@@ -365,6 +365,15 @@ row = "auth-admin-tokens"
 http = "busbar-transport-http"
 rtc = "busbar-transport-webrtc"
 
+# A carrier supplied by a SEPARATELY INSTALLED transport image: `[package.metadata.busbar.installed-carriers]`,
+# one key per carrier, each naming the image's identity (its package name), never a linked row. The carrier has a
+# supplier exactly when the deployment installs an admitted image of that identity (a ws:// provider with none
+# installed is refused at configuration); validation holds an installed image to the carrier's role as it holds a
+# linked one. websocket: the transport-ws plugin (owner ruling: former built-ins are separate plugins), which also
+# takes the upgraded connection of a WebSocket route.
+[package.metadata.busbar.installed-carriers]
+websocket = "busbar-transport-ws"
+
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
 # a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
@@ -559,30 +568,30 @@ members = ["."]
 [workspace.dependencies]
 # Test-only (dev-dependency): its admin_application and migration_table_hook root test sources. house/oss-green
 # 4a91545 re-aims them onto the current root fixtures and hook model (the door-era bea7485 named removed root items).
-busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "1ed384ad0b6edfff63f91a75584a28b5706b6ae5" }
-busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "eae3d167e70c97c2160928bede2f41d282e00db0" }
-busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "fb25cb9f43d4bc08fd96f1409fe40a02bd56e8f0" }
+busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "da8cb2f931f4257e41655ccff535757d3b2feeff" }
+busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "f2007ce3ec0a865dfc8e4826bc7a3dc383cf7bb8" }
+busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "3d4c38d7a0c7f7386eebc51bbee643bc5dc61ded" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "794cbd541192798496e5f7b8b8c878c23a6f89d7" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "a2c7d0b4efd9f2aae8c8c7798d612ff9c22795f3" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
-busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "cdb3f7bbbe7a9a4640e65684358f4947f80ad6ff" }
-busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "cdb3f7bbbe7a9a4640e65684358f4947f80ad6ff" }
+busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "efdb4a3faa83b7570a2fdb4fa78a6f3f1d718fff" }
+busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "efdb4a3faa83b7570a2fdb4fa78a6f3f1d718fff" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
 # crate's door on the secret axis; kernel tests answer the axis with the external testkit's
 # double (`busbar_kernel_testkit::test_support::secrets`), naming neither. One rev each.
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "327d2c01546d065c4c33559caf78f015e453ae76" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "08e5b00ed8e935713e191526118b7e2ee8df6055" }
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "7600d42bccf4e473fbb26bbb2d2eaee3c7eecb79" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "9a7ebe8ba002a7565bc329aa6121c5e9512168b5" }
 # THE HTTP TRANSPORT (kind: transport), a MIN-3 image pulled at a pinned rev; the logic crate whose `PLUGIN` header
 # the root admits. The pin is the transport 2.0 image (its line/all head 6860ddb): one output model, every byte
 # either role writes a WIRE_PART naming its stream; an image before transport 2.0 is refused at load by its version.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "56fd5fb4bac8f119b2d76e2e7a2cf075eada985f" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "0eeb953bd331fb5c08849dfd547d242a50fca908" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (row `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "63a901a7ad954f645bf8ae91a593f858f51f5312" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "522f8c9e76f83df513136049cbdc2902f276a420" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
@@ -594,25 +603,25 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # STYLE_ENDPOINT_TOKEN_URL rank 4. Its mint needs are in the provider class (security item 3,
 # busbar-auth-oauth #43, dev ce2dbffe28): a private token endpoint is refused unless
 # advanced.allow_destinations names it, as BUSBAR-3025 says.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "a4725aa9e0d3c7f15585bf1f5fd8b27430368a43" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "1a85a2e926c764378bf485916c8becf4e74532fe" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (row `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
 # private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
 # On that pin, the signer logs the region warning 1.5.5 logged on every signature scoped to a
 # region defaulted at seal (`region_unread`), with the host (busbar-auth-sigv4 pin-1809-region-warn, merged onto the dev pin).
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "55183cc03c16830725bfcc0c961ddbe72f2efffe" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "18d26cf892ed21cb66bb4d6327066c8b2e944aaf" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
 # axis (row `hooks-ranking`). The root alone takes it: kernel tests link the external testkit's
 # R-FIX3 double (`busbar_kernel_testkit::test_support::ranking_double`) instead, and the root's
 # `linked_hook_ranking` tests prove the double states what this door states.
-busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "948f2dfd6bcbfe573f463c0cab60eb19fc33fe9b" }
-busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-complexity", rev = "e8af085deb508638b66cc287dc44627f636acee5" }
+busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "24a7d57016a297ad630a060f82b3bbc84a1d1a6d" }
+busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-complexity", rev = "88f4509f93b0418645348be90e7d2ccf76551309" }
 # THE WEBRTC TRANSPORT (kind: transport), a MIN-3 image in the datagram role (ICE, SRTP, SCTP), pulled at a
-# pinned rev; the logic crate whose `PLUGIN` header the root admits. The pin is its transport 2.0 head f3c2bec (line/all;
+# pinned rev; the logic crate whose `PLUGIN` header the root admits. The pin is its transport 2.0 head 64816df (line/all;
 # the image declares its alias `webrtc` as a former name). Its dropped-in cdylib twin and its gates live in
 # that repo's plugin CI. Its media stack (str0m, aes) is pinned in that repo's own manifest.
-busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "f3c2bece2a2f8b42bae0351582025f01d1655357" }
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "64816dfba23d9da9c8ee1997a524f5c5c77e8046" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its tests link the external testkit's R-FIX3
@@ -625,21 +634,21 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # (upgrade cell BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
 # a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "5c0406091fd9f811f73c69940741f382ecbdcda3" }
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "01db3f64708d576305fe623188766d0d99fd2314" }
 # Published MIN-3 MCP implementation, linked through its PLUGIN header.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "3164da79cd0fb8ab9f272f4d2c6adc47aef34144" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "81860e43947bb7a988c6230053fc04f80b402dfc" }
 # Published MIN-3 decisions implementation, linked through its PLUGIN header.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "b7ffc3fde9305f93985025445c8941237a43307d" }
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "2fe40cf77af7a11a81908811c01ec6696e5713e2" }
 # Published MIN-3 A2A implementation, linked through its PLUGIN header.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "b8f2bb68ab87faf8300e3a2eb261ede3ca6e6df4" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "cae7de93f08b4c517103efed3cd239cd93dfdc82" }
 # Published MIN-3 streaming implementation and its matching dropped-in artifact.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "48a9e16db1ce04708f8538a50920f95a54141aa4" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "c87925303bfb3f737cb7cef392bc5b6666fbf23e" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
 # (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
 # busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
 # lock it carried the plane repo's busbar pin, whose plane ops table is not the host's, and every
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
-busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "48a9e16db1ce04708f8538a50920f95a54141aa4" }
+busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "c87925303bfb3f737cb7cef392bc5b6666fbf23e" }
 arc-swap = "1"
 foldhash = "0.2"
 async-trait = "0.1"
@@ -875,7 +884,7 @@ jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3ef
 stringprep = { git = "https://github.com/MattJackson/rust-stringprep", rev = "e81fc4b8a718e5a80bbdf87e5d183565dd5e66cf" }
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
 # Native HTTP allocation projection and serializer provenance (adopted transport cohort).
-http = { git = "https://github.com/MattJackson/http", rev = "904f4519b5f27a0424b121a4828640c741efcd95" }
+http = { git = "https://github.com/MattJackson/http", rev = "7e71322105371bae475f8e68d86324e73f4a11c9" }
 h2 = { git = "https://github.com/MattJackson/h2", rev = "e5609a5e5dff1cccf43ff0e11c7cd758884dbe83" }
 hyper = { git = "https://github.com/MattJackson/hyper", rev = "ebd3f6cff06032f9bcf531a5144309d8906e438b" }
 hyper-util = { git = "https://github.com/MattJackson/hyper-util", rev = "6008c6a4a06490b18a8c057d3944739d4a51424e" }

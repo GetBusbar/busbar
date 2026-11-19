@@ -29,6 +29,9 @@
 //   [package.metadata.busbar.carriers]      <carrier> = "<row key>"              (which linked MIN-3
 //                                            image carries each outbound carrier: `http`, `grpc`,
 //                                            `websocket`, `rtc`; see [`carrier_rows`])
+//   [package.metadata.busbar.installed-carriers] <carrier> = "<image identity>"  (a carrier supplied
+//                                            by a separately installed transport image, when it is
+//                                            installed; see [`installed_carrier_rows`])
 //
 // and this turns the rows whose feature is ENABLED into `extern crate <crate> as _;` lines, one table
 // per registration axis over each entry module's item for that axis (the `LINKED` value), the cfgs
@@ -121,6 +124,60 @@ pub fn carrier_rows(manifest: &str) -> Vec<(String, &'static str, String)> {
             );
         }
         out.push((key, constant, row));
+    }
+    out
+}
+
+/// The manifest table that assigns an outbound carrier to a SEPARATELY INSTALLED transport image (owner ruling:
+/// former built-ins such as the websocket transport are separate plugins this distribution does not link).
+pub const INSTALLED_CARRIERS_TABLE: &str = "package.metadata.busbar.installed-carriers";
+
+/// THE INSTALLED CARRIER TABLE: `(key, carrier constant, image identity)` for each row of
+/// [`INSTALLED_CARRIERS_TABLE`], in manifest order. The value is the identity (the stamp name, its package name)
+/// of a transport image the deployment installs beside the binary, never a linked row: the carrier is supplied
+/// exactly when an admitted image of that identity is installed, and has no supplier otherwise. Refused: an
+/// unknown key, a key stated twice, an empty identity, a value that names a linked row (a linked image is
+/// assigned in [`CARRIERS_TABLE`]), a carrier [`CARRIERS_TABLE`] also assigns, and one identity under two keys
+/// (one image frames one carrier).
+pub fn installed_carrier_rows(manifest: &str) -> Vec<(String, &'static str, String)> {
+    let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
+    let linked = carrier_rows(manifest);
+    let mut out: Vec<(String, &'static str, String)> = Vec::new();
+    for (key, identity) in metadata_map(manifest, INSTALLED_CARRIERS_TABLE) {
+        let constant = CARRIER_KEYS
+            .iter()
+            .find(|(word, _)| *word == key)
+            .map(|(_, constant)| *constant)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Cargo.toml: `[{INSTALLED_CARRIERS_TABLE}]` names an unknown carrier `{key}` (the carriers \
+                     are `http`, `grpc`, `websocket`, `rtc`)"
+                )
+            });
+        assert!(
+            !out.iter().any(|(k, _, _)| *k == key),
+            "Cargo.toml: `[{INSTALLED_CARRIERS_TABLE}]` states the carrier `{key}` twice"
+        );
+        assert!(
+            !identity.is_empty(),
+            "Cargo.toml: `[{INSTALLED_CARRIERS_TABLE}]` carrier `{key}` names no image"
+        );
+        assert!(
+            !plugins
+                .iter()
+                .any(|(feature, krate)| *feature == identity || *krate == identity),
+            "Cargo.toml: installed carrier `{key}` names `{identity}`, a linked row: assign it in `[{CARRIERS_TABLE}]`"
+        );
+        assert!(
+            !linked.iter().any(|(k, _, _)| *k == key),
+            "Cargo.toml: carrier `{key}` is assigned in both `[{CARRIERS_TABLE}]` and `[{INSTALLED_CARRIERS_TABLE}]`"
+        );
+        if let Some((other, _, _)) = out.iter().find(|(_, _, named)| *named == identity) {
+            panic!(
+                "Cargo.toml: `{identity}` is named for two carriers, `{other}` and `{key}`: one image frames one carrier"
+            );
+        }
+        out.push((key, constant, identity));
     }
     out
 }
@@ -407,6 +464,21 @@ pub fn linked_source(
         out.push_str(&format!(
             "    crate::root::min3_framers::LinkedCarrier {{ carrier: ::busbar_plugin_abi::plane::{constant}, \
              admit: || ::busbar_plugin_loader::admit::admit_linked(&{entry}::PLUGIN) }},\n"
+        ));
+    }
+    out.push_str("];\n");
+
+    // THE INSTALLED CARRIER TABLE: (carrier, the identity of the separately installed image that carries it). In
+    // every build: whether the carrier has a supplier is the deployment's (the image installed or not).
+    out.push_str(
+        "/// The outbound carriers this build assigns to separately installed images\n\
+         /// (`[package.metadata.busbar.installed-carriers]`): each carrier and its image's identity.\n\
+         static INSTALLED_CARRIERS: &[crate::root::min3_framers::InstalledCarrier] = &[\n",
+    );
+    for (_, constant, identity) in installed_carrier_rows(manifest) {
+        out.push_str(&format!(
+            "    crate::root::min3_framers::InstalledCarrier {{ carrier: ::busbar_plugin_abi::plane::{constant}, \
+             identity: {identity:?} }},\n"
         ));
     }
     out.push_str("];\n");

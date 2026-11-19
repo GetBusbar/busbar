@@ -18,7 +18,13 @@
 //! the plane's own suite's subject, not this table's.
 
 #![cfg(unix)]
-#![cfg(linked_every_plane_door)]
+#![cfg(all(
+    linked_section_pools,
+    linked_section_tools,
+    linked_section_agents,
+    linked_section_decisions,
+    linked_section_streams
+))]
 
 mod common;
 
@@ -64,6 +70,8 @@ struct Row {
     id: String,
     method: String,
     path: String,
+    /// The plane that serves the row (`core`, `llm`, `mcp`, ...).
+    plane: String,
     body: String,
     /// In caller order: no credential, bad credential, good key, key without the grant.
     cells: [Expect; 4],
@@ -85,7 +93,13 @@ fn rows() -> Vec<Row> {
             .position(|column| *column == name)
             .unwrap_or_else(|| panic!("routes.tsv has no `{name}` column"))
     };
-    let (id, method, path, body) = (at("row"), at("method"), at("path"), at("body"));
+    let (id, method, path, plane, body) = (
+        at("row"),
+        at("method"),
+        at("path"),
+        at("plane"),
+        at("body"),
+    );
     let cells = [
         at("no_credential"),
         at("bad_credential"),
@@ -101,6 +115,7 @@ fn rows() -> Vec<Row> {
                 id: fields[id].to_owned(),
                 method: fields[method].to_owned(),
                 path: fields[path].to_owned(),
+                plane: fields[plane].to_owned(),
                 body: fields[body].to_owned(),
                 cells: cells.map(|cell| Expect::parse(fields[cell])),
             }
@@ -379,13 +394,25 @@ fn send(
 }
 
 /// Mint a key through the admin API: unrestricted, or restricted to one pool that no route of
-/// the table reaches (so the grant it holds names nothing a row asks for).
-fn mint(rt: &tokio::runtime::Runtime, booted: &Booted, name: &str, restricted: bool) -> String {
-    let body = if restricted {
-        format!(r#"{{"name":"{name}","allowed_pools":["a-pool-no-row-names"]}}"#)
+/// the table reaches (so the grant it holds names nothing a row asks for). A plane that binds an
+/// audience (MCP, its `canonical_uri`) admits only a key minted for exactly that audience, so a
+/// key meant for its rows names it.
+fn mint(
+    rt: &tokio::runtime::Runtime,
+    booted: &Booted,
+    name: &str,
+    restricted: bool,
+    audience: Option<&str>,
+) -> String {
+    let pools = if restricted {
+        r#","allowed_pools":["a-pool-no-row-names"]"#
     } else {
-        format!(r#"{{"name":"{name}"}}"#)
+        ""
     };
+    let audience = audience
+        .map(|uri| format!(r#","audience":"{uri}""#))
+        .unwrap_or_default();
+    let body = format!(r#"{{"name":"{name}"{pools}{audience}}}"#);
     let minted = send(
         rt,
         &booted.admin,
@@ -444,20 +471,29 @@ fn every_route_answers_every_caller_as_the_table_says() {
     let upstream = common::upstream::Responder::start(BTreeMap::new());
     let booted = boot(&upstream.url());
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let good = mint(&rt, &booted, "inbound-table-good", false);
-    let narrow = mint(&rt, &booted, "inbound-table-narrow", true);
-    let tokens: [Option<&str>; 4] = [
-        None,
-        Some("bb_not_a_key_anyone_issued"),
-        Some(&good),
-        Some(&narrow),
-    ];
+    let good = mint(&rt, &booted, "inbound-table-good", false, None);
+    let narrow = mint(&rt, &booted, "inbound-table-narrow", true, None);
+    // The fixture's MCP section (law7_plane_sections.yaml): canonical_uri on the data listener.
+    let mcp_audience = format!("http://{}/mcp", booted.data);
+    let mcp_good = mint(&rt, &booted, "inbound-table-mcp-good", false, Some(&mcp_audience));
+    let mcp_narrow = mint(&rt, &booted, "inbound-table-mcp-narrow", true, Some(&mcp_audience));
     let mut failures: Vec<String> = Vec::new();
     // The one unverified answer: every 401 with no declared challenge has these exact bytes.
     let mut unverified: Option<(Vec<u8>, Option<String>, Option<String>)> = None;
     let rows = rows();
     assert!(rows.len() >= 40, "routes.tsv lost rows: {}", rows.len());
     for row in &rows {
+        let (good, narrow) = if row.plane == "mcp" {
+            (&mcp_good, &mcp_narrow)
+        } else {
+            (&good, &narrow)
+        };
+        let tokens: [Option<&str>; 4] = [
+            None,
+            Some("bb_not_a_key_anyone_issued"),
+            Some(good),
+            Some(narrow),
+        ];
         for (caller, (token, expect)) in tokens.iter().zip(&row.cells).enumerate() {
             let got = send(
                 &rt,

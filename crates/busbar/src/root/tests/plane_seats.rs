@@ -963,7 +963,6 @@ async fn channel_drivers_across_generations_share_the_retained_instance_account(
         &namespace,
         first_admission.caller.clone(),
         Arc::new(Quiet),
-        &PortRoutes::default(),
         None,
     );
     let second = channels_of(
@@ -972,7 +971,6 @@ async fn channel_drivers_across_generations_share_the_retained_instance_account(
         &namespace,
         second_admission.caller.clone(),
         Arc::new(Quiet),
-        &PortRoutes::default(),
         None,
     );
     // This is capacity from the same actual instance, held across both generation drivers.

@@ -886,22 +886,57 @@ fn provider_location_refuses_a_scheme_core_does_not_dial_and_an_omitted_target()
 
 #[test]
 fn provider_location_reads_the_scheme_table_and_needs_the_carriers_supplier() {
-    let none = locate_provider_destination_with("https://api.example.test/v1", &[])
-        .expect_err("a carrier the build assigns to no image refuses the destination");
+    let none =
+        locate_provider_destination_with("https://api.example.test/v1", &[], &[], &|_| false)
+            .expect_err("a carrier the build assigns to no image refuses the destination");
     assert!(none.contains("no supplying transport"), "{none}");
     if crate::LINKED_CARRIERS.is_empty() {
         return;
     }
-    let https =
-        locate_provider_destination_with("https://api.example.test/v1", crate::LINKED_CARRIERS)
-            .expect("https rides the build's http carrier");
+    let https = locate_provider_destination_with(
+        "https://api.example.test/v1",
+        crate::LINKED_CARRIERS,
+        &[],
+        &|_| false,
+    )
+    .expect("https rides the build's http carrier");
     assert_eq!(https.authority, "api.example.test:443");
     assert!(https.secure);
     assert_eq!(https.name.as_deref(), Some("api.example.test"));
-    let http = locate_provider_destination_with("HTTP://127.0.0.1:9000", crate::LINKED_CARRIERS)
-        .expect("a scheme matches without regard to case");
+    let http = locate_provider_destination_with(
+        "HTTP://127.0.0.1:9000",
+        crate::LINKED_CARRIERS,
+        &[],
+        &|_| false,
+    )
+    .expect("a scheme matches without regard to case");
     assert_eq!(http.authority, "127.0.0.1:9000");
     assert!(!http.secure);
+}
+
+/// A carrier the build assigns to a separately installed image is supplied exactly when the deployment admits that
+/// image: a ws:// provider is refused at configuration when no websocket image is installed.
+#[test]
+fn an_installed_carrier_supplies_a_destination_only_when_its_image_is_installed() {
+    let installed = [crate::root::min3_framers::InstalledCarrier {
+        carrier: busbar_plugin_abi::plane::CARRIER_WEBSOCKET,
+        identity: "busbar-transport-ws",
+    }];
+    let absent =
+        locate_provider_destination_with("ws://127.0.0.1:9000", &[], &installed, &|_| false)
+            .expect_err("an installed carrier whose image is absent has no supplier");
+    assert!(absent.contains("no supplying transport"), "{absent}");
+    let other = locate_provider_destination_with("ws://127.0.0.1:9000", &[], &installed, &|id| {
+        id == "busbar-transport-other"
+    })
+    .expect_err("another image does not supply the carrier");
+    assert!(other.contains("no supplying transport"), "{other}");
+    let ws = locate_provider_destination_with("ws://127.0.0.1:9000", &[], &installed, &|id| {
+        id == "busbar-transport-ws"
+    })
+    .expect("ws rides the installed websocket carrier");
+    assert_eq!(ws.authority, "127.0.0.1:9000");
+    assert!(!ws.secure);
 }
 
 /// COORD-STORE-C2 (live boot bug): when the MIN-3 walk opened and admitted the configured store, that admission

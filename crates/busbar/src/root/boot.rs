@@ -1777,20 +1777,29 @@ mod start_scan_tests;
 /// A provider destination by core's one scheme table (deletion plan E6; dial decision v2 section 3): the URL's
 /// scheme gives its security, its default port and the carrier it rides, and the build must assign that carrier
 /// to a transport image. No plugin is asked what a URL means and nothing is opened. `rows` is the configuration's
-/// admitted plugins; the build's carrier assignment is read from its own generated table.
+/// admitted plugins; the build's carrier assignment is read from its own generated tables, a separately installed
+/// carrier's image counting only when `rows` admits it (so a ws:// provider with no websocket image installed is
+/// refused here, at configuration, never at request time).
 pub(crate) fn locate_provider_destination(
-    _rows: &Arc<dyn PluginRows>,
+    rows: &Arc<dyn PluginRows>,
     target: &str,
 ) -> Result<busbar_kernel::config_validate::ProviderDestination, String> {
-    locate_provider_destination_with(target, crate::LINKED_CARRIERS)
+    locate_provider_destination_with(
+        target,
+        crate::LINKED_CARRIERS,
+        crate::INSTALLED_CARRIERS,
+        &|identity| rows.resolve(identity).is_some(),
+    )
 }
 
 fn locate_provider_destination_with(
     target: &str,
     assigned: &[crate::root::min3_framers::LinkedCarrier],
+    installed: &[crate::root::min3_framers::InstalledCarrier],
+    present: &dyn Fn(&str) -> bool,
 ) -> Result<busbar_kernel::config_validate::ProviderDestination, String> {
     let located = busbar_core_connector::native_dial::locate(target)?;
-    let carriers = crate::root::min3_framers::assigned(assigned)?;
+    let carriers = crate::root::min3_framers::assignment(assigned, installed, present)?;
     carriers
         .get(located.carrier)
         .map_err(|refused| format!("the destination's carrier: {refused}"))?;
