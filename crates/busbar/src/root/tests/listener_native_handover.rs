@@ -422,3 +422,22 @@ fn a_credential_the_routes_chain_read_is_never_handed_to_the_adopting_transport(
         "the handshake's own lines go to the transport that answers them; no credential does"
     );
 }
+
+/// SEC-STRIP: an anonymous chain reads no credential and withholds only `authorization`; the
+/// client's other credential carriers are still never handed to the adopting transport.
+#[test]
+fn client_credentials_never_forwarded_to_the_adopting_transport_on_an_anonymous_chain() {
+    let pairs: [(&str, &[u8]); 6] = [
+        ("Authorization", b"Bearer secret"),
+        ("X-Api-Key", b"secret"),
+        ("x-goog-api-key", b"secret"),
+        ("cookie", b"session=secret"),
+        ("sec-websocket-key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+        ("upgrade", b"websocket"),
+    ];
+    let withheld: Vec<Box<str>> = vec!["authorization".into()];
+    let handed: Vec<&str> = handed_on(pairs.into_iter(), &withheld)
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(handed, ["sec-websocket-key", "upgrade"]);
+}

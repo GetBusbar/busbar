@@ -1067,6 +1067,32 @@ pub struct HttpIn {
     withheld: Option<Arc<[Box<str>]>>,
 }
 
+/// The head fields a client's credential travels in: the credential half of the connector's caller-side strip
+/// (`busbar_contract::abi::host::conn::connector::NEVER_KEPT`) and the 1.5 admin carrier (`port_admin`'s
+/// `ADMIN_CREDENTIAL_FIELDS`). A plane is never lent one of them, whatever the route's chain read (an anonymous chain
+/// reads none): the plane builds every upstream request from what it is lent, so a credential the client presented to
+/// Busbar never reaches an upstream through it. The upstream gets the credential core seals for it; a caller's own
+/// credential reaches an upstream only through core's configured passthrough (`upstream_credentials: passthrough`,
+/// the lent `auth::CallerCredential`), never through the plane.
+pub const CLIENT_CREDENTIAL_FIELDS: [&str; 8] = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "x-api-key",
+    "api-key",
+    "x-goog-api-key",
+    "x-amz-security-token",
+    "x-admin-token",
+];
+
+/// Whether `name` is a head field a client's credential travels in ([`CLIENT_CREDENTIAL_FIELDS`]).
+#[must_use]
+pub fn is_client_credential(name: &str) -> bool {
+    CLIENT_CREDENTIAL_FIELDS
+        .iter()
+        .any(|field| field.eq_ignore_ascii_case(name))
+}
+
 /// Where a request's method, target and header fields live (see [`HttpIn`]).
 pub enum HttpHead {
     /// The inbound request's parts: its route method, its URI (path and query read from it) and its header map.
@@ -1103,11 +1129,12 @@ impl HttpIn {
     }
 
     fn is_withheld(&self, name: &str) -> bool {
-        self.withheld.as_deref().is_some_and(|carriers| {
-            carriers
-                .iter()
-                .any(|carrier| carrier.eq_ignore_ascii_case(name))
-        })
+        is_client_credential(name)
+            || self.withheld.as_deref().is_some_and(|carriers| {
+                carriers
+                    .iter()
+                    .any(|carrier| carrier.eq_ignore_ascii_case(name))
+            })
     }
 
     #[must_use]

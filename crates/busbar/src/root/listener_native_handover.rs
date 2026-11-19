@@ -177,15 +177,16 @@ pub(crate) struct HandTo {
 }
 
 /// The pairs of the upgrade request a second transport is handed: every pair but the carriers the
-/// route's chain read (a credential is never handed on).
+/// route's chain read and every client credential carrier (a credential is never handed on).
 pub(crate) fn handed_on<'a>(
     pairs: impl Iterator<Item = (&'a str, &'a [u8])>,
     withheld: &'a [Box<str>],
 ) -> impl Iterator<Item = (&'a str, &'a [u8])> {
     pairs.filter(move |(name, _)| {
-        !withheld
-            .iter()
-            .any(|carrier| carrier.eq_ignore_ascii_case(name))
+        !busbar_kernel::plane_driver::port::is_client_credential(name)
+            && !withheld
+                .iter()
+                .any(|carrier| carrier.eq_ignore_ascii_case(name))
     })
 }
 

@@ -132,3 +132,16 @@ async fn a_selector_on_an_anonymous_chain_is_lent_no_client_credential() {
     assert_eq!(lent.calls, 1);
     assert_eq!(lent.headers, vec!["x-trace".to_owned()]);
 }
+
+/// Every field withheld as a client credential is one the specification already names: the
+/// connector's caller-side strip (`NEVER_KEPT`) or the 1.5 admin carrier.
+#[test]
+fn every_client_credential_field_is_one_the_specification_names() {
+    use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
+    for field in crate::plane_driver::port::CLIENT_CREDENTIAL_FIELDS {
+        assert!(
+            NEVER_KEPT.contains(&field) || field == "x-admin-token",
+            "{field}"
+        );
+    }
+}
