@@ -6,7 +6,9 @@
 //! call and keeps nothing.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{
+    Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
+};
 use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::fail::failed::{F_BUSY, F_TIMEOUT};
@@ -110,6 +112,41 @@ pub enum CredEvent {
     NoLifetime,
 }
 
+/// What one settled mint, or a lapse, did to a key's held value (BUSBAR-8026/8027, P093F-3). The cache decides it;
+/// the binding's [`CredObserver`] names the member and reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredOutcome {
+    /// An outage (`PortError::Failed`, or the mint's deadline): the held value, if any, is kept until it expires.
+    Failed {
+        streak: u32,
+        code: u32,
+        retry_in: Duration,
+        expires_in: Option<Duration>,
+    },
+    /// The source answered definitively (`R_NOT_FOUND` or `R_DENIED`) while a value is held: it is kept until a
+    /// read at least [`CONFIRM_AFTER`] later answers the same.
+    Confirming { code: u32 },
+    /// The same definitive answer, [`CONFIRM_AFTER`] or more apart: the held value is dropped at once.
+    Revoked { code: u32 },
+    /// The held value expired after failed or definitive reads, with no successful mint since.
+    Lapsed,
+    /// A mint succeeded after any of the above.
+    Recovered,
+}
+
+/// The owner-signed revocation rule (2026-11-12): two definitive answers at least one second apart.
+pub const CONFIRM_AFTER: Duration = Duration::from_secs(1);
+/// At most one report a minute per source (BUSBAR-8026); the rest are counted in the next one.
+pub const REPORT_WINDOW: Duration = Duration::from_secs(60);
+
+/// Where a key's outcomes go: registered per `(auth_instance, upstream)` by the binding that owns those keys.
+pub trait CredObserver: Send + Sync {
+    /// `now` is the settling clock reading; `gate` is the cache's per-source report throttle.
+    fn observe(&self, outcome: CredOutcome, now: Instant, gate: &crate::refresh::Throttle);
+}
+
+type Observers = RwLock<HashMap<(u64, u64), Weak<dyn CredObserver>>>;
+
 const SHARDS: usize = 16;
 /// Rule 4: a `Stop` from the retry policy is a 300 s window.
 const STOP_WINDOW: Duration = Duration::from_secs(300);
@@ -133,6 +170,12 @@ struct Inner {
     shards: [RwLock<HashMap<CredKey, Entry>>; SHARDS],
     /// The origin of `Entry::used` (LRU order, rule 6).
     base: Instant,
+    /// Who reports each `(auth_instance, upstream)`'s outcomes.
+    observers: Observers,
+    /// BUSBAR-8026's rate: one report per source per [`REPORT_WINDOW`].
+    gate: crate::refresh::Throttle,
+    /// This cache, for the lapse timers it starts.
+    me: Weak<Inner>,
 }
 
 struct Entry {

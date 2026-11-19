@@ -940,6 +940,10 @@ mod store_row_tests;
 mod plugin_refusal_tests;
 
 #[cfg(test)]
+#[path = "tests/plugin_fetch_rule_tests.rs"]
+mod plugin_fetch_rule_tests;
+
+#[cfg(test)]
 #[path = "tests/central2_secret_claim_tests.rs"]
 mod central2_secret_claim_tests;
 

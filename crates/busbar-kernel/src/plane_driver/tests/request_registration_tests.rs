@@ -987,9 +987,9 @@ fn a_narrowed_member_grant_loses_the_member_on_the_current_check() {
 fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere() {
     let routes = section_routes("pool");
     let reaches: [(&[&str], Result<&[&str], AdmissionError>); 3] = [
-        (&["m1"], Ok(&["m1"])),
-        (&["m1", "m2"], Ok(&["m1", "m2"])),
-        (&[], Err(AdmissionError::Scope)),
+        (&["m1"][..], Ok(&["m1"][..])),
+        (&["m1", "m2"][..], Ok(&["m1", "m2"][..])),
+        (&[][..], Err(AdmissionError::Scope)),
     ];
     for (unit, (grant, expected)) in (70..).step_by(2).zip(reaches) {
         let (ctx, _lease) = context_with_key(unit, pool_scoped("reach", grant));
