@@ -4,35 +4,8 @@
 //! The shapes the plugin kinds share outside `abi/`: a plane's fact and credential-locator
 
 pub mod codes;
-use crate::bounded::{Facts, MAX_RECORD_BYTES};
-use crate::ids::SchemeAlt;
+use crate::bounded::MAX_RECORD_BYTES;
 use core::fmt;
-
-/// What a plane answers a read-only introspection verb with.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PlaneFacts<'u> {
-    /// The facts, under this plane's own declared keys.
-    pub facts: Facts<'u>,
-}
-
-/// What a plane says a response contained.
-///
-/// Content facts are evidence for the record and the export path. A minted secret's placeholder
-/// never appears here.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ContentFacts<'u> {
-    /// The facts, under this plane's own declared keys.
-    pub facts: Facts<'u>,
-}
-
-/// Where a plane says this unit's credential is, and how it narrows the claim's scheme.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub struct CredentialLocator {
-    /// The alternative the plane narrows to, within the claim's declared set.
-    pub narrowing: Option<SchemeAlt>,
-    /// Whether the credential is the session's cached one rather than one on this unit's bytes.
-    pub from_session: bool,
-}
 
 /// The opaque state one round of a challenge-response exchange hands to the next.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

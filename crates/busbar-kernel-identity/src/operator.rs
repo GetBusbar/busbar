@@ -52,8 +52,8 @@ pub use crate::off_path::operator::{
     bind_deferred, choose, compare, deferred_refusal, inert_operator, install_linked,
     install_operator, misplaced_definition_token, misplaced_token, no_default_admin_chain,
     no_mint_path, open_admin_posture_removed, operator_admission_path, operator_changed,
-    operator_file_policy, operator_install_remedy, operator_token, operator_token_entry,
-    third_party_operator, two_operators, unreadable_statement, Judged, OperatorBinding,
+    operator_file_policy, operator_install_remedy, operator_token, third_party_operator,
+    two_operators, unreadable_statement, Judged, OperatorBinding,
 };
 
 #[cfg(any(test, feature = "test-support"))]
@@ -249,13 +249,6 @@ impl Operator {
         is_op: &dyn Fn(&str) -> bool,
     ) -> bool {
         module.map_or(name == op, is_op)
-    }
-
-    /// This operator credential, its row stating `carriers` (its Statement's carrier marks, in
-    #[must_use]
-    pub fn with_carriers(mut self, carriers: Vec<String>) -> Self {
-        self.carriers = carriers;
-        self
     }
 
     /// The carriers the operator credential's row states, in its Statement's order: the admin

@@ -150,20 +150,8 @@ pub fn wire_format_names(key: &str) -> &'static [&'static str] {
 
 pub use crate::off_path::plane_dispatch::provider_dialects;
 
-pub fn sole_wire_format(key: &str) -> Option<&'static str> {
-    sole_of(wire_format_names(key))
-}
-
 pub fn wire_formats(key: &str) -> usize {
     wire_format_names(key).len()
-}
-
-pub fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
-    match names {
-        [] => None,
-        [only] => Some(only),
-        _ => None,
-    }
 }
 
 /// PLANE DISPATCH: which plane an inbound request belongs to.
@@ -335,13 +323,6 @@ pub enum Ingress {
 }
 
 impl Ingress {
-    pub fn wire_format(self) -> Option<&'static str> {
-        match self {
-            Ingress::Mounted(key) => sole_wire_format(key),
-            Ingress::Fallback(dialect) => dialect,
-        }
-    }
-
     pub fn shaping_wire_format(self) -> Option<&'static str> {
         match self {
             Ingress::Mounted(key) => wire_format_names(key).first().copied(),
@@ -392,7 +373,6 @@ pub(crate) const fn neutral_sibling_decl(
         admission: |_| None,
         build: |_, _| None,
         routes: None,
-        admin_routes: None,
         openapi: None,
         hydrate: None,
         start: None,

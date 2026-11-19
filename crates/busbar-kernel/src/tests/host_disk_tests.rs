@@ -507,9 +507,6 @@ fn an_append_completion_can_submit_another_whole_append() {
     let _ = std::fs::remove_dir_all(d);
 }
 
-#[path = "host_disk_export_tests.rs"]
-mod exporter_host_policy;
-
 #[test]
 fn a_failed_archive_shift_preserves_lower_archives_and_appends_to_the_live_file() {
     for keep in [2, 3] {

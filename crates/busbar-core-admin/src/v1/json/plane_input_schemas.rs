@@ -16,12 +16,6 @@ struct InputSchemas {
 
 static INPUT_SCHEMAS: OnceLock<InputSchemas> = OnceLock::new();
 
-/// Install schemas from already-discovered plane Statements. A lifecycle schema alone does not
-/// describe raw configuration: the owner must explicitly declare its user-configuration entry point.
-pub fn install_plane_input_schemas(statements: &[Stated]) {
-    let _ = INPUT_SCHEMAS.set(collect(statements));
-}
-
 #[cfg(feature = "openapi-schema")]
 pub(super) fn extend(document: &mut Value) {
     let Some(inputs) = INPUT_SCHEMAS.get() else {

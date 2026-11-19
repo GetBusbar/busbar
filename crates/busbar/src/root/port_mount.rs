@@ -91,6 +91,13 @@ pub(crate) fn auth_of(effective: u32) -> RouteAuth {
     }
 }
 
+/// The auth points a native line offers: the head, and the head with its body (what a transport
+/// that states no offer of its own has always offered).
+pub(crate) const LINE_OFFERED: busbar_contract::route::AuthPoints =
+    busbar_contract::route::AuthPoints(
+        busbar_contract::route::POINT_HEAD | busbar_contract::route::POINT_HEAD_BODY,
+    );
+
 /// The routes whose effective chain is not the data chain (§12.11), by plane instance and route id:
 /// `Some(chain)`, or `None` for a route that is not served (not mounted at all). Resolved once per
 /// candidate, kept by the listener plan's assembly only.
@@ -150,7 +157,7 @@ pub(crate) fn guest_lines(
                             LineAuth::None
                         },
                         upgrade: None,
-                        offered: crate::root::doors::offers_unstated(),
+                        offered: LINE_OFFERED,
                     })
                 })
         })

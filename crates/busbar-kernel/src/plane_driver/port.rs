@@ -293,13 +293,6 @@ impl PortDriver {
         admin_hydrate(&*self.port, stored).await
     }
 
-    /// The audit chain this driver writes a plane's AUDIT rows to (default: the kernel's own, [`super::CoreAudit`]).
-    #[must_use]
-    pub fn with_audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
-        self.audit = audit;
-        self
-    }
-
     /// The tickets this instance admits on an `AUTH_TICKET` route (default: none; `port_serve::TicketGate` is the
     /// production door, built where the ticket key is known).
     #[must_use]

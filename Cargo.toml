@@ -63,11 +63,8 @@ bytes = "1"
 # (allow_filesystem(false)): 0.3.2's /dev/fd walk is unsound; see its cargo-vet exemption.
 close_fds = "=0.3.2"
 core_affinity = "0.8"
-crc32fast = "1"
 # The host buffer pool's per-class bounded MPMC queues (busbar-plugin-abi[host], IF §10.1, AGREED 209).
 crossbeam-queue = { version = "0.3", default-features = false, features = ["std"] }
-# The DTLS protocol engine only, no default features: its crypto provider is the backend's.
-dimpl = { version = "=0.7.4", default-features = false }
 # 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # FAST-MAPS: the fast map hasher (already locked through hashbrown); `std` gives the HashMap aliases.
@@ -95,8 +92,6 @@ libc = "0.2"
 libloading = "0.9"
 loom = "0.7"
 memchr = "2"
-# Already in both lockfiles (hyper, axum): the content-type parameter grammar, quoted values included.
-mime = "0.3.17"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 # No crypto of its own (decision 228): default features off, so no backend; busbar-core-oauth2 passes

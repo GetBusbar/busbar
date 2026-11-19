@@ -55,8 +55,8 @@ pub(crate) type Parse<'a> = &'a dyn Fn(&str) -> Result<Vec<String>, String>;
 type CandidateCheck = std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 /// Step 1. `Ok` when the boot may go on: stamped, absent (the config reader reports that in its own
-/// words), or planned and held for the boot's reads and [`finish`]. On every boot it first
-/// installs the recoverable gate's answer for the loader ([`migrate_admit`]): a stamped config can
+/// words), or planned and held for the boot's reads and [`finish`]. It first records the config's
+/// directory, which the recoverable gate ([`admit_for_host`]) answers from: a stamped config can
 /// still meet a 1.5.5 store restored beside it.
 ///
 /// # Errors
@@ -66,7 +66,6 @@ type CandidateCheck = std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send +
 pub(crate) fn run(config: &Path, providers_flag: bool, ignore_overlay: bool) -> Result<(), String> {
     let _ = CONFIG_DIR.set(config_dir(config));
     let _ = CONFIG_PATH.set(config.to_path_buf());
-    let _ = busbar_plugin_loader::dispatch::migrate::install_admit(migrate_admit);
     let env = |name: &str| std::env::var_os(name);
     run_in(
         config,
@@ -381,32 +380,6 @@ pub(crate) fn restart<T>(
     crate::root::exit::hand_over_before_exec();
     close(owned);
     exec()
-}
-
-/// THE RECOVERABLE GATE (§3 step 2 (a); the loader's `migrate.admit` answer): whether this boot
-/// can seal the `n` recoverable 1.5.5 credentials a store's data step is about to hand core. Core
-/// answers from its own config alone, through the signing key (the at-rest key derives from it) the store bootstrap resolved before
-/// the store opened, with the resolver it built from the store's secret instances. The text is the
-/// process's for its life (the host-service rule): at most one per store per boot.
-#[cold]
-#[inline(never)]
-fn migrate_admit(n: u64) -> Result<(), &'static str> {
-    admit_for_host(n).map_err(|text| -> &'static str { text.leak() })
-}
-
-/// The MIN-3 `Host::migrate_admit` answer (IF §5, §12.10; WBS K9), the same verdict as the loader's
-/// today's-ABI slot, on every load path: `n == 0` or a resolved at-rest key is OK, else core's text
-/// (the store's REFUSED R_CONFIG). Valid only during a store's open; the host vtable entry that
-/// calls this knows that, not this function.
-///
-/// # Errors
-/// Core's refusal text.
-pub(crate) fn admit_for_host(n: u64) -> Result<(), String> {
-    let dir = CONFIG_DIR
-        .get()
-        .cloned()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
-    admit_answer(n, busbar_kernel::appbuild::bootstrap_at_rest(), &dir)
 }
 
 /// The native Store-open operation's exact core-owned refusal, using its retained resolution verdict.

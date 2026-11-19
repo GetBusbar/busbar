@@ -3,8 +3,8 @@
 
 //! THE HOST'S I/O TABLE, `io.*` (`BUSBAR-1.6.0.md` THE DESIGN, the connections section), as a `#[repr(C)]` table of host slots.
 
-use crate::abi::mechanism::call::{AbiStr, Field};
-use crate::abi::mechanism::check::{self, fault, Fault, Rule};
+use crate::abi::mechanism::call::AbiStr;
+use crate::abi::mechanism::check::{self};
 
 pub use crate::abi::host::service::{ServiceFn, ServiceHead, ServiceOut};
 
@@ -38,13 +38,6 @@ pub const SLOTS: u32 = 10;
 /// The most bytes an address the host writes may take: the caller lends at least this many.
 pub const MAX_ADDR: usize = 256;
 
-/// [`ReadyIn::dir`] / [`ShutIn::how`]: the read direction.
-pub const DIR_READ: u32 = 1;
-/// [`ReadyIn::dir`] / [`ShutIn::how`]: the write direction (for a stream still connecting, its
-pub const DIR_WRITE: u32 = 2;
-/// [`ShutIn::how`]: both directions.
-pub const DIR_BOTH: u32 = DIR_READ | DIR_WRITE;
-
 /// Whether a slot may answer PENDING, and so is callable only inside a ticketed op. `false` for an op that always answers at once.
 #[must_use]
 pub const fn may_pend(slot: u32) -> bool {
@@ -60,36 +53,26 @@ pub struct IoSlots {
     pub size: u32,
     /// [`SLOTS`].
     pub slots: u32,
-    /// [`op::OPEN`], in [`OpenIn`].
+    /// [`op::OPEN`], in `OpenIn`.
     pub open: Option<ServiceFn>,
     /// [`op::LISTEN`], in [`ListenIn`].
     pub listen: Option<ServiceFn>,
-    /// [`op::ACCEPT`], in [`AddrIn`].
+    /// [`op::ACCEPT`], in `AddrIn`.
     pub accept: Option<ServiceFn>,
     /// [`op::READ`], in [`ReadIn`].
     pub read: Option<ServiceFn>,
     /// [`op::WRITE`], in [`WriteIn`].
     pub write: Option<ServiceFn>,
-    /// [`op::READY`], in [`ReadyIn`].
+    /// [`op::READY`], in `ReadyIn`.
     pub ready: Option<ServiceFn>,
-    /// [`op::SHUT`], in [`ShutIn`].
+    /// [`op::SHUT`], in `ShutIn`.
     pub shut: Option<ServiceFn>,
-    /// [`op::CLOSE`], in [`HandleIn`].
+    /// [`op::CLOSE`], in `HandleIn`.
     pub close: Option<ServiceFn>,
-    /// [`op::SPAWN`], in [`SpawnIn`].
+    /// [`op::SPAWN`], in `SpawnIn`.
     pub spawn: Option<ServiceFn>,
-    /// [`op::ENDS`], in [`AddrIn`].
+    /// [`op::ENDS`], in `AddrIn`.
     pub ends: Option<ServiceFn>,
-}
-
-/// `io.open`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct OpenIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The address: `ip:port`, or `unix:` and an absolute path.
-    pub addr: AbiStr,
 }
 
 /// `io.listen`'s `in`.
@@ -101,20 +84,6 @@ pub struct ListenIn {
     /// The address to bind, `ip:port`.
     pub bind: AbiStr,
     /// The caller's buffer for the address bound.
-    pub addr_buf: *mut u8,
-    /// Its capacity: at least [`MAX_ADDR`].
-    pub addr_cap: usize,
-}
-
-/// `io.accept`'s and `io.ends`'s `in`: a handle and the caller's buffer for an address.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct AddrIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The handle (the listener, for `accept`).
-    pub handle: u64,
-    /// The caller's buffer for the far end's address.
     pub addr_buf: *mut u8,
     /// Its capacity: at least [`MAX_ADDR`].
     pub addr_cap: usize,
@@ -147,95 +116,3 @@ pub struct WriteIn {
     /// How many.
     pub len: usize,
 }
-
-/// `io.ready`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ReadyIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The handle.
-    pub handle: u64,
-    /// [`DIR_READ`] | [`DIR_WRITE`].
-    pub dir: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-}
-
-/// `io.shut`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ShutIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The handle.
-    pub handle: u64,
-    /// [`DIR_READ`] | [`DIR_WRITE`] | [`DIR_BOTH`].
-    pub how: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-}
-
-/// `io.close`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HandleIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The handle.
-    pub handle: u64,
-}
-
-/// `io.spawn`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct SpawnIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The program's absolute path.
-    pub program: AbiStr,
-    /// Its arguments.
-    pub args: *const AbiStr,
-    /// How many.
-    pub args_len: usize,
-    /// Its WHOLE environment: nothing else is set.
-    pub env: *const Field,
-    /// How many.
-    pub env_len: usize,
-}
-
-/// A direction a `ready` waits on: exactly one of [`DIR_READ`] and [`DIR_WRITE`].
-pub const fn check_dir(dir: u32) -> Result<(), Fault> {
-    match dir {
-        DIR_READ | DIR_WRITE => Ok(()),
-        _ => Err(fault(Rule::UnknownCode, "io.ready.dir")),
-    }
-}
-
-/// What a `shut` shuts: [`DIR_READ`], [`DIR_WRITE`] or [`DIR_BOTH`].
-pub const fn check_how(how: u32) -> Result<(), Fault> {
-    match how {
-        DIR_READ | DIR_WRITE | DIR_BOTH => Ok(()),
-        _ => Err(fault(Rule::UnknownCode, "io.shut.how")),
-    }
-}
-
-/// An address buffer: a capacity never comes with a NULL pointer, and it is at least
-pub fn check_addr_buf(buf: *mut u8, cap: usize, field: &'static str) -> Result<(), Fault> {
-    check::listed(buf.cast_const(), cap, field)?;
-    if cap < MAX_ADDR || buf.is_null() {
-        return Err(fault(Rule::OverCap, field));
-    }
-    Ok(())
-}
-
-/// A `spawn`'s lists: a count never comes with a NULL pointer.
-pub fn check_spawn_in(i: &SpawnIn) -> Result<(), Fault> {
-    check::text(i.program, "io.spawn.program")?;
-    check::listed(i.args, i.args_len, "io.spawn.args")?;
-    check::listed(i.env, i.env_len, "io.spawn.env")
-}
-
-#[cfg(test)]
-#[path = "../tests/host_io_tests.rs"]
-mod tests;

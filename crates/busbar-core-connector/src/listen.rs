@@ -1,29 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LISTEN: one listener per INBOUND need, the server-side mirror of [`crate::compose`]'s dial. The
+//! LISTEN: the host's own listening socket for the root's binds. Each socket it admits under the
+//! listener's cap is handed up whole to the kernel's serving loop; nothing here reads or writes it.
 
 use std::future::Future;
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::abi::transport::{AcceptIn, AcceptOut};
-use busbar_contract::transport::codes::MAX_ADDR;
-
-use crate::carrier::{text, Carried, Carry, Driven};
-use crate::compose::{Accept, Connection, Failure, Slot, Via};
-use crate::framer::FramerDoor;
-use crate::hostio::HostListener;
-
-/// The room a carrier's `listen`/`accept` answer writes its address text into ([`MAX_ADDR`] bytes), on
-/// the stack.
-pub(crate) const ADDR_CAP: usize = MAX_ADDR as usize;
+use crate::io::{self as reactor, Registered};
+use crate::socket;
 
 /// A listener's connection cap when its settings name none (new in 1.6.0).
 pub const DEFAULT_MAX_CONNS: usize = 1024;
@@ -85,24 +75,28 @@ impl Default for AcceptLimits {
     }
 }
 
-/// One accepted connection and the peer it came from.
+/// One of a listener's connection slots, held by the connection it admitted and freed on drop.
 #[derive(Debug)]
-pub struct Accepted {
-    /// The composed connection.
-    pub conn: Connection,
-    /// The far end's address.
-    pub peer: SocketAddr,
+pub struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    /// Take a slot of `live` when fewer than `max` are held; `None` = the listener is full.
+    // `fetch_update`, not `try_update`: this crate's MSRV floor predates `try_update`. (The
+    // toolchain this tree builds with raises no deprecation on it, so nothing is allowed here.)
+    #[must_use]
+    pub fn take(live: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
+        live.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            (n < max).then_some(n + 1)
+        })
+        .ok()
+        .map(|_| Self(Arc::clone(live)))
+    }
 }
 
-/// One socket a stream listener admitted ([`Listening::poll_accept_stream`]).
-#[derive(Debug)]
-pub struct Handed {
-    /// The socket, non-blocking, on no reactor.
-    pub stream: TcpStream,
-    /// The far end.
-    pub peer: SocketAddr,
-    /// The listener's slot, freed when dropped.
-    pub slot: Slot,
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// ONE CONNECTION AN INBOUND LISTENER ADMITTED: the accepted socket, not yet on any worker's reactor
@@ -122,24 +116,24 @@ pub trait Admits: Send {
 }
 
 /// The root's stream listener as the root's accept source (`busbar::root::listener`): each
+/// admitted socket is handed up with the slot it holds.
 impl Admits for Listening {
     async fn admit(&mut self) -> Admitted {
-        let h = futures::future::poll_fn(|cx| self.poll_accept_stream(cx)).await;
+        let (stream, peer, slot) = futures::future::poll_fn(|cx| self.poll_accept_stream(cx)).await;
         Admitted {
-            stream: h.stream,
-            peer: h.peer,
-            hold: Some(Box::new(h.slot)),
+            stream,
+            peer,
+            hold: Some(Box::new(slot)),
         }
     }
 }
 
 /// A LISTENER'S STOP, held off its worker: [`ListenStop::stop`] takes the listener out of service from any thread,
-/// including while its worker is held (a plugin entry that never returns). A host listener's socket is shut down
-/// (a second descriptor of it, held here), so it leaves its `SO_REUSEPORT` group and the kernel sends new
-/// connections to the group's other listeners; the ones already queued on it are reset unless
-/// `net.ipv4.tcp_migrate_req` is 1. Its accept loop admits nothing more. [`ListenStop::resume`] puts it back:
-/// its own task binds a new socket on its own worker, which joins the group (the shut one is closed). A carrier's
-/// listener is not the host's socket: its loop stops and resumes admitting, and the carrier keeps what it queued.
+/// including while its worker is held (a plugin entry that never returns). Its socket is shut down (a second
+/// descriptor of it, held here), so it leaves its `SO_REUSEPORT` group and the kernel sends new connections to the
+/// group's other listeners; the ones already queued on it are reset unless `net.ipv4.tcp_migrate_req` is 1. Its
+/// accept loop admits nothing more. [`ListenStop::resume`] puts it back: its own task binds a new socket on its own
+/// worker, which joins the group (the shut one is closed).
 pub struct ListenStop {
     state: Arc<StopState>,
 }
@@ -152,7 +146,7 @@ struct StopState {
     resume: AtomicBool,
     /// The listener's task while stopped, woken by a resume.
     waker: futures::task::AtomicWaker,
-    /// A second descriptor of the host socket in service (`None` for a carrier's listener).
+    /// A second descriptor of the socket in service, once a stop was taken.
     socket: std::sync::Mutex<Option<socket2::Socket>>,
 }
 
@@ -180,35 +174,11 @@ impl ListenStop {
     }
 }
 
-/// What a listener's connections become.
-enum Mode {
-    /// Framed through this entry, over the carrier.
-    Framed(Arc<dyn FramerDoor>),
-    /// The carrier carried as itself.
-    Carried,
-    /// Handed up whole to the kernel's own serving loop (the root's non-plane binds).
-    HandUp,
-}
-
-/// Where a listener's connections come from.
-enum Source {
-    /// The carrier's listener, accepted on its own side; `bound` is the host's listening handle
-    Carrier {
-        via: Via,
-        listener: u64,
-        side: Driven,
-        bound: Option<u64>,
-    },
-    /// The host's own listening socket: a STREAM listener with no carrier loaded to listen through
-    Host(HostListener),
-}
-
-/// One listener: bound for one inbound need (framed, or the carrier carried as itself), or for one
+/// One STREAM listener: the host's own listening socket on the calling worker's reactor, its cap
+/// and its accept backoff.
 pub struct Listening {
-    mode: Mode,
-    source: Source,
+    sock: Registered<TcpListener>,
     local: SocketAddr,
-    accept: Accept,
     max_conns: usize,
     live: Arc<AtomicUsize>,
     backoff: AcceptBackoff,
@@ -219,93 +189,21 @@ pub struct Listening {
 
 impl std::fmt::Debug for Listening {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let entry = match &self.mode {
-            Mode::Framed(d) => Some(d.facts().name.as_str()),
-            _ => None,
-        };
         f.debug_struct("Listening")
-            .field("entry", &entry)
             .field("local", &self.local)
             .finish_non_exhaustive()
     }
 }
 
-pub(crate) fn other(t: String) -> std::io::Error {
-    std::io::Error::other(t)
-}
-
-/// What a carrier's `listen` came to: its listener token, the side its accepts run on, the host's
-pub(crate) type Bound = (u64, Driven, Option<u64>, SocketAddr);
-
-use crate::off_path::lines::listen_through;
-
 impl Listening {
-    /// Bind `bind` (`ip:port`) through the carrier `via`, framing every connection through `door`
-    pub fn bind(
-        door: Option<Arc<dyn FramerDoor>>,
-        via: &Via,
-        bind: &str,
-        tls: Option<Arc<rustls::ServerConfig>>,
-        alpn: Vec<Vec<u8>>,
-        limits: AcceptLimits,
-    ) -> std::io::Result<Self> {
-        let (listener, side, bound, local) = listen_through(via, bind)?;
+    /// A STREAM LISTENER, for the root's own binds: `bind` (`ip:port`) on the calling worker's
+    /// reactor, address and port reused.
+    pub fn bind_stream(bind: &str, limits: AcceptLimits) -> std::io::Result<Self> {
+        let l = socket::listen(bind)?;
+        let local = l.local_addr()?;
         Ok(Self {
-            mode: door.map_or(Mode::Carried, Mode::Framed),
-            source: Source::Carrier {
-                via: via.clone(),
-                listener,
-                side,
-                bound,
-            },
+            sock: reactor::register(l)?,
             local,
-            accept: Accept {
-                tls,
-                alpn,
-                handshake_timeout: limits.handshake_timeout,
-            },
-            max_conns: limits.max_conns,
-            live: Arc::new(AtomicUsize::new(0)),
-            backoff: AcceptBackoff::default(),
-            sleep: None,
-            stop: Arc::default(),
-        })
-    }
-
-    /// A STREAM LISTENER, for the root's own, NON-PLANE binds only (its data door and its admin
-    pub fn bind_stream(
-        via: Option<&Via>,
-        bind: &str,
-        limits: AcceptLimits,
-    ) -> std::io::Result<Self> {
-        let (source, local) = match via {
-            Some(via) => {
-                let (listener, side, bound, local) = listen_through(via, bind)?;
-                (
-                    Source::Carrier {
-                        via: via.clone(),
-                        listener,
-                        side,
-                        bound,
-                    },
-                    local,
-                )
-            }
-            None => {
-                let l = HostListener::bind(bind)?;
-                let local = l.local_addr();
-                (Source::Host(l), local)
-            }
-        };
-        Ok(Self {
-            mode: Mode::HandUp,
-            source,
-            local,
-            accept: Accept {
-                tls: None,
-                alpn: Vec::new(),
-                handshake_timeout: limits.handshake_timeout,
-            },
             max_conns: limits.max_conns,
             live: Arc::new(AtomicUsize::new(0)),
             backoff: AcceptBackoff::default(),
@@ -329,65 +227,28 @@ impl Listening {
     /// This listener's stop, to be held off its worker.
     #[must_use]
     pub fn stopper(&self) -> ListenStop {
-        if let Source::Host(l) = &self.source {
-            *self.stop.socket() = l.socket().try_clone().ok();
-        }
+        *self.stop.socket() = self.sock.socket().try_clone().ok();
         ListenStop {
             state: Arc::clone(&self.stop),
         }
     }
 
-    /// A stopped listener back in service, on its own worker: a host listener binds a new socket at the same
-    /// address, which joins the `SO_REUSEPORT` group (the shut socket is closed with the old handle).
+    /// A stopped listener back in service, on its own worker: it binds a new socket at the same address, which
+    /// joins the `SO_REUSEPORT` group (the shut socket is closed with the old handle).
     fn rejoin(&mut self) -> std::io::Result<()> {
-        if let Source::Host(l) = &mut self.source {
-            let fresh = HostListener::bind(&self.local.to_string())?;
-            *self.stop.socket() = Some(fresh.socket().try_clone()?);
-            *l = fresh;
-        }
+        let fresh = reactor::register(socket::listen(&self.local.to_string())?)?;
+        *self.stop.socket() = Some(fresh.socket().try_clone()?);
+        self.sock = fresh;
         self.stop.stopped.store(false, Ordering::Release);
         Ok(())
     }
 
-    /// The next admitted connection: `Pending` with `cx`'s waker on the carrier's accept (or on
-    pub fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<Accepted, Failure>> {
-        let door = match &self.mode {
-            Mode::Framed(d) => Some(Arc::clone(d)),
-            Mode::Carried => None,
-            Mode::HandUp => {
-                return Poll::Ready(Err(Failure::Refused(
-                    "a stream listener frames nothing".into(),
-                )));
-            }
-        };
-        let (got, peer, slot) = std::task::ready!(self.poll_conn(cx));
-        let Got::Carried(carried) = got else {
-            return Poll::Ready(Err(Failure::Refused(
-                "a stream listener frames nothing".into(),
-            )));
-        };
-        Poll::Ready(
-            Connection::accepted(door, carried, &self.accept, Some(slot))
-                .map(|conn| Accepted { conn, peer }),
-        )
-    }
-
-    /// The next admitted socket of a STREAM listener ([`Listening::bind_stream`]), as it arrived:
-    pub(crate) fn poll_accept_stream(&mut self, cx: &mut Context<'_>) -> Poll<Handed> {
-        loop {
-            let (got, peer, slot) = std::task::ready!(self.poll_conn(cx));
-            let stream = match got {
-                Got::Carried(carried) => carried.hand_up(),
-                Got::Host(stream) => Some(stream),
-            };
-            if let Some(stream) = stream.filter(|s| s.set_nonblocking(true).is_ok()) {
-                return Poll::Ready(Handed { stream, peer, slot });
-            }
-        }
-    }
-
-    /// The next connection under the cap: one past it is accepted and closed at once, no byte
-    fn poll_conn(&mut self, cx: &mut Context<'_>) -> Poll<(Got, SocketAddr, Slot)> {
+    /// The next admitted socket, as it arrived, non-blocking: one past the cap is accepted and
+    /// closed at once, no byte read or written.
+    pub(crate) fn poll_accept_stream(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<(TcpStream, SocketAddr, Slot)> {
         loop {
             if self.stop.stopped.load(Ordering::Acquire) {
                 // Stopped: nothing is admitted until a resume, which wakes this task to rejoin. A rejoin that
@@ -401,26 +262,16 @@ impl Listening {
                 std::task::ready!(sleep.as_mut().poll(cx));
                 self.sleep = None;
             }
-            let got = match &mut self.source {
-                Source::Carrier {
-                    via,
-                    listener,
-                    side,
-                    ..
-                } => std::task::ready!(accept_through(via, *listener, side, cx))
-                    .map_err(std::io::Error::other),
-                Source::Host(l) => {
-                    std::task::ready!(l.poll_accept(cx)).map(|(s, peer)| (Got::Host(s), peer))
-                }
-            };
-            match got {
-                Ok((got, peer)) => {
+            match std::task::ready!(self.sock.poll_accept(cx)) {
+                Ok((stream, peer)) => {
                     self.backoff.reset();
                     let Some(slot) = Slot::take(&self.live, self.max_conns) else {
-                        drop(got);
+                        drop(stream);
                         continue;
                     };
-                    return Poll::Ready((got, peer, slot));
+                    if stream.set_nonblocking(true).is_ok() {
+                        return Poll::Ready((stream, peer, slot));
+                    }
                 }
                 Err(e) => {
                     if let Some(d) = self.next_delay(&e) {
@@ -430,78 +281,11 @@ impl Listening {
             }
         }
     }
-}
 
-/// A RETIRED LISTENER STOPS ACCEPTING AT ONCE (T1): the host's listening handle its carrier's
-impl Drop for Listening {
-    fn drop(&mut self) {
-        if let Source::Carrier {
-            via, side, bound, ..
-        } = &mut self.source
-        {
-            side.cancel(via.door.as_ref());
-            let (made, _) = via.io.settle(side.ticket());
-            if let Some(h) = made {
-                via.io.retire_handle(h);
-            }
-            if let Some(h) = bound {
-                via.io.retire_listener(*h);
-            }
-        }
-    }
-}
-
-impl Listening {
     /// The listener's [`AcceptBackoff`]: `None` = retry now.
     fn next_delay(&mut self, e: &std::io::Error) -> Option<Duration> {
         self.backoff.next_delay(e)
     }
-}
-
-/// What one accept came to.
-pub(crate) enum Got {
-    /// The carrier's connection.
-    Carried(Carried),
-    /// The host's own socket (a stream listener with no carrier).
-    Host(TcpStream),
-}
-
-/// The carrier's `accept` on its listener's side: the connection and its far end.
-pub(crate) fn accept_through(
-    via: &Via,
-    listener: u64,
-    side: &mut Driven,
-    cx: &mut Context<'_>,
-) -> Poll<Result<(Got, SocketAddr), String>> {
-    let mut peer = [0_u8; ADDR_CAP];
-    let mut i: AcceptIn = blank_in();
-    i.listener = listener;
-    i.peer_buf = peer.as_mut_ptr();
-    i.peer_cap = peer.len();
-    let mut o: AcceptOut = blank_out();
-    let Some(c) = side.cross(via.door.as_ref(), Carry::Accept(&mut i, &mut o), Some(cx)) else {
-        return Poll::Pending;
-    };
-    let (handle, _) = via.io.settle(side.ticket());
-    if c.outcome != Outcome::Ready {
-        if let Some(h) = handle {
-            via.io.retire_handle(h);
-        }
-        return Poll::Ready(Err(text(&c)));
-    }
-    let Some(carried) =
-        Carried::accepted(Arc::clone(&via.door), Arc::clone(&via.io), o.conn, handle)
-    else {
-        if let Some(h) = handle {
-            via.io.retire_handle(h);
-        }
-        return Poll::Ready(Err("the transport is no carrier the host drives".into()));
-    };
-    let n = usize::try_from(o.peer_written).unwrap_or(0).min(peer.len());
-    let at = String::from_utf8_lossy(&peer[..n])
-        .parse::<SocketAddr>()
-        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-    Poll::Ready(Ok((Got::Carried(carried), at)))
 }
 
 #[cfg(test)]

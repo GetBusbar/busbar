@@ -91,17 +91,6 @@ fn content_schema_v2_pinned() {
         "the v1 pin is deleted with its shape"
     );
 
-    // (2) the generated C header carries the same tag.
-    let header = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../busbar-contract/include/busbar_plugin.h"
-    ))
-    .expect("the generated C header exists");
-    assert!(
-        header.contains("#define BB_EXPORT_CONTENT_SCHEMA \"busbar.content.v2\""),
-        "the generated header names busbar.content.v2"
-    );
-
     // (3) every shape is closed.
     for shape in [
         &schema.defs.line,

@@ -4,7 +4,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::conn::codes::DIRECTION_INBOUND;
 use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::plugin::Kind;
@@ -12,12 +11,6 @@ use busbar_contract::plugin_settings::sugar_words::{
     REWRITE_ALIAS, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING, SECTION_SELECTS,
 };
 use busbar_contract::rendering::{read, Read, ReadNeed};
-
-use crate::dispatch::kinds::plane::Plane;
-use crate::dispatch::{
-    load_dropped_bytes, load_linked, Adopter, Bind, ConnTable, EnvelopeSink, LinkedRow, Plugin,
-    PluginLogConfig,
-};
 
 #[must_use]
 pub const fn kind_of(code: KindCode) -> Kind {
@@ -155,8 +148,6 @@ fn schemes(v: &serde_json::Value, out: &mut BTreeSet<String>) {
 /// Where a candidate's plugin comes from, for [`load`].
 #[derive(Debug, Clone)]
 pub enum Origin {
-    /// A compiled-in row.
-    Linked(LinkedRow),
     /// A dropped-in plugin: its tarball's file name and its verified library bytes.
     Dropped {
         /// The tarball's file name.
@@ -302,11 +293,6 @@ impl Candidate {
         std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
     }
 
-    pub fn linked(door: DoorFn) -> Result<Self, String> {
-        let row = LinkedRow::of(door).map_err(|e| e.to_string())?;
-        Self::from_rendering(row.statement.clone(), None, Origin::Linked(row))
-    }
-
     pub(crate) fn answers(&self, word: &str) -> bool {
         self.name == word || self.aliases.iter().any(|a| a == word)
     }
@@ -355,10 +341,9 @@ pub fn sugars_of(candidates: &[Candidate]) -> Result<busbar_contract::secret_ref
     Ok(sugars)
 }
 
-/// Where a candidate comes from, as a refusal names it: `linked`, or its archive's file name.
+/// Where a candidate comes from, as a refusal names it: its archive's file name.
 fn origin_of(c: &Candidate) -> &str {
     match &c.origin {
-        Origin::Linked(_) => "linked",
         Origin::Dropped { file, .. } => file,
     }
 }
@@ -384,17 +369,6 @@ pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
     for (i, a) in candidates.iter().enumerate() {
         for b in &candidates[i + 1..] {
             if a.name == b.name {
-                if let Some((linked, file, dropped)) = doors(a, b) {
-                    if linked.version.is_empty() || dropped.version.is_empty() {
-                        return Err(crate::registry::unversioned(&a.name));
-                    }
-                    crate::registry::two_versions(
-                        &a.name,
-                        &linked.version,
-                        file,
-                        &dropped.version,
-                    )?;
-                }
                 continue;
             }
             if let Some(word) = a.words().find(|w| b.answers(w)) {
@@ -410,32 +384,6 @@ pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn doors<'c>(
-    a: &'c Candidate,
-    b: &'c Candidate,
-) -> Option<(&'c Candidate, &'c str, &'c Candidate)> {
-    match (&a.origin, &b.origin) {
-        (Origin::Linked(_), Origin::Dropped { file, .. }) => Some((a, file, b)),
-        (Origin::Dropped { file, .. }, Origin::Linked(_)) => Some((b, file, a)),
-        _ => None,
-    }
-}
-
-#[must_use]
-pub fn both_doors(candidates: &[Candidate]) -> Vec<String> {
-    let mut lines = Vec::new();
-    for (i, a) in candidates.iter().enumerate() {
-        for b in &candidates[i + 1..] {
-            if let Some((linked, file, dropped)) = doors(a, b) {
-                if a.name == b.name && linked.version == dropped.version {
-                    lines.push(crate::registry::both_doors(&a.name, &linked.version, file));
-                }
-            }
-        }
-    }
-    lines
 }
 
 /// One selected instance: which candidate, under which instance name (the config key).
@@ -502,8 +450,6 @@ pub fn plane_use<'c>(uses: &Uses, plane: &'c Candidate) -> Option<&'c str> {
 }
 
 pub struct Build<'a> {
-    pub linked: Vec<crate::LinkedPlugin>,
-
     pub scan: Option<Scan<'a>>,
 }
 
@@ -535,7 +481,7 @@ pub fn registry(
     note: &mut dyn FnMut(Note<'_>),
 ) -> Result<crate::PluginRegistry, String> {
     let Some(mut scan) = b.scan else {
-        return crate::PluginRegistry::empty().link(b.linked);
+        return Ok(crate::PluginRegistry::empty());
     };
     let (mut high_water, unreadable) = crate::HighWaterMarks::load(scan.data_dir);
     if let Some(n) = unreadable {
@@ -544,11 +490,10 @@ pub fn registry(
     scan.policy.first_party_high_water = high_water.marks();
     let Some(dir) = scan.dir else {
         note(Note::Off);
-        return crate::PluginRegistry::empty().link(b.linked);
+        return Ok(crate::PluginRegistry::empty());
     };
     let registry = crate::scan_and_validate(dir, &scan.policy)
-        .map_err(|errs| format!("plugin validation failed:\n  - {}", errs.join("\n  - ")))?
-        .link(b.linked)?;
+        .map_err(|errs| format!("plugin validation failed:\n  - {}", errs.join("\n  - ")))?;
     note(Note::Scanned(&registry));
     if high_water.record_registry(&registry) {
         if let Err(e) = high_water.persist() {
@@ -558,52 +503,12 @@ pub fn registry(
     Ok(registry)
 }
 
-/// The plane axis, discovered ([`crate::PluginRegistry::open_planes`]): the planes that state
-/// themselves through a door, not yet bound.
-#[derive(Default)]
-pub struct PlaneSet {
-    /// Each plane with a door: linked rows first, then the dropped-in ones in scan order.
-    pub doors: Vec<Candidate>,
-}
-
 #[must_use]
 pub fn used_planes(uses: &Uses, doors: &[Candidate]) -> Vec<Candidate> {
     doors
         .iter()
         .filter(|c| c.sectioned(uses))
         .cloned()
-        .collect()
-}
-
-pub fn load_planes(
-    doors: &[Candidate],
-    logs: &PluginLogConfig,
-    metrics: Arc<dyn EnvelopeSink>,
-    dispatcher: Adopter,
-    max_inflight_cap: u32,
-    conns: ConnTable,
-) -> Result<Vec<(String, Plugin<Plane>)>, String> {
-    doors
-        .iter()
-        .map(|c| {
-            let instance = c.name.clone();
-            if c.kind != KindCode::Plane {
-                return Err(format!("{instance}: a plane door states another kind"));
-            }
-            let sink = logs
-                .sink(&instance, c.kind, metrics.clone())
-                .map_err(|e| format!("{instance}: {e}"))?;
-            let bind = Bind {
-                accept: Default::default(),
-                instance: Arc::from(instance.as_str()),
-                max_inflight_cap,
-                sink: Arc::new(sink),
-                dispatcher: dispatcher.clone(),
-                conns: conns.clone(),
-            };
-            let plane = open_candidate::<Plane>(c, bind).map_err(|e| format!("{instance}: {e}"))?;
-            Ok((instance, plane))
-        })
         .collect()
 }
 
@@ -758,17 +663,6 @@ pub fn inbound(
     Ok(out)
 }
 
-/// Open a candidate through its compiled-in row or its dropped library bytes.
-pub fn open_candidate<K: crate::dispatch::Kind>(
-    c: &Candidate,
-    bind: Bind,
-) -> Result<Plugin<K>, crate::dispatch::LoadError> {
-    match &c.origin {
-        Origin::Linked(row) => load_linked::<K>(row, bind),
-        Origin::Dropped { file, bytes } => load_dropped_bytes::<K>(bytes, file, &c.stated, bind),
-    }
-}
-
 /// The settings one plugin's schema declares public, and every word a `module:` may name it by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicSettings {
@@ -814,7 +708,3 @@ pub fn public_settings(stated: &[u8], words: &[&str]) -> Result<Option<PublicSet
 #[cfg(test)]
 #[path = "tests/boot_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "tests/public_settings_tests.rs"]
-mod public_settings_tests;

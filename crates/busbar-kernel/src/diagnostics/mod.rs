@@ -37,11 +37,6 @@
 
 mod emit;
 pub use emit::emit;
-pub mod pages;
-
-#[cfg(test)]
-#[path = "tests/pages_tests.rs"]
-mod pages_tests;
 
 #[cfg(test)]
 #[path = "tests/catalog_tests.rs"]
@@ -1238,7 +1233,6 @@ diagnostics! {
         "A plugin reported an error number it did not declare",
         "A plugin failed a call or wrote a log line with an error number that is not in its D_ERRORS declaration (or declared none), or above 9999. Core kept the plugin's text and wrote no `BUSBAR-<plugin>-NNNN` code for it. This warning fires once per instance; the instance keeps serving.",
         "Report the plugin to its author with the logged `number`: the plugin's docs/diagnostics.json and its declared numbers disagree (its C-ERRORS conformance case catches this in its own CI).";
-
 
     /// A group `/usage` read could not derive a bucket's usage from the governance store. Read-path fault.
     GROUP_USAGE_READ_FAILED = 8018, Governance, Actionable, "group-usage-read-failed", "1.6.0", false,

@@ -44,7 +44,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use busbar_contract::json::{self, json, JsonContainerTrait, JsonValueTrait, Value};
+use busbar_contract::json::{self, json, JsonContainerTrait as _, JsonValueTrait, Value};
 
 const PROTOCOL: &str = "2026-07-28";
 

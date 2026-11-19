@@ -665,11 +665,7 @@ fn plugins_dir_fingerprint(
 }
 
 pub fn auth_modules_compiled_in() -> Vec<&'static str> {
-    let mut modules = vec![busbar_kernel::config::KEYS_MODULE];
-    modules.extend(busbar_kernel::preflight::inbound_auth_names(
-        busbar_kernel::preflight::linked_auth_rows(),
-    ));
-    modules
+    vec![busbar_kernel::config::KEYS_MODULE]
 }
 
 const MAX_PLUGIN_FILENAME_LEN: usize = 256;

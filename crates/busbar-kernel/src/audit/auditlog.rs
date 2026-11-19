@@ -1560,25 +1560,6 @@ pub(crate) fn try_emit_admin_hostless_now(
     Ok(())
 }
 
-/// Return success only after this event was accepted and its native append confirmed.
-pub(crate) async fn emit_admin_hostless_confirmed(
-    action: &str,
-    resource: &str,
-    outcome: &str,
-    principal: &str,
-) -> RecordStoreResult<()> {
-    let (suffix, _) = admin_suffix(
-        busbar_kernel::store::now(),
-        action,
-        resource,
-        outcome,
-        principal,
-    );
-    let pending = pending_audit(ADMIN_LOG, suffix, EventOrigin::Mutation)?;
-    PENDING_AUDIT.try_enqueue(pending)?;
-    flush_pending().await
-}
-
 /// What the host refused, or flagged, while a plugin started, bound or served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginRefusal {

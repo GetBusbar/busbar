@@ -209,7 +209,7 @@ fn test_extract_admin_header_token_empty_filtered() {
         busbar_kernel::preflight::linked().expect("the actual root registry is installed");
     // The admin chain the app build makes opens the operator credential and takes its row's
     // carriers: the linked operator is bound first, so the default admin chain names it.
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     let admin = busbar_kernel::auth::AdminAuthChain::build(
         &busbar_kernel::config::AuthCfg::default_none(),
         &registry,
@@ -254,18 +254,4 @@ fn test_extract_admin_header_token_empty_filtered() {
         "the operator credential's one carrier is the Bearer"
     );
     assert_eq!(carried_credential(&carriers, absent.headers()), None);
-}
-
-#[test]
-fn actual_default_inbound_carriers_preserve_statement_order() {
-    crate::dist_root_install::install();
-    let registry =
-        busbar_kernel::preflight::linked().expect("the actual root registry is installed");
-    let axis = crate::root::dispatch::auth_axis(registry);
-    assert_eq!(
-        axis.default_inbound_style()
-            .expect("one actual default inbound style"),
-        ["authorization", "x-api-key", "x-goog-api-key"],
-        "the current actual header product's statement order reaches the root metadata"
-    );
 }

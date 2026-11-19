@@ -343,26 +343,6 @@ pub(crate) fn is_linked_secret(module: &str) -> bool {
     axis().is_some_and(|a| a.linked(module))
 }
 
-/// THE ONE TEXT-AND-BYTES RULE for a credential the host re-resolves on a lease: resolve with the
-/// typed refusal kind, apply the text rule ([`SecretResolver::resolve_string`]'s: UTF-8, trailing
-/// `\r`/`\n` trimmed, an empty value refused as `INVALID`) and hand back the text's bytes. A build
-/// and every later refresh of the same reference go through this one function, so a value read
-/// twice unchanged is the same bytes twice (a file ending in a newline never looks rotated).
-pub fn resolve_text_refusing(
-    resolver: &dyn busbar_contract::secret::SecretResolve,
-    secret: &SecretRef,
-    scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Held, SecretRefused> {
-    let bytes = resolver.resolve_refusing(secret, Some(scope))?;
-    SecretResolver::text_of(secret, bytes)
-        .map(busbar_contract::redacted::Secret::into_bytes)
-        .map_err(|text| refusal(busbar_contract::secret::codes::ERROR_KIND_INVALID, text))
-}
-
-pub fn resolve_linked_string(secret: &SecretRef) -> Result<HeldText, String> {
-    SecretResolver::builtins_only().resolve_string(secret)
-}
-
 pub fn resolve_linked_string_at_config(
     secret: &SecretRef,
     scope: &busbar_contract::config_time::ConfigScope,

@@ -30,9 +30,6 @@ busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 # The MIN-3 plugin interface, core side: `Caller`, `BoxFut`, the Need types the §12 kernel contracts name
 # (ABI-MIN3-INTERFACE §10, §12). A leaf crate.
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
-# The port types custody, the credential cache and the verdict cache name (`CallCx`, `PortError`, `SecretPort`,
-# `OutboundAnswer`, `Identity`, `Verdict`; IF §11.3, §12.2, §12.28). The loader never names the kernel.
-busbar-plugin-loader = { path = "../plugin-loader" }
 # Only under the non-default `timing` feature.
 libc = { workspace = true, optional = true }
 axum = { workspace = true }

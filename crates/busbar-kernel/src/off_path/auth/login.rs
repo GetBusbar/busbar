@@ -4,11 +4,9 @@
 //! Off-path code for `auth::login` and `auth::login_limits`: the hosted-login map's build (boot
 //! and reload), its configuration refusals, and the login limiter's policy and trusted-proxy parsing.
 
-use std::sync::Arc;
-
 use indexmap::IndexMap;
 
-use crate::auth::login::{validate_browser_login_secret, LoginMethod, LoginMethods};
+use crate::auth::login::LoginMethods;
 use crate::config::AuthCfg;
 
 fn login_module_refusal(name: &str, module: &str, reason: &str) -> String {
@@ -23,147 +21,29 @@ pub(crate) fn missing_login_axis(name: &str, module: &str) -> String {
 }
 
 impl LoginMethods {
-    /// The hosted login methods over the build's shared `instances`: a provider the chain or
-    /// admin_auth already opened is handed over, not opened again (WASTE-AUTH-SECRETS W1).
+    /// The hosted login methods: every method's module is refused once its settings resolve (no
+    /// `kind: auth` plugin answers it), so a build with methods refuses and one without has none.
     pub(crate) fn build_on(
         cfg: &AuthCfg,
         registry: &dyn busbar_contract::plugin_rows::PluginRows,
         secret_resolver: &crate::config::secret::SecretResolver,
-        instances: &mut crate::auth::instances::AuthInstances,
-        open_axis: &dyn Fn() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
     ) -> Result<Self, String> {
-        let mut methods = IndexMap::new();
-
-        let mut axis: Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
-        for (name, mc) in &cfg.methods {
-            let refused = |e: String| login_module_refusal(name, &mc.module, &e);
-            let has_button = mc.browser_login.is_some();
-            let calls = instances.instance(
+        if let Some((name, mc)) = cfg.methods.iter().next() {
+            crate::auth::instances::provider_settings(
+                cfg,
                 name,
                 &mc.module,
+                &mc.settings,
                 registry,
-                || {
-                    let mut resolved = crate::auth::instances::provider_settings(
-                        cfg,
-                        name,
-                        &mc.module,
-                        &mc.settings,
-                        registry,
-                        secret_resolver,
-                        |e| format!("identity-providers.{name} settings: {e}"),
-                    )?;
-                    let axis = match &axis {
-                        Some(a) => a.clone(),
-                        None => axis
-                            .insert(
-                                open_axis().ok_or_else(|| missing_login_axis(name, &mc.module))?,
-                            )
-                            .clone(),
-                    };
-
-                    if !axis.answers(&mc.module) {
-                        return Err(refused(crate::auth::auth_refusal(registry, &mc.module)));
-                    }
-
-                    crate::auth::instances::lend_login_secret(
-                        cfg,
-                        name,
-                        &mc.module,
-                        registry,
-                        secret_resolver,
-                        &mut resolved,
-                    )?;
-
-                    Ok(crate::auth::instances::Prepared {
-                        axis,
-                        resolved,
-                        reresolve: crate::auth::instances::reresolve(
-                            cfg,
-                            name,
-                            &mc.module,
-                            &mc.settings,
-                            registry,
-                            secret_resolver,
-                        ),
-                    })
-                },
-                refused,
+                secret_resolver,
+                |e| format!("identity-providers.{name} settings: {e}"),
             )?;
-            let axis = match &axis {
-                Some(a) => a.clone(),
-                None => axis
-                    .insert(open_axis().ok_or_else(|| missing_login_axis(name, &mc.module))?)
-                    .clone(),
-            };
-            let inbound_style = axis.inbound_style(&mc.module);
-            if inbound_style.as_ref().is_some_and(|style| {
-                style.points != calls.inbound_points()
-                    || calls.facts()
-                        & (busbar_contract::auth_calls::codes::FACT_OPERATOR
-                            | busbar_contract::auth_calls::codes::FACT_READS_CREDENTIALS)
-                        != 0
-            }) {
-                return Err(refused(
-                    "the opened verifier disagrees with its inbound style".into(),
-                ));
-            }
-
-            let login_kind = match (calls.login_kind(), &mc.browser_login) {
-                (Some(kind), _) => kind,
-                (None, None) => busbar_contract::auth::LoginKind::Redirect,
-                (None, Some(_)) => {
-                    return Err(format!(
-                        "identity-providers.{name} sets browser_login but its plugin serves \
-                         no login; a hosted login button requires a login-capable auth plugin"
-                    ));
-                }
-            };
-
-            if let Some(bl) = &mc.browser_login {
-                validate_browser_login_secret(login_kind, bl.client_secret.is_some())
-                    .map_err(|e| format!("identity-providers.{name} browser_login: {e}"))?;
-            }
-            methods.insert(
-                name.clone(),
-                LoginMethod {
-                    module: calls,
-                    has_button,
-                    login_kind,
-                    form: Arc::default(),
-                },
-            );
+            return Err(missing_login_axis(name, &mc.module));
         }
-        Ok(Self { methods })
+        Ok(Self {
+            methods: IndexMap::new(),
+        })
     }
-}
-
-const CLIENT_SECRET_SLOT: &str = "client_secret";
-
-pub(crate) fn lend_browser_login_secret(
-    name: &str,
-    module: &str,
-    browser: Option<&crate::config::BrowserLoginCfg>,
-    secret_slots: &[String],
-    secret_resolver: &crate::config::secret::SecretResolver,
-    resolved: &mut busbar_contract::plugin_settings::ResolvedSettings,
-) -> Result<(), String> {
-    let Some(sref) = browser.and_then(|bl| bl.client_secret.as_ref()) else {
-        return Ok(());
-    };
-    if !secret_slots.iter().any(|key| key == CLIENT_SECRET_SLOT) {
-        return Err(format!(
-            "identity-providers.{name} browser_login.client_secret: the login plugin \
-             '{module}' states no `{CLIENT_SECRET_SLOT}` secret reference, so it cannot be \
-             lent the client secret as a secret"
-        ));
-    }
-    let secret = secret_resolver
-        .resolve_string_at_config(
-            sref,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .map_err(|e| format!("identity-providers.{name} browser_login.client_secret: {e}"))?;
-    resolved.insert_secret(CLIENT_SECRET_SLOT, secret_slots, secret)
 }
 
 // ---- the login limiter's configuration (`auth.login_limits`, `advanced` client-address keys) ----

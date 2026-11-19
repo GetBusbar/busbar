@@ -12,7 +12,7 @@ fn response_clock_shares_the_actual_node_sequence_and_samples_wall_once() {
     }
     let clock = Arc::new(Clock(std::sync::atomic::AtomicU64::new(0)));
     let node = Node::with_clock(clock.clone());
-    assert_eq!(node.arrived(), Arrived::at(12_345, 0));
+    assert_eq!(node.checked_arrived().unwrap(), Arrived::at(12_345, 0));
     let stamp = node.checked_arrived().unwrap();
     assert_eq!(stamp, Arrived::at(12_345, 1));
     assert_eq!(stamp.secs(), 12);
@@ -96,16 +96,6 @@ async fn native_fixture() -> Result<crate::root::durability::Durability, std::io
     ))
     .await
 }
-async fn native_node_book() -> crate::root::durability::NodeBook {
-    let journal = native_journal(
-        busbar_kernel::door::op_id().counter(),
-        native_budget().records,
-    )
-    .await;
-    (crate::root::durability::node_book(journal, native_budget()))
-        .await
-        .expect("native node book opens")
-}
 async fn selected(
     journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
 ) -> Vec<busbar_kernel_wal::JournalRecord> {
@@ -116,7 +106,6 @@ async fn selected(
 }
 
 use super::*;
-use busbar_contract::json::{self, JsonValueMutTrait, JsonValueTrait};
 
 use busbar_kernel::teller::Ended;
 const LANE: &str = "m0";
@@ -142,7 +131,7 @@ async fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
 #[tokio::test]
 async fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let node = Node::new();
-    let taken: Vec<Arrived> = (0..4).map(|_| node.arrived()).collect();
+    let taken: Vec<Arrived> = (0..4).map(|_| node.checked_arrived().unwrap()).collect();
 
     for pair in taken.windows(2) {
         let (before, after) = (pair[0], pair[1]);
@@ -217,8 +206,6 @@ async fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
 }
 
 const EPOCH: u64 = 1_700_000_000;
-
-const RERANK_LANE: &str = "rerank-v3.5";
 
 fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
     let mut history = busbar_kernel_ledger::cost::History::new();
@@ -398,33 +385,6 @@ async fn the_nodes_interner_leaks_a_lane_name_once() {
     let first = first.expect("an unfrozen image interns a configured lane");
     let again = again.expect("a repeated lane is the same lane");
     assert!(std::ptr::eq(first.as_str(), again.as_str()));
-}
-
-#[tokio::test]
-async fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
-    let node = Node::new();
-    let mut names = node
-        .lane_names
-        .lock()
-        .expect("the node's lane table is never poisoned");
-
-    let first = names
-        .resolve(LANE)
-        .expect("an unfrozen image interns a lane");
-    for _ in 0..64 {
-        let again = names
-            .resolve(LANE)
-            .expect("a repeated lane is the same lane");
-        assert!(std::ptr::eq(first.as_str(), again.as_str()));
-    }
-    assert_eq!(names.consulted(), 1);
-
-    let _ = names.resolve("a-second-configured-lane");
-    assert_eq!(
-        names.consulted(),
-        2,
-        "a name the node has not resolved still reaches the interner, exactly once"
-    );
 }
 
 #[tokio::test]
@@ -821,271 +781,6 @@ async fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
         Ok(nanos),
         "native counts preserve the complete accepted projection"
     );
-}
-
-#[tokio::test]
-async fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
-    let node = Node::new();
-    let book = Arc::new(Mutex::new(
-        native_fixture()
-            .await
-            .expect("a memory-buffered journal cannot fail to open"),
-    ));
-    node.bind_book(Arc::clone(&book));
-
-    let who = PrincipalId::new("acct:swept");
-    let key = UnitKey::new(41);
-    let call = node.kernel.next_call();
-    let reservation = node
-        .reserve_terminal(
-            busbar_kernel::limits::process_admission::AdmissionClass::Data,
-            key,
-            call,
-        )
-        .expect("the fixture terminal book reserves the unit's slot (e5b8ff5fb8)");
-    let slot = node
-        .inflight
-        .insert(busbar_kernel::inflight::Enter {
-            key,
-            origin: OriginKind::Client,
-            session: None,
-            admin_listener: false,
-            zero_hold_tick: false,
-            arrival: busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, who, call),
-            now: EPOCH * 1_000,
-        })
-        .expect("the uncapped table takes the unit");
-
-    drop(Occupied {
-        node: &node,
-        reservation,
-        slot: Arc::clone(&slot),
-        arrived: Arrived::at(EPOCH * 1_000, 7),
-        op_class: busbar_contract::caps::OpClassId::new("call"),
-        post: None,
-        reached_end: false,
-    });
-    assert!(
-        slot.is_marked(),
-        "the guard MARKS the slot it could not end"
-    );
-    assert!(
-        node.inflight.get(key).is_some(),
-        "and leaves it in the table, where the sweep can see it"
-    );
-    assert_ne!(
-        slot.cell().state(),
-        busbar_contract::caps::HoldCellState::Taken,
-        "the hold is still in the cell: nobody has settled it"
-    );
-
-    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 1);
-    assert_eq!(
-        slot.cell().state(),
-        busbar_contract::caps::HoldCellState::Taken,
-        "the sweep took the hold out of the cell"
-    );
-    assert!(node.inflight.get(key).is_none(), "and gave the slot back");
-    {
-        let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        let journal = durability.journal.clone();
-        drop(durability);
-        let replayed = selected(&journal).await;
-        assert_eq!(
-            replayed
-                .iter()
-                .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
-                .count(),
-            1,
-            "the swept unit has exactly one native audit record"
-        );
-    }
-
-    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 6, 100)), 0);
-
-    let key = UnitKey::new(42);
-    let call = node.kernel.next_call();
-    let reservation = node
-        .reserve_terminal(
-            busbar_kernel::limits::process_admission::AdmissionClass::Data,
-            key,
-            call,
-        )
-        .expect("the fixture terminal book reserves the unit's slot (e5b8ff5fb8)");
-    let slot = node
-        .inflight
-        .insert(busbar_kernel::inflight::Enter {
-            key,
-            origin: OriginKind::Client,
-            session: None,
-            admin_listener: false,
-            zero_hold_tick: false,
-            arrival: busbar_kernel::inflight::arrival_hold(
-                &node.kernel,
-                &node.door,
-                PrincipalId::new("acct:finished"),
-                call,
-            ),
-            now: EPOCH * 1_000,
-        })
-        .expect("the uncapped table takes the unit");
-    drop(Occupied {
-        node: &node,
-        reservation,
-        slot: Arc::clone(&slot),
-        arrived: Arrived::at(EPOCH * 1_000, 8),
-        op_class: busbar_contract::caps::OpClassId::new("call"),
-        post: None,
-        reached_end: true,
-    });
-    assert!(!slot.is_marked());
-    assert!(node.inflight.get(key).is_none());
-}
-
-async fn swept_node() -> (
-    Node,
-    Arc<std::sync::Mutex<crate::root::durability::Durability>>,
-) {
-    let node = Node::new();
-    let book = Arc::new(Mutex::new(
-        native_fixture()
-            .await
-            .expect("a memory-buffered journal cannot fail to open"),
-    ));
-    node.bind_book(Arc::clone(&book));
-    (node, book)
-}
-
-fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, _hold: Option<u64>) {
-    // The unit's terminal slot is reserved before it enters, as every occupied constructor
-    // reserves its original slot (e5b8ff5fb8, STORAGE-JOIN-r2).
-    let call = node.kernel.next_call();
-    let reservation = node
-        .reserve_terminal(
-            busbar_kernel::limits::process_admission::AdmissionClass::Data,
-            key,
-            call,
-        )
-        .expect("the fixture terminal book reserves the unit's slot");
-    let slot = node
-        .inflight
-        .insert(busbar_kernel::inflight::Enter {
-            key,
-            origin: OriginKind::Client,
-            session: None,
-            admin_listener: false,
-            zero_hold_tick: false,
-            arrival: busbar_kernel::inflight::arrival_hold(
-                &node.kernel,
-                &node.door,
-                PrincipalId::new("acct:swept"),
-                call,
-            ),
-            now: EPOCH * 1_000,
-        })
-        .expect("the uncapped table takes the unit");
-    drop(Occupied {
-        node,
-        reservation,
-        slot,
-        arrived: Arrived::at(EPOCH * 1_000, key.get()),
-        op_class: busbar_contract::caps::OpClassId::new(op_class),
-        post: None,
-        reached_end: false,
-    });
-}
-
-#[tokio::test]
-async fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line() {
-    let (node, book) = swept_node().await;
-    let key = UnitKey::new(51);
-    lose_a_unit(&node, key, "widget_call", Some(3));
-    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 1);
-
-    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-    let records: Vec<_> = durability
-        .audit_records()
-        .iter()
-        .filter(|r| r.what.unit_key == key)
-        .collect();
-    assert_eq!(
-        records.len(),
-        1,
-        "one record for the one swept unit: {:?}",
-        durability.audit_records()
-    );
-    let record = records[0];
-    assert_eq!(
-        record.outcome.unit_end,
-        Outcome::Failed(
-            busbar_contract::caps::StepName::Route,
-            busbar_contract::caps::ReasonCode::TaskLost
-        )
-    );
-    assert_eq!(record.outcome.finish, RecordFinish::Error);
-    assert_eq!(record.what.op_class.as_str(), "widget_call");
-    assert_eq!(
-        record.controls.hold_ref, None,
-        "no second money hold is encoded"
-    );
-
-    assert!(
-        record.usage.lines.is_empty(),
-        "a record names no money-class line: {:?}",
-        record.usage.lines
-    );
-    assert!(durability.retained_audit_findings().is_empty());
-
-    let journal = durability.journal.clone();
-    drop(durability);
-    let replayed = selected(&journal).await;
-    let read_back: Vec<_> = replayed
-        .iter()
-        .filter_map(|r| crate::root::durability::decode_audit(r).expect("every record decodes"))
-        .filter(|r| r.what.unit_key == key)
-        .collect();
-    assert_eq!(
-        read_back.len(),
-        1,
-        "the swept unit's record is on the journal"
-    );
-}
-
-#[tokio::test]
-async fn no_swept_unit_settles_with_zero_audit_records() {
-    let (node, book) = swept_node().await;
-    let keys = [UnitKey::new(61), UnitKey::new(62), UnitKey::new(63)];
-    for key in keys {
-        lose_a_unit(&node, key, "widget_call", None);
-    }
-    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), keys.len());
-
-    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-    let journal = durability.journal.clone();
-    drop(durability);
-    let replayed = selected(&journal).await;
-    assert_eq!(
-        replayed
-            .iter()
-            .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
-            .count(),
-        keys.len(),
-        "each swept unit has exactly one native audit original"
-    );
-    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-    for key in keys {
-        assert_eq!(
-            durability
-                .audit_records()
-                .iter()
-                .filter(|r| r.what.unit_key == key)
-                .count(),
-            1,
-            "unit {key:?} settled and must have exactly one record: {:?}",
-            durability.audit_records()
-        );
-    }
-    assert_eq!(durability.audit_records().len(), keys.len());
 }
 
 const SEARCH_UNITS: &str = "search_units";
@@ -1581,32 +1276,6 @@ async fn binding_the_node_keeps_every_confirmed_card_in_the_native_store() {
 }
 
 #[tokio::test]
-async fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
-    let node = Node::new();
-    let book = native_node_book().await;
-    let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
-    let arm = LateAccrual {
-        custody: node.ticket_custody.clone(),
-        book: book.durability.clone(),
-        line: None,
-        history,
-        durability_token: node.kernel.durability_token(),
-        principal: PrincipalId::new("acct:late-none"),
-        arrived: Arrived::at(EPOCH * 1_000, 3),
-        late: Box::new(|| None),
-        posted: true,
-        outcome: Some(Outcome::Completed),
-        seal: Some(fixture_seal(1).into()),
-    };
-    arm.post();
-    let journal = book.durability.lock().unwrap().journal.clone();
-    assert_eq!(selected(&journal).await.len(), 1);
-    let durable = book.durability.lock().unwrap();
-    assert_eq!(durable.audit_records().len(), 1);
-    assert!(durable.audit_records()[0].usage.lines.is_empty());
-}
-
-#[tokio::test]
 async fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
     assert!(Registration::resolve("units_nobody_declared").is_none());
     let history = cache_silent_history();
@@ -1786,32 +1455,4 @@ async fn the_exit_arm_seals_no_money_figure_into_the_record() {
         "the record carries counts, never the settled money figure: {:?}",
         record.usage.lines
     );
-}
-
-#[tokio::test]
-async fn a_late_body_terminal_stage_refusal_is_a_body_error() {
-    use http_body_util::BodyExt;
-    let node = Node::new();
-    let book = native_node_book().await;
-    let journal = book.durability.lock().unwrap().journal.clone();
-    journal.stop_staging().unwrap();
-    let arm = LateAccrual {
-        custody: node.ticket_custody.clone(),
-        book: book.durability.clone(),
-        line: None,
-        history: rerank_history_on(RERANK_LANE, 3, Some(2_000_000)),
-        durability_token: node.kernel.durability_token(),
-        principal: PrincipalId::new("acct:late-refused"),
-        arrived: Arrived::at(EPOCH * 1_000, 3),
-        late: Box::new(|| None),
-        posted: true,
-        outcome: Some(Outcome::Completed),
-        seal: Some(fixture_seal(1).into()),
-    };
-    let body = LateBody::new(axum::body::Body::empty(), arm);
-    assert!(
-        body.collect().await.is_err(),
-        "EOF must not hide refused audit staging"
-    );
-    assert!(book.durability.lock().unwrap().audit_records().is_empty());
 }

@@ -152,7 +152,6 @@ pub struct StopReport {
     pub in_flight: u64,
     pub dropped: u64,
     pub cancelled: bool,
-    pub dispatch_failed: bool,
 }
 
 impl StopReport {
@@ -162,7 +161,6 @@ impl StopReport {
             && self.in_flight == 0
             && self.dropped == 0
             && !self.cancelled
-            && !self.dispatch_failed
     }
 }
 
@@ -557,7 +555,6 @@ impl PortDoor {
             in_flight: self.shared.in_flight.load(Ordering::Acquire),
             dropped: self.dropped().saturating_sub(baseline),
             cancelled: self.shared.abort.load(Ordering::Acquire),
-            dispatch_failed: crate::dispatch::handle::latched(),
         };
         if report.worker_stopped {
             let mut worker = self.pump.lock().unwrap_or_else(|p| p.into_inner());

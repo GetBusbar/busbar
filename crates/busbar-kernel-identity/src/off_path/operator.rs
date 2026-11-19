@@ -175,11 +175,6 @@ pub fn operator_token(name: &str) -> String {
     operator_token_at(&format!("identity-providers.{name}"))
 }
 
-/// A 1.5 `token:` on the operator-backed chain entry `name` of `auth.<plane>`.
-pub fn operator_token_entry(plane: &str, name: &str) -> String {
-    operator_token_at(&format!("auth.{plane}[{name}]"))
-}
-
 fn operator_token_at(at: &str) -> String {
     config_text(format_args!(
         "{at}: `token:` is the 1.5 operator credential. 1.6 takes the plugin's `settings` instead; \

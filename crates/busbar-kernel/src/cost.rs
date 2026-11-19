@@ -8,7 +8,7 @@ use busbar_contract::records::ScopeRef;
 use crate::config::groups::LimitMetric;
 
 pub use busbar_kernel_ledger::cost::{
-    budget_remaining, measurement_lane, plane_fee_lane, price_era, price_ledger, sum_spend, Author,
+    budget_remaining, measurement_lane, plane_fee_lane, price_era, price_ledger, Author,
     CardEntryDraft, EntryId, EntryKey, History, HistorySeq, HistoryView, LedgerEntry, MeteredRow,
     Money, MoneyError, PlaneFees, RateCard, RawRateEra, Tally, TierRates, PER_SESSION,
     PLANE_LANE_SEP, STANDARD_TIER_BP,

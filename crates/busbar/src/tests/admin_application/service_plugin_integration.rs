@@ -314,24 +314,20 @@ async fn install_catalog_remove_roundtrip() {
         std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
             .expect("BUSBAR_TEST_MYSQL_CDYLIB names the actual distinct MySQL Store cdylib"),
     );
-    let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
-        .expect("the actual upload Store statement reads")
-        .expect("the upload Store exports its Statement");
-    let upload = busbar_contract::rendering::read(&upload_statement)
-        .expect("the actual upload Store Statement is valid");
-    assert_eq!(
-        upload.kind,
-        busbar_contract::kinds::codes::KindCode::Store as u32
+    // The native manifest completes only when the image's stamp states a Store.
+    let upload = crate::root::test_plugins::native_manifest(
+        "store",
+        &upload_path,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    let upload_name = upload.name;
+    let upload_name = upload.name.clone();
     assert_ne!(
         upload_name, module,
         "publication uses an actual distinct Store rather than a linked copy"
     );
     let library = std::fs::read(upload_path).expect("the actual upload Store library reads");
-    manifest = plugins::manifest("store", &upload_name, "acme");
-    manifest.version = upload.version;
-    manifest.statement = Some(hex::encode(upload_statement));
+    manifest = upload;
+    manifest.publisher = "acme".into();
     let tarball = plugins::seal(manifest, &library);
     let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"junk.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 201);
@@ -635,28 +631,19 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
         std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
             .expect("BUSBAR_TEST_MYSQL_CDYLIB names the actual distinct MySQL Store cdylib"),
     );
-    let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
-        .expect("the actual upload Store statement reads")
-        .expect("the upload Store exports its Statement");
-    let upload = busbar_contract::rendering::read(&upload_statement)
-        .expect("the actual upload Store Statement is valid");
-    assert_eq!(
-        upload.kind,
-        busbar_contract::kinds::codes::KindCode::Store as u32
+    // The native manifest completes only when the image's stamp states a Store.
+    let upload = crate::root::test_plugins::native_manifest(
+        "store",
+        &upload_path,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    let upload_name = upload.name;
+    let upload_name = upload.name.clone();
     assert_ne!(
         upload_name, module,
         "publication uses an actual distinct Store rather than a linked copy"
     );
     let library = std::fs::read(upload_path).expect("the actual upload Store library reads");
-    let mut second = plugins::manifest(
-        "store",
-        &upload_name,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    second.version = upload.version;
-    second.statement = Some(hex::encode(upload_statement));
+    let second = upload;
     let tarball = plugins::signed(&crate::dist_root_install::release_key(), second, &library);
     let installed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"cache2.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(installed.status().as_u16(), 201);
@@ -2252,28 +2239,19 @@ async fn install_filesystem_failures_are_internal_errors() {
         std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
             .expect("BUSBAR_TEST_MYSQL_CDYLIB names the actual distinct MySQL Store cdylib"),
     );
-    let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
-        .expect("the actual upload Store statement reads")
-        .expect("the upload Store exports its Statement");
-    let upload = busbar_contract::rendering::read(&upload_statement)
-        .expect("the actual upload Store Statement is valid");
-    assert_eq!(
-        upload.kind,
-        busbar_contract::kinds::codes::KindCode::Store as u32
+    // The native manifest completes only when the image's stamp states a Store.
+    let upload = crate::root::test_plugins::native_manifest(
+        "store",
+        &upload_path,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    let upload_name = upload.name;
+    let upload_name = upload.name.clone();
     assert_ne!(
         upload_name, module,
         "publication uses an actual distinct Store rather than a linked copy"
     );
     let library = std::fs::read(upload_path).expect("the actual upload Store library reads");
-    manifest = plugins::manifest(
-        "store",
-        &upload_name,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.version = upload.version;
-    manifest.statement = Some(hex::encode(upload_statement));
+    manifest = upload;
     let tarball = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
     assert_eq!(malformed.status().as_u16(), 400);

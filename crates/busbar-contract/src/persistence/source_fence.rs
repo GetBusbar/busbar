@@ -64,56 +64,6 @@ impl std::fmt::Debug for CaptureFence {
     }
 }
 
-/// Live native capture observation. Before capture the challenge is a fresh
-/// nonce; after capture it is the exact archive content-prefix digest, avoiding
-/// a circular dependency on the final footer/artifact digest.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CaptureObservation {
-    /// Exact capture evidence protocol version.
-    pub version: u32,
-    /// Registered native source importer identity.
-    pub source_owner: [u8; 16],
-    /// Exact native physical source format.
-    pub source_physical: u32,
-    /// Actual complete native catalogue fingerprint.
-    pub catalogue_digest: [u8; 32],
-    /// Actual native instance and dataset origin.
-    pub native_anchor_sha256: [u8; 32],
-    /// Explicit old writer inventory checked by the native helper.
-    pub writer_inventory_sha256: [u8; 32],
-    /// Stable verified native enforcement policy.
-    pub enforcement_policy_sha256: [u8; 32],
-    /// Digest of the fresh successful live observations.
-    pub observation_sha256: [u8; 32],
-    /// Fresh nonce or the exact post-capture content-prefix digest.
-    pub challenge: [u8; 32],
-}
-impl CaptureObservation {
-    /// Check framing and nonempty bindings; native facts remain the trusted
-    /// helper's responsibility and cannot be established by these hashes alone.
-    pub fn validate(&self) -> Result<(), Error> {
-        if self.version != VERSION
-            || self.source_owner == [0; 16]
-            || self.source_physical == 0
-            || self.catalogue_digest == [0; 32]
-            || self.native_anchor_sha256 == [0; 32]
-            || self.writer_inventory_sha256 == [0; 32]
-            || self.enforcement_policy_sha256 == [0; 32]
-            || self.observation_sha256 == [0; 32]
-            || self.challenge == [0; 32]
-        {
-            return Err(Error::Invalid);
-        }
-        Ok(())
-    }
-}
-impl std::fmt::Debug for CaptureObservation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CaptureObservation").finish_non_exhaustive()
-    }
-}
-
 /// Separate operator statements retain the existing cold-receipt conventions:
 /// explicit epoch, actor, reason and independent sender/backend quiescence.
 #[derive(Clone, Serialize, Deserialize)]

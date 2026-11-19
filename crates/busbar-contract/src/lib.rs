@@ -42,9 +42,6 @@ mod alloc_counter;
 #[path = "tests/wipe_support.rs"]
 mod support;
 
-mod sdk_hyper;
-
-pub mod auth_egress;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod billing;
 pub mod bounded;
@@ -57,7 +54,6 @@ pub mod config;
 pub mod config_time;
 pub mod confined_path;
 pub mod conn;
-pub mod lookup;
 pub use busbar_count::count;
 pub mod dest;
 
@@ -65,11 +61,9 @@ pub mod diagnostic;
 pub mod duration;
 pub mod export_calls;
 pub mod export_stream;
-pub mod fixed;
 pub mod framing_scope;
 pub mod grammar;
 pub mod header;
-pub mod hook_calls;
 
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod hook_wire;
@@ -78,9 +72,6 @@ pub mod hooks;
 pub mod host_records;
 pub mod ids;
 
-pub mod io_host;
-#[allow(missing_docs, missing_debug_implementations)]
-pub mod ir;
 pub mod json;
 pub mod jsonrpc;
 pub mod kept;
@@ -108,7 +99,6 @@ pub mod retry;
 
 #[allow(missing_docs)]
 pub mod records;
-pub mod scratch;
 #[allow(missing_docs)]
 pub mod secret;
 pub mod secure;
@@ -120,7 +110,6 @@ pub mod settings_public;
 pub mod plugin_settings;
 
 pub mod secret_fields;
-pub mod secret_json;
 pub mod section;
 /// SemVer 2.0 precedence for plugin version floors (#359 SEC-L11); owned by the artifact metadata
 /// crate so the standalone artifact verifier compares floors with the same one comparator.
@@ -150,9 +139,9 @@ pub use http;
 pub type Millis = u64;
 
 pub use bounded::{
-    BoundedVec, FactValue, Facts, FactsExhausted, Ir, Labels, Overflow, PlaneAlloc,
-    PlaneAllocBudget, ScratchBytes, SlabBytes, Span, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS,
-    MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
+    BoundedVec, FactValue, Facts, FactsExhausted, Labels, Overflow, PlaneAlloc, PlaneAllocBudget,
+    ScratchBytes, SlabBytes, Span, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS, MAX_LEG_REPLIES,
+    MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
     SCRATCH_BASE_BYTES,
 };
 pub use count::{
@@ -160,8 +149,8 @@ pub use count::{
     MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
 };
 pub use dest::{
-    ClientMode, DestinationFacts, DestinationId, EgressBody, Leg, RoutePlan, SecretOnce,
-    SecretSlot, TransportKeyHandle, UpstreamAddress, VerifiedDestination,
+    ClientMode, DestinationFacts, DestinationId, Leg, RoutePlan, SecretOnce, SecretSlot,
+    TransportKeyHandle, UpstreamAddress, VerifiedDestination,
 };
 
 pub use grammar::{
@@ -169,26 +158,19 @@ pub use grammar::{
     SelectorFamily, SelectorForm, SignedOver,
 };
 pub use ids::{
-    AdminVerbId, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection, ClassEstimate,
-    CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl, MeterClassId, OpClassId,
-    PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId, StreamId, TransportId, UnitKey,
-    UpstreamIdx,
+    AdminVerbId, BucketRef, BucketScope, ClaimKey, ClassDirection, ClassEstimate, Estimate, LaneId,
+    MeterClassId, OpClassId, PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId,
+    StreamId, TransportId, UnitKey, UpstreamIdx,
 };
-pub use kinds::{
-    Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, RecordBytes,
-    SecretRef, StoreError,
-};
+pub use kinds::{Challenge, ChallengeState, Head, RecordBytes, SecretRef, StoreError};
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin};
 pub use redacted::{constant_time_eq, sha256_hex, OwnerSeal, Secret, SharedSecret};
-pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
-pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
 pub use unit::{AuditFacts, FinishClass, RefusalReason, ResourceLocator, ScopeFacts};
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
-    Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
-    RawIo, RawStream, StatusAt, TransportEnvelope, TransportError, Unit0Trigger, WireFault,
-    WireStatus, WireStatusClass,
+    Encode, Frame, FrameCursor, FrameMeta, Framing, Handoff, RawIo, RawStream, StatusAt,
+    TransportError, Unit0Trigger, WireFault, WireStatus, WireStatusClass,
 };
 
 /// The default admin-scope CEILING for an identity provider that names none (`read-only`). Relocated

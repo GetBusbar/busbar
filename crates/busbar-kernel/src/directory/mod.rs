@@ -8,7 +8,6 @@
 mod config;
 mod events;
 mod holds;
-mod late;
 mod ops;
 mod store;
 
@@ -28,7 +27,6 @@ use crate::persistence::scoped::ScopedStore;
 
 pub use config::{check_provisioning, check_provisioning_shape, ProvisioningFacts};
 pub use events::{DirEvent, DirectoryEvents, LogEvents};
-pub use late::LateDirectory;
 pub use ops::GuardView;
 
 /// K6p (`busbar-kernel/src/directory/`). Passed to `HostNeeds::new` (§13). Round 30: `linked_state` is withdrawn;

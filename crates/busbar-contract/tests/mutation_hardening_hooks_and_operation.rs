@@ -3,25 +3,9 @@
 
 //! MUTATION-HARDENING: `crates/busbar-contract/src/hooks.rs` and
 
-use busbar_contract::hooks::{
-    CallerIdentity, HookStatus, PolicyError, PolicyResult, PromptProjection, RoutingContext,
-    RoutingDecision, RoutingPolicy, RoutingRequest,
-};
+use busbar_contract::hooks::{CallerIdentity, PromptProjection, RoutingDecision};
 use busbar_contract::operation::{OpShape, OpVerb};
 use std::collections::HashSet;
-
-/// A minimal, single-poll async executor: every default `RoutingPolicy` method under test here
-fn block_on<F: std::future::Future>(fut: F) -> F::Output {
-    use std::task::{Context, Poll, Waker};
-    let mut cx = Context::from_waker(Waker::noop());
-    let mut fut = Box::pin(fut);
-    loop {
-        match fut.as_mut().poll(&mut cx) {
-            Poll::Ready(v) => return v,
-            Poll::Pending => std::thread::yield_now(),
-        }
-    }
-}
 
 #[test]
 fn from_ranked_empty_input_is_abstain() {
@@ -198,80 +182,6 @@ fn caller_identity_debug_writes_key_fields_and_redacts_user() {
     assert!(dbg.contains("prod-key"), "{dbg}");
     assert!(!dbg.contains("alice@example.com"), "{dbg}");
     assert!(dbg.contains("redacted"), "{dbg}");
-}
-
-struct MinimalPolicy;
-
-#[async_trait::async_trait]
-impl RoutingPolicy for MinimalPolicy {
-    async fn decide(
-        &self,
-        _req: &RoutingRequest<'_>,
-        _candidates: &[busbar_contract::hooks::Candidate<'_>],
-        _ctx: &RoutingContext<'_>,
-        _budget: std::time::Duration,
-    ) -> PolicyResult {
-        Ok(RoutingDecision::Abstain)
-    }
-    fn name(&self) -> &'static str {
-        "minimal"
-    }
-}
-
-#[test]
-fn routing_policy_configure_default_is_a_loud_error() {
-    use busbar_contract::{
-        config_time::ConfigScope,
-        plugin_settings::{Resolution, Settings},
-        secret::SecretResolve,
-        secret_ref::{SecretRef, Sugars},
-        Secret,
-    };
-
-    struct MustNotResolve;
-    impl SecretResolve for MustNotResolve {
-        fn resolve(&self, _: &SecretRef) -> Result<Secret<Vec<u8>>, String> {
-            panic!("empty settings must not resolve a reference")
-        }
-
-        fn resolve_string(&self, _: &SecretRef) -> Result<Secret<String>, String> {
-            panic!("empty settings must not resolve a reference")
-        }
-    }
-
-    let p = MinimalPolicy;
-    let settings = Settings::default()
-        .resolve(
-            &Resolution {
-                owner: p.name(),
-                secrets: &[],
-                references: &[],
-                sources: &Sugars::default(),
-            },
-            &MustNotResolve,
-            &ConfigScope::config_time(),
-        )
-        .expect("empty owner settings resolve without source access");
-    let result: Result<(), PolicyError> =
-        block_on(p.configure("hook-1", &settings, 1, std::time::Duration::from_millis(10)));
-    assert!(
-        result.is_err(),
-        "a transport that cannot be configured must error, never silently accept"
-    );
-}
-
-#[test]
-fn routing_policy_describe_default_is_none() {
-    let p = MinimalPolicy;
-    let out = block_on(p.describe(std::time::Duration::from_millis(10)));
-    assert_eq!(out, None);
-}
-
-#[test]
-fn routing_policy_status_default_is_none() {
-    let p = MinimalPolicy;
-    let out: Option<HookStatus> = block_on(p.status(std::time::Duration::from_millis(10)));
-    assert_eq!(out, None);
 }
 
 /// A `restrict` with any non-string tag is malformed and fails closed, not narrowed.

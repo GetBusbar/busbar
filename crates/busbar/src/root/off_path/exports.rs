@@ -1,19 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The export axis's off-path code: the module list config validation reads, built once per
-//! validation, and the export pumps' lifecycle (open, start, stop), never per request.
+//! The export axis's off-path code: the export pumps' lifecycle (open, start, stop), never per
+//! request.
 
 use std::sync::Arc;
 
 use crate::root::exports::ports::Exports;
-use crate::root::loader::export_axis::ExportRows;
-
-/// Every export module config may name, in registration order. (The 1.5.5 migration table that once
-/// fixed an order ahead of it is retired with the migrate flags.)
-pub(crate) fn linked_modules(rows: Option<ExportRows<'_>>) -> Vec<String> {
-    rows.map(|r| r.linked_modules()).unwrap_or_default()
-}
 
 /// The export pumps' lifecycle, off the request path: [`Exports::new`] once per start (`min3_boot`),
 /// [`Exports::calls`] once when `main` opens the export registry, [`Exports::start`] once, and

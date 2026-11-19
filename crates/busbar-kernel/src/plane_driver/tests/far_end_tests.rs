@@ -2621,10 +2621,6 @@ async fn every_dispatch_is_recorded_under_its_unit() {
     assert_eq!(kept[0].unit, busbar_contract::UnitKey::new(77));
 }
 
-#[allow(unsafe_code)]
-#[path = "probe_unit_tests.rs"]
-mod probe_unit;
-
 #[tokio::test]
 async fn a_far_request_opens_on_the_need_it_names() {
     let mut r = rig(

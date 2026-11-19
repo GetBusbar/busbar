@@ -66,18 +66,14 @@ pub mod history {
     }
 }
 pub mod scoped {
-    pub use crate::persistence::scoped::{
-        migration_address, migration_authorizes, migration_claim_authorizes, migration_claim_rows,
-    };
+    pub use crate::persistence::scoped::{migration_address, migration_authorizes};
 }
 pub mod bootstrap {
     pub use crate::host_record_bootstrap::{
         migration_receipt_address, migration_receipt_authorizes,
     };
 }
-pub mod trust {
-    pub use crate::trust::demotion::{migration_trust_authorizes, migration_trust_rows};
-}
+pub mod trust {}
 pub mod ticket {
     use super::*;
     pub fn legacy_ticket_record(

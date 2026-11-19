@@ -161,8 +161,8 @@ impl<K> std::fmt::Debug for SignerHandle<K> {
     }
 }
 
-/// R24 layer 3 (test builds): set by the serving loop around each unit's future. A submit made on
-/// the request path is a bug the probe in every `submit` catches.
+// R24 layer 3 (test builds): set by the serving loop around each unit's future. A submit made on
+// the request path is a bug the probe in every `submit` catches.
 #[cfg(test)]
 tokio::task_local! {
     pub(crate) static ON_REQUEST_PATH: bool;

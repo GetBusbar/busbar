@@ -12,18 +12,6 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The secret kind's ABI version.
 pub const ABI_VERSION: u32 = super::versions::SECRET.raw();
 
-/// The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x52fda1049968af93;
-
-/// The secret kind's shapes, in fold order: every `#[repr(C)]` struct crossing its table, each
-pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    Ops::LAYOUT,
-    ResolveIn::LAYOUT,
-    ResolveOut::LAYOUT,
-    CheckIn::LAYOUT,
-    crate::abi::host::service::HOST_SLOTS_LAYOUT,
-];
-
 /// [`InHead::op`] values the secret kind adds after the shared lifecycle, in table order.
 ///
 /// # Examples
@@ -71,7 +59,7 @@ abi_struct! {
         /// argument is NULL), never pends, [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call).
         /// In [`CheckIn`], out [`OutHead`]. READY: the reference is well-formed. FAILED: why, in
         /// `CheckIn::err_buf`, under the lifecycle `validate` refusal rule
-        /// ([`check_validate_refusal`](super::mechanism::lifecycle::check_validate_refusal)); the host
+        /// (`check_validate_refusal`); the host
         /// renders each line as `<config path of the reference>: <line>`. An absent (NULL)
         /// `check` slot, which is what the SDK leaves for a door that wires none, or a REFUSED answer,
         /// means every reference passes.
@@ -100,8 +88,6 @@ abi_struct! {
 pub const ERROR_KIND_UNSET: u32 = 0;
 /// [`ResolveOut::error_kind`]: the named secret does not exist.
 pub const ERROR_KIND_NOT_FOUND: u32 = 1;
-/// [`ResolveOut::error_kind`]: the source holding the secret could not be reached.
-pub const ERROR_KIND_UNAVAILABLE: u32 = 2;
 /// [`ResolveOut::error_kind`]: the caller is not entitled to it.
 pub const ERROR_KIND_DENIED: u32 = 3;
 /// [`ResolveOut::error_kind`]: the settings blob itself is malformed, or the value is not a
@@ -134,15 +120,12 @@ abi_struct! {
     }
 }
 
-/// The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM
-pub const FIRST_SECRET_CAP: usize = 4096;
-
 /// The largest secret a resolve may answer, using the shared host-buffer bound.
 pub const MAX_SECRET_BYTES: usize = crate::abi::mechanism::check::HARD_MAX_BYTES as usize;
 
 abi_struct! {
     /// `check`'s `in`: one reference's settings object and the host's reason buffer, as
-    /// [`ValidateIn`](super::mechanism::lifecycle::ValidateIn) lends one to `validate`.
+    /// `ValidateIn` lends one to `validate`.
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub struct CheckIn {
@@ -166,60 +149,9 @@ pub mod cancel {
     pub const ABORTED: u32 = 0;
 }
 
-// THE SDK's VIEW OF THE SECRET TABLE (`abi::sdk::door`): `resolve`'s `in`/`out`, stated next to
-// the table, so `plugin_door!` refuses a kind op wired to any other structs. Every struct named
-// here is plain data (integers, raw pointers, `Blob` only): every bit pattern is a valid value,
-// which is what `AbiIn`/`AbiOut` promise.
-//
-// SAFETY (both below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
-unsafe impl super::sdk::door::AbiIn for ResolveIn {}
-unsafe impl super::sdk::door::AbiOut for ResolveOut {}
-unsafe impl super::sdk::door::AbiIn for CheckIn {}
-
-super::sdk::door::slot_structs!(
-    /// `resolve`'s `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A plugin
-    /// wiring the slot to another op's structs does not compile:
-    ///
-    /// ```compile_fail,E0271
-    /// use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
-    /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-    /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::RawSlot;
-    /// # use std::ffi::c_void;
-    /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
-    /// #     struct $n;
-    /// #     impl RawSlot for $n { type In = $i; type Out = $o;
-    /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
-    /// # } }
-    /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-    /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
-    /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-    /// ready!(Wrong, InHead, OutHead); // `resolve` wired to the bare lifecycle shapes: refused
-    /// busbar_contract::plugin_door! {
-    ///     ops: busbar_contract::abi::secret::Ops,
-    ///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
-    ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
-    ///                  cancel: Cn, release: Rl, close: Cl },
-    ///     kind_ops: { resolve: Wrong },
-    /// }
-    /// # fn main() { let _ = door(); }
-    /// ```
-    ///
-    /// With `Resolve` reading [`ResolveIn`] and writing [`ResolveOut`] the same plugin compiles
-    /// (`abi/sdk/tests/door_tests.rs`, `a_secret_plugin_wires_every_kind_op`).
-    Ops {
-        slot::RESOLVE => ResolveIn, ResolveOut;
-        slot::CHECK => CheckIn, OutHead;
-    }
-);
-
 abi_answers! {
     cx: ();
     slot::RESOLVE => resolve(in ResolveIn, out ResolveOut) |_, i, o, _| {
         validate::check_resolve(o, i.secret_buf as usize, i.secret_cap as u64)
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/secret_holder_tests.rs"]
-mod holder_tests;

@@ -74,23 +74,6 @@ pub fn migration_authorizes(
 /// Native rows produced by the trusted historical claim codec.
 pub type MigrationRows = Vec<(busbar_contract::persistence::Address, Secret<Vec<u8>>)>;
 
-/// Preserve a historically consumed claim with its original absolute expiry.
-pub fn migration_claim_rows(
-    instance: &str,
-    kind: &str,
-    token: &str,
-    expires_at: u64,
-) -> Result<MigrationRows, ClaimError> {
-    super::claims::migration_rows(instance, kind, token, expires_at)
-}
-pub fn migration_claim_authorizes(
-    instance: &str,
-    kind: &str,
-    address: &busbar_contract::persistence::Address,
-) -> bool {
-    super::claims::migration_authorizes(instance, kind, address)
-}
-
 pub use super::claims::SweepOutcome as ClaimSweepOutcome;
 
 #[derive(Debug)]

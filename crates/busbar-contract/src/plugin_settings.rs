@@ -254,23 +254,6 @@ impl Settings {
         ))
     }
 
-    /// Resolve declared reference slots into sealed credential arguments for a kind boundary.
-    pub fn lend_references(
-        &self,
-        declared: &[String],
-        sources: &crate::secret_ref::Sugars,
-        owner: &str,
-        resolve: &ReferenceResolver<'_>,
-    ) -> Result<LentSettings, String> {
-        self.prepare().lend_references_with(
-            declared,
-            sources,
-            owner,
-            resolve,
-            ReferenceDelivery::Retain,
-        )
-    }
-
     /// Public generation snapshot, additionally excluding credential-like keys and references.
     ///
     /// ```compile_fail
@@ -1125,7 +1108,7 @@ pub(crate) mod guarded_reader {
 
     /// A settings JSON value whose strings and object keys wipe on drop, including partially parsed
     /// trees and replaced duplicate values. This is for readable configuration, not extracted secret
-    /// responses (those use [`crate::abi::sdk::cred::SelectedJson`]). Numeric scratch in serde_json is not zeroized.
+    /// responses. Numeric scratch in serde_json is not zeroized.
     #[derive(Clone)]
     pub struct SettingsValue(pub(crate) Value);
 

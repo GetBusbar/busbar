@@ -310,19 +310,6 @@ pub(crate) fn ingress_refusal_text(text: &dyn std::fmt::Display) -> String {
     text.to_string()
 }
 
-/// The protected-resource metadata document's head fields: a discovery document clients fetch on
-/// first sight and then cache for an hour (`max-age=3600`), never on a governed request.
-#[cold]
-pub(crate) fn ingress_metadata_fields() -> crate::plane_driver::HeadFields {
-    vec![
-        (b"cache-control".to_vec(), b"public, max-age=3600".to_vec()),
-        (
-            b"content-type".to_vec(),
-            b"application/json; charset=utf-8".to_vec(),
-        ),
-    ]
-}
-
 // --- door and json ---
 
 /// door: a verify refusal's message, rendered once on the refusal path.

@@ -496,16 +496,6 @@ pub struct NestAsk {
     pub body: Vec<u8>,
 }
 
-/// Host-issued authority for one admitted hook invocation. This never crosses the ABI.
-/// The loader binds it to the exact hook incarnation and ticket; the plugin receives only
-/// the bounded request operation, without a target selector or credential.
-pub trait HookChildInvocation: Send + Sync + std::fmt::Debug {
-    /// Start or replay the invocation's one child. Implementations must memoize the result.
-    fn request(&self, caller: &Caller, payload: Vec<u8>, later: Later) -> Ran;
-}
-
-pub mod disk_admission;
-
 /// A DESTINATION the host bound for an opened instance (THE DESIGN, host service `disk.append`): the
 /// file the operator's configuration gives a key the plugin's manifest declares, and the rotation
 /// the host applies to it. The plugin names the key; nothing here comes from the plugin.
@@ -554,12 +544,6 @@ pub const DISK_ROTATE_UNDECLARED: DiskRotate = DiskRotate::Truncate;
 
 /// How many archives the host keeps for a destination it rotates by rename without a declared
 pub const DISK_KEEP: u32 = 9;
-
-/// The settings key beside a destination that states its rotation threshold, in MiB: the host's
-pub const DISK_ROTATE_KEY: &str = "rotate_mb";
-
-/// The settings key beside a destination that states how many archives the OPERATOR keeps when it
-pub const DISK_KEEP_KEY: &str = "keep";
 
 /// What one `disk.append` did, as the disk lane reports it and the mechanism stores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -762,15 +746,3 @@ pub fn chain_key_parts(key: &[u8]) -> Option<(&[u8], u64)> {
 #[cfg(test)]
 #[path = "tests/services_tests.rs"]
 mod tests;
-
-/// Isolated host fixture provider, absent from production dependencies.
-#[cfg(feature = "test-seal")]
-pub fn test_caller_binding() -> Arc<dyn CallerBinding> {
-    struct Fixture;
-    impl CallerBinding for Fixture {
-        fn bind(&self, namespace: Arc<str>, kind: KindCode) -> Caller {
-            Caller::for_test(namespace, kind)
-        }
-    }
-    Arc::new(Fixture)
-}

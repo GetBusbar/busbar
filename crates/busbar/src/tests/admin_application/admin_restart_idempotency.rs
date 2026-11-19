@@ -177,7 +177,7 @@ async fn application(
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = plugins::trusted_config(directory);
     let crate::root::min3_boot::fixture::Fixture {
-        backend: backend,
+        backend,
         rules,
         owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())

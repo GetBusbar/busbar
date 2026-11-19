@@ -14,8 +14,9 @@ pub(crate) fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
 
 fn validate_with_unset(cfg: &RootCfg, unset: &[String]) -> Result<(), Vec<String>> {
     busbar_kernel::config_validate::validate_with_unset(cfg, unset)?;
+    // No linked door rows exist: provider destinations are located from the linked carriers alone.
     let rows: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows> =
-        std::sync::Arc::new(crate::root::boot::linked_registry());
+        std::sync::Arc::new(crate::root::loader::PluginRegistry::empty());
     validate_provider_destinations(cfg, unset, &|target| {
         crate::root::boot::locate_provider_destination(&rows, target)
     })
@@ -218,7 +219,7 @@ fn make_auth_chain(
 /// The usable mint path of a keys chain: the linked operator credential, bound, with its 1.6
 /// settings `{sha256: ..}` (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1).
 fn operator_mint_path() -> Vec<config::AuthChainEntry> {
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     let mut operator = config::AuthChainEntry::bare(config::operator_provider());
     operator.settings = serde_json::from_value(serde_json::json!({
         "sha256": busbar_kernel::test_hooks::operator::SETTINGS_SHA256
@@ -3814,7 +3815,7 @@ fn test_validate_runs_on_resolved_root_cfg_clean_config() {
     // The mint path is the bound operator credential with its 1.6 settings, on the closed default
     // admin chain (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1).
     crate::dist_root_install::install();
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     let operator = format!(
         "identity-providers:\n  {op}:\n    module: {op}\n    settings: {{ sha256: {sha} }}\n",
         op = config::operator_provider(),
@@ -4331,7 +4332,6 @@ pub(crate) fn source_path(value: impl AsRef<str>) -> config::SecretRef {
     )
 }
 fn source_role(role: &str, value: impl AsRef<str>) -> config::SecretRef {
-    use busbar_contract::secret::SecretAxis as _;
     crate::dist_root_install::install();
     crate::root::native_secrets::linked_for_tests()
         .sugars()

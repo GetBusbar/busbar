@@ -4,10 +4,6 @@
 use super::{MeteringDelta, MeteringRow, ModelTokens, ModelTokensDelta, UsageDelta, UsageLedger};
 use crate::count::{Count, CountError, COUNT_SCALE};
 
-pub(super) fn is_whole(scale: &u32) -> bool {
-    *scale == 0
-}
-
 fn signed(value: i128, scale: u32) -> Result<i128, CountError> {
     Count::from_stored(value, scale).map(Count::micros)
 }
@@ -287,4 +283,8 @@ mod tests {
         }
         assert!(crate::json::parse_str::<Count>("0.0000001").is_err());
     }
+}
+
+pub(super) fn is_whole(scale: &u32) -> bool {
+    *scale == 0
 }

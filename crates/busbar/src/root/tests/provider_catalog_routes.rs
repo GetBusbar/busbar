@@ -4,7 +4,6 @@
 use super::*;
 use busbar_kernel::config::{self, Grammar};
 use busbar_kernel::plane_driver::provider_catalog::ProviderPlane;
-use busbar_kernel::upstreams::Upstreams;
 
 fn configured() -> (RootCfg, CatalogPlan) {
     configured_resource(None)

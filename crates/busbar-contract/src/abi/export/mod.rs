@@ -9,9 +9,9 @@
 //!
 //! # Host-owned scrape buffers
 //!
-//! 2. `scrape`'s rendered-exposition buffer is HOST-owned and lives in [`ScrapeIn`]
+//! 2. `scrape`'s rendered-exposition buffer is HOST-owned and lives in `ScrapeIn`
 //!    (`buf`/`cap`), never a plugin-owned pointer in `out`: the host zeroes `out` before the call,
-//!    so nothing the plugin needs may live there. [`ScrapeOut`] carries `written`/`needed`: too
+//!    so nothing the plugin needs may live there. `ScrapeOut` carries `written`/`needed`: too
 //!    small a `cap` means the plugin writes nothing, sets `needed`, and the host re-invokes ONCE
 //!    with a bigger buffer.
 //! 3. Off-path plugin-owned results ([`ServeOut::body`], [`StatusOut::status`],
@@ -21,7 +21,7 @@
 //! # Routes and scrape samples
 //! - [`Tail::routes`] carries [`Route`] entries (`path`, `method`, `auth`), not bare path
 //!   strings: none/key/admin auth cannot be read off a path alone.
-//! - [`ScrapeSample`] carries its own `name` and [`ScrapeLabel`] key/value pairs (not
+//! - `ScrapeSample` carries its own `name` and `ScrapeLabel` key/value pairs (not
 //!   value-only, family-shared keys): a histogram's `_bucket`/`_sum`/`_count` legs and a
 //!   summary's `quantile` legs need their own series name and their own `le`/`quantile` label,
 //!   and `value` is the recorder's own string spelling, not `f64` — so the exposition `scrape`
@@ -41,7 +41,7 @@
 //! - **Listener.** `/metrics` is served on the data listener through the export route exception,
 //!   confined to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap.
 //!   `/metrics/hooks` is rendered by the same sink over the same `scrape`, the host setting
-//!   [`SCRAPE_FLAG_HOOK_FAMILIES`] on the head (P2 D4); no new op.
+//!   `SCRAPE_FLAG_HOOK_FAMILIES` on the head (P2 D4); no new op.
 //! - **Behaviour.** A sink that delivers over the network uses driver tickets (the shared
 //!   mechanism's [`Ticket`](super::mechanism::ticket::Ticket) `drive`/`DriveIn` lifecycle slot, not
 //!   a new export op). The JSON contract's `Host` and `Started` response variants are retired: `deliver` answers
@@ -74,31 +74,6 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
 /// The export kind's ABI version: v1.5.5 shipped `2`, so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = super::versions::EXPORT.raw();
-
-/// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0xe1324b294edbab7e;
-
-/// The export kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    crate::layout_shape!(Ops => head, deliver, scrape, status, check, serve),
-    crate::layout_shape!(DeliverIn => head, op_id, stream, _reserved, batch),
-    crate::layout_shape!(ScrapeLabel => key, value),
-    crate::layout_shape!(ScrapeSample => name, labels, labels_len, value),
-    crate::layout_shape!(ScrapeFamily => name, help, unit, kind, _reserved, samples, samples_len),
-    crate::layout_shape!(ScrapeIn => head, families, families_len, buf, cap),
-    crate::layout_shape!(ScrapeOut => head, written, needed),
-    crate::layout_shape!(StatusOut => head, status),
-    crate::layout_shape!(CheckInstance => name, settings),
-    crate::layout_shape!(CheckIn => head, phase, _reserved, instances, instances_len),
-    crate::layout_shape!(CheckOut => head, findings),
-    crate::layout_shape!(ServeIn => head, method, path, query, headers, headers_len, body),
-    crate::layout_shape!(ServeOut =>
-        head, status_code, _reserved, headers_out, headers_out_len, body
-    ),
-    crate::layout_shape!(Route => path, method, auth, _reserved),
-    crate::layout_shape!(Tail => head, streams, streams_len, routes, routes_len),
-    crate::abi::host::service::HOST_SLOTS_LAYOUT,
-];
 
 /// [`InHead::op`] values the export kind adds after the shared lifecycle, in table order.
 ///
@@ -140,39 +115,22 @@ pub struct Ops {
     pub head: OpsHead,
     /// Hand one already-projected batch for a declared stream to the sink. OFF-PATH, `may_pend`,
     /// [`DeadlineClass::WriteBehind`](super::mechanism::call::DeadlineClass::WriteBehind). In
-    /// [`DeliverIn`], out [`OutHead`] (nothing to read back).
+    /// `DeliverIn`, out [`OutHead`] (nothing to read back).
     pub deliver: Option<Op>,
     /// Render the host recorder's snapshot as this sink's exposition text. REQUEST-PATH,
     /// `may_pend`, [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call). In
-    /// [`ScrapeIn`], out [`ScrapeOut`].
+    /// `ScrapeIn`, out `ScrapeOut`.
     pub scrape: Option<Op>,
     /// What the sink has to report when the host renders its status exposition. OFF-PATH, not
-    /// `may_pend`. In [`InHead`], out [`StatusOut`] (the sink's status blob).
+    /// `may_pend`. In [`InHead`], out `StatusOut` (the sink's status blob).
     pub status: Option<Op>,
     /// The sink's own configuration/operational checks. OFF-PATH, not `may_pend`. In
-    /// [`CheckIn`], out [`CheckOut`].
+    /// [`CheckIn`], out `CheckOut`.
     pub check: Option<Op>,
     /// The sink's own HTTP surface (`/exports/<name>/*`). OFF-PATH, `may_pend`,
     /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call). In [`ServeIn`], out
     /// [`ServeOut`].
     pub serve: Option<Op>,
-}
-
-/// `deliver`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct DeliverIn {
-    /// The head.
-    pub head: InHead,
-    /// The dedupe/replay id the kernel mints, one per batch (the same discipline as the store's
-    /// additive writes).
-    pub op_id: [u8; 16],
-    /// Which declared [`ExportStream`](crate::export_stream::ExportStream) this batch belongs to.
-    pub stream: u8,
-    /// Alignment padding.
-    pub _reserved: [u8; 7],
-    /// The already-projected batch, JSON LINES (`fields:` already applied kernel-side).
-    pub batch: Blob,
 }
 
 /// One FIELD of one export record — the frozen field vocabulary the `fields:` projection key selects
@@ -462,123 +420,15 @@ pub const SCRAPE_KIND_COUNTER: u8 = 0;
 pub const SCRAPE_KIND_GAUGE: u8 = 1;
 /// [`ScrapeFamily::kind`]: a histogram (`_bucket`/`_sum`/`_count` legs as separate
 pub const SCRAPE_KIND_HISTOGRAM: u8 = 2;
-/// [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate [`ScrapeSample`]s).
+/// [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate `ScrapeSample`s).
 pub const SCRAPE_KIND_SUMMARY: u8 = 3;
 /// [`ScrapeFamily::kind`]: untyped.
 pub const SCRAPE_KIND_UNTYPED: u8 = 4;
-
-/// [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families.
-pub const SCRAPE_FLAG_HOOK_FAMILIES: u32 = 2;
-
-/// One label on a [`ScrapeSample`]: a key and its value. A
-/// value-only array cannot carry a histogram's `le` or a
-/// summary's `quantile` label, which is exactly what makes the host's exposition losslessly
-/// reproducible.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeLabel {
-    /// The label key.
-    pub key: AbiStr,
-    /// The label value.
-    pub value: AbiStr,
-}
-
-/// One sample of a [`ScrapeFamily`]'s snapshot: its own series name (a histogram's `_bucket`/
-/// `_sum`/`_count` and a summary's `quantile` legs are each their own named series), its labels
-/// and its value in the recorder's original string spelling. Re-rendering a
-/// parsed float would not reproduce the host's exposition byte for byte.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeSample {
-    /// This sample's own series name (the family name, or the family name plus its `_bucket`/
-    /// `_sum`/`_count` suffix).
-    pub name: AbiStr,
-    /// This sample's labels.
-    pub labels: *const ScrapeLabel,
-    /// How many.
-    pub labels_len: usize,
-    /// The recorder's own spelling of the value, unchanged.
-    pub value: AbiStr,
-}
-
-/// One metric family of the host recorder's snapshot, handed to `scrape` so the sink can render
-/// its own exposition.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeFamily {
-    /// The family name.
-    pub name: AbiStr,
-    /// Its help text.
-    pub help: AbiStr,
-    /// Its unit; absent = none.
-    pub unit: AbiStr,
-    /// [`SCRAPE_KIND_COUNTER`] | [`SCRAPE_KIND_GAUGE`] | [`SCRAPE_KIND_HISTOGRAM`] |
-    /// [`SCRAPE_KIND_SUMMARY`] | [`SCRAPE_KIND_UNTYPED`].
-    pub kind: u8,
-    /// Alignment padding.
-    pub _reserved: [u8; 7],
-    /// Samples carry their own labels, rather than
-    /// sharing family labels, so histogram and summary
-    /// series retain their `le` and `quantile` labels.
-    pub samples: *const ScrapeSample,
-    /// How many.
-    pub samples_len: usize,
-}
-
-/// Input to `scrape`. Results use host buffers, never plugin-owned pointers in
-/// `out`. The host zeroes `out` before each call,
-/// so no input data may live there.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeIn {
-    /// The head.
-    pub head: InHead,
-    /// The host recorder's complete snapshot: every family, without filtering by this instance's Statement, in recorder render order, kind then name.
-    ///
-    ///
-    pub families: *const ScrapeFamily,
-    /// How many.
-    pub families_len: usize,
-    /// The host-owned buffer the plugin renders its exposition text into.
-    pub buf: *mut u8,
-    /// `buf`'s capacity, in bytes.
-    pub cap: usize,
-}
-
-/// `scrape`'s `out`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeOut {
-    /// The head.
-    pub head: OutHead,
-    /// How many bytes the plugin wrote into [`ScrapeIn::buf`].
-    pub written: usize,
-    /// `0` unless `written == 0` because `buf` was too small: the byte length the plugin needed.
-    /// The host re-invokes ONCE with a buffer at least this large.
-    pub needed: usize,
-}
-
-/// `status`'s `out`. OFF-PATH: `status` is a plugin-owned result, memory class (iv) — live under
-/// `head.lease` until `release(lease)`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct StatusOut {
-    /// The head.
-    pub head: OutHead,
-    /// The sink's status JSON, as a [`super::mechanism::call::BLOB_JSON`] blob, under
-    /// `head.lease` (off-path JSON-as-payload is allowed here per the mechanism's one JSON rule).
-    pub status: Blob,
-}
 
 /// [`CheckIn::phase`]: among the operational limits' checks (a bound this sink's instances
 pub const CHECK_PHASE_LIMITS: u32 = 0;
 /// [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD
 pub const CHECK_PHASE_INSTANCES: u32 = 1;
-/// Immutable recorder declaration after validated OPEN. Only called when Statement
-/// advertises `export_calls::EXT_RECORDER_REQUIREMENTS` version 1. `findings` must
-/// contain exactly one JSON `export_calls::RecorderRequirements` object; empty,
-/// malformed or refused answers reject the instance. The host lends no instances.
-pub const CHECK_PHASE_RECORDER: u32 = 2;
 
 /// One sink-module instance visible during [`CHECK_PHASE_INSTANCES`].
 /// Checks in this phase may inspect every instance of the module.
@@ -597,7 +447,7 @@ pub struct CheckInstance {
 pub struct CheckIn {
     /// The head.
     pub head: InHead,
-    /// [`CHECK_PHASE_LIMITS`] | [`CHECK_PHASE_INSTANCES`] | [`CHECK_PHASE_RECORDER`].
+    /// [`CHECK_PHASE_LIMITS`] | [`CHECK_PHASE_INSTANCES`] | `CHECK_PHASE_RECORDER`.
     pub phase: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -606,19 +456,6 @@ pub struct CheckIn {
     pub instances: *const CheckInstance,
     /// How many.
     pub instances_len: usize,
-}
-
-/// `check`'s `out`. OFF-PATH: `findings` is a plugin-owned result, memory class (iv) — live under
-/// `head.lease` until `release(lease)`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CheckOut {
-    /// The head.
-    pub head: OutHead,
-    /// The sink's check findings, as a [`super::mechanism::call::BLOB_JSON`] blob, under
-    /// `head.lease` (so they keep their place among the configuration's other errors, the
-    /// [`CheckPhase`] ordering). At [`CHECK_PHASE_RECORDER`], the JSON recorder declaration instead.
-    pub findings: Blob,
 }
 
 /// `serve`'s `in`: one HTTP request dispatched to this sink's own routes.
@@ -663,13 +500,6 @@ pub struct ServeOut {
     pub body: Blob,
 }
 
-/// [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`.
-pub const ROUTE_AUTH_NONE: u32 = 0;
-/// [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`.
-pub const ROUTE_AUTH_KEY: u32 = 1;
-/// [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD
-pub const ROUTE_AUTH_ADMIN: u32 = 2;
-
 /// One HTTP route this instance serves via `serve`. The pair `{path, method}`
 /// is the collision key the kernel checks at
 /// load; `auth` is enforced by the kernel BEFORE `serve` is ever called.
@@ -681,7 +511,7 @@ pub struct Route {
     pub path: AbiStr,
     /// The HTTP method.
     pub method: AbiStr,
-    /// [`ROUTE_AUTH_NONE`] | [`ROUTE_AUTH_KEY`] | [`ROUTE_AUTH_ADMIN`].
+    /// `ROUTE_AUTH_NONE` | `ROUTE_AUTH_KEY` | `ROUTE_AUTH_ADMIN`.
     pub auth: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -740,65 +570,3 @@ pub mod cancel {
     /// The pending op was aborted before it produced anything (deliver: the batch was not
     pub const ABORTED: u32 = 0;
 }
-
-// THE SDK's VIEW OF THE EXPORT TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated next to
-// the table, so `plugin_door!` refuses an export plugin that wires a kind op to another op's
-// structs. Every struct named here is plain data (integers, raw pointers, `AbiStr`/`Blob`, nested
-// plain structs): every bit pattern is a valid value, which is what `AbiIn`/`AbiOut` promise.
-//
-// SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
-unsafe impl super::sdk::door::AbiIn for DeliverIn {}
-unsafe impl super::sdk::door::AbiIn for ScrapeIn {}
-unsafe impl super::sdk::door::AbiIn for CheckIn {}
-unsafe impl super::sdk::door::AbiIn for ServeIn {}
-unsafe impl super::sdk::door::AbiOut for ScrapeOut {}
-unsafe impl super::sdk::door::AbiOut for StatusOut {}
-unsafe impl super::sdk::door::AbiOut for CheckOut {}
-unsafe impl super::sdk::door::AbiOut for ServeOut {}
-
-super::sdk::door::slot_structs!(
-    /// Each export kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
-    /// A plugin wiring a slot to another op's structs does not compile:
-    ///
-    /// ```compile_fail,E0271
-    /// use busbar_contract::abi::export::{CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut};
-    /// use busbar_contract::abi::export::{ServeIn, ServeOut, StatusOut};
-    /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-    /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::RawSlot;
-    /// # use std::ffi::c_void;
-    /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
-    /// #     struct $n;
-    /// #     impl RawSlot for $n { type In = $i; type Out = $o;
-    /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
-    /// # } }
-    /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-    /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
-    /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-    /// # ready!(Deliver, DeliverIn, OutHead); ready!(Status, InHead, StatusOut);
-    /// # ready!(Check, CheckIn, CheckOut); ready!(Serve, ServeIn, ServeOut);
-    /// ready!(Scrape, DeliverIn, OutHead); // `deliver`'s structs on `scrape`: refused
-    /// busbar_contract::plugin_door! {
-    ///     ops: busbar_contract::abi::export::Ops,
-    ///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
-    ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
-    ///                  cancel: Cn, release: Rl, close: Cl },
-    ///     kind_ops: { deliver: Deliver, scrape: Scrape, status: Status, check: Check, serve: Serve },
-    /// }
-    /// # fn main() { let _ = door(); }
-    /// ```
-    ///
-    /// With `Scrape` reading [`ScrapeIn`] and writing [`ScrapeOut`] the same plugin compiles
-    /// (`abi/sdk/tests/door_tests.rs`, `an_export_plugin_wires_every_kind_op`).
-    Ops {
-        slot::DELIVER => DeliverIn, OutHead;
-        slot::SCRAPE => ScrapeIn, ScrapeOut;
-        slot::STATUS => InHead, StatusOut;
-        slot::CHECK => CheckIn, CheckOut;
-        slot::SERVE => ServeIn, ServeOut;
-    }
-);
-
-#[cfg(test)]
-#[path = "tests/stream_tests.rs"]
-mod tests;

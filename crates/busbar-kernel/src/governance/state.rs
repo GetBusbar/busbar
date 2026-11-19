@@ -446,10 +446,6 @@ impl GovState {
         Some(signature.len())
     }
 
-    pub fn signing_secret(&self) -> Option<[u8; 32]> {
-        self.signing_material().map(|m| m.signer.secret_bytes())
-    }
-
     pub fn record_counts_served_in_era(
         &self,
         cost: &crate::cost::CostModel,

@@ -116,7 +116,6 @@ pub(crate) fn app() -> Arc<App> {
     let cfg = crate::config::AuthCfg::default_none();
     Arc::new(App::from_test_parts(crate::state::AppParts {
         fallback_runtime_key: "",
-        serve_tables: Default::default(),
         port_seats: Default::default(),
         exports: Default::default(),
         root_rules: Arc::new(crate::appbuild::AcceptAll),
@@ -138,7 +137,6 @@ pub(crate) fn app() -> Arc<App> {
         export_defs: Default::default(),
         admin: Default::default(),
         admin_chain: Default::default(),
-        auth_instances: Default::default(),
         admin_modules: Arc::new(
             crate::auth::AdminAuthChain::build(&cfg, &registry, &resolver).unwrap(),
         ),

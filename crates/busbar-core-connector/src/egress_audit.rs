@@ -79,17 +79,6 @@ pub fn tls_failed(target: &str, why: &str, now: &mut Option<std::time::Instant>)
     crate::cold::egress::tls_failed(shown(target), why, now);
 }
 
-/// Whether a TLS error is a verification failure (certificate or pin), not a transport error.
-#[must_use]
-pub fn is_verification(e: &rustls::Error) -> bool {
-    matches!(
-        e,
-        rustls::Error::InvalidCertificate(_)
-            | rustls::Error::NoCertificatesPresented
-            | rustls::Error::General(_)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,23 +105,15 @@ mod tests {
     /// clock once between them; an op that already read the clock reads it not again.
     #[test]
     fn refusals_of_one_op_read_the_clock_once() {
-        use crate::compose::clock_reads;
-        let _ = clock_reads::take();
+        use crate::clock::reads;
+        let _ = reads::take();
         let mut now = None;
         dial_refused("once.test", None, "internal", None, &mut now);
         dial_refused("once.test", None, "plaintext", None, &mut now);
         tls_failed("once.test", "pin", &mut now);
-        assert_eq!(
-            clock_reads::take().reads,
-            1,
-            "one reading for the op's three refusals"
-        );
-        let mut read = Some(crate::framer::now());
+        assert_eq!(reads::take(), 1, "one reading for the op's three refusals");
+        let mut read = Some(crate::clock::now());
         dial_refused("twice.test", None, "internal", None, &mut read);
-        assert_eq!(
-            clock_reads::take().reads,
-            0,
-            "the op's earlier reading is used"
-        );
+        assert_eq!(reads::take(), 0, "the op's earlier reading is used");
     }
 }

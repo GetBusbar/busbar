@@ -20,8 +20,16 @@ fn book(budget: &std::sync::Arc<ProcessAdmission>) -> TerminalBook {
     )
 }
 
+/// A book entry with no live owners (the test-only original state, nothing staged or funded).
 fn unit(node: &super::super::Node) -> RetainedUnit {
-    RetainedUnit::reserved(node.kernel.next_call())
+    RetainedUnit {
+        call: node.kernel.next_call(),
+        state: super::super::RetainedState::Original {
+            staged: None,
+            receipt: None,
+            credit: None,
+        },
+    }
 }
 
 #[test]
@@ -283,29 +291,6 @@ async fn native_pulse_examines_at_most_64_candidates() {
         100,
         "a pulse never removes legacy custody"
     );
-}
-
-/// The original request lease class selects the partition; the RAII reservation unwinds
-/// before effects and leaves no record behind.
-#[test]
-fn reservation_uses_the_request_class_and_unwinds_before_effects() {
-    let node = super::super::Node::new();
-    let call = node.kernel.next_call();
-    let key = UnitKey::new(7);
-    let reservation = node
-        .reserve_terminal(AdmissionClass::Operator, key, call)
-        .expect("funded reservation");
-    {
-        let book = node
-            .lost
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let book = book.as_ref().unwrap();
-        assert!(book.get(AdmissionClass::Operator, key).is_some());
-        assert!(book.get(AdmissionClass::Data, key).is_none());
-    }
-    drop(reservation);
-    assert_eq!(node.terminal_pending(), 0);
 }
 
 /// Absent process storage binding refuses a new unit before any effect; no default account.

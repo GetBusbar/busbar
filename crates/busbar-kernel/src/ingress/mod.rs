@@ -383,12 +383,6 @@ pub mod signed_ingress;
 #[path = "tests/terminal_tests.rs"]
 mod terminal_tests;
 
-pub mod arrival;
-
-pub mod byte_duplex;
-
-pub mod protocol;
-
 pub mod native;
 
 pub mod dispatch;

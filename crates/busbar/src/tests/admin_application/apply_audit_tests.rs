@@ -8,9 +8,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use busbar_contract::json;
-use busbar_core_admin::v1::contract::AdminError;
 use busbar_kernel::audit_ring;
-use busbar_kernel::config::transaction::config_transaction;
 
 /// RA6 (F2): `POST config/apply` whose body the parse refuses is a refused apply like any other:
 /// the audit records it as rejected.

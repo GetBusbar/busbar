@@ -143,19 +143,7 @@ pub const KEEP_ALL_EXCEPT_DENIED: u32 = 1;
 /// What [`KEEP_ALL_EXCEPT_DENIED`] always strips, the kernel's list: every hop-by-hop field
 pub const ALWAYS_DENIED: &[&str] = &["content-length", "content-encoding"];
 
-/// Whether the response head field `name` (lower-case) crosses to the plugin under a need's
-#[must_use]
-pub fn keeps_response_field<'a>(
-    mode: u32,
-    kept: &[&str],
-    denied: &[&str],
-    name: &str,
-    nominated: impl IntoIterator<Item = &'a [u8]>,
-) -> bool {
-    keeps_response_field_of(mode, kept, denied, name, nominated)
-}
-
-/// [`keeps_response_field`] over the lists as the caller holds them (`String`s or `&str`s).
+/// `keeps_response_field` over the lists as the caller holds them (`String`s or `&str`s).
 #[must_use]
 pub fn keeps_response_field_of<'a>(
     mode: u32,
@@ -235,36 +223,6 @@ pub mod service {
 /// How many services [`ConnectorSlots`] holds.
 pub const SERVICES: u32 = 14;
 
-/// [`service::ESTABLISH`]'s `in`: dial the need's endpoints in the host's order, apply connection
-/// security when the need asks for it, and answer the stream. The plugin's own authentication
-/// exchange that follows runs on the same connector lane.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct EstablishIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The need, by its index in the plugin's declared needs.
-    pub need: u32,
-    /// How long the dial may take, milliseconds; `0` = the need's `timeout_ms`, else the host's
-    /// default (a store's operator-set connect timeout).
-    /// Was alignment padding (always `0`): the layout is unchanged.
-    pub timeout_ms: u32,
-    /// The target; absent = the need's `target_from`.
-    pub target: AbiStr,
-    /// Appended: the address set the dial must land on, IP literals joined by
-    /// [`WITHIN_SEPARATOR`] (the addresses `dest.judge` wrote under `DEST_RESOLVE`). The address
-    /// the connector's judgement pins at dial time is held against it at the connect, before any
-    /// byte is written: outside it, the stream is REFUSED (a name that resolved elsewhere since it
-    /// was judged never receives the request). An entry that is not an IP literal refuses the
-    /// call. Absent or empty = no pin beyond the judgement's own.
-    pub within: AbiStr,
-    /// Appended (a head whose `size` ends before it names none): the REGISTRATION this stream
-    /// reaches, by its name in the plugin's declaring section; absent = none. What the host sealed
-    /// for that registration alone (its private reach, `abi::plane::TRUST_PRIVATE_REACH`) applies
-    /// to this stream and to no other.
-    pub member: AbiStr,
-}
-
 /// The separator between the addresses of [`EstablishIn::within`].
 pub const WITHIN_SEPARATOR: &str = ",";
 
@@ -291,8 +249,6 @@ pub fn within_of(value: &[u8]) -> Option<Vec<std::net::IpAddr>> {
         .collect()
 }
 
-/// `ServiceOut::value` of a connector service answering FAILED or REFUSED: no cause named.
-pub const CAUSE_NONE: u64 = 0;
 /// `ServiceOut::value` on a failure: the socket's open failed; `error` is the socket's error.
 pub const CAUSE_CONNECT: u64 = 1;
 /// `ServiceOut::value` on a failure: connection security failed; `error` is its own error.
@@ -303,284 +259,6 @@ pub const CAUSE_EXCHANGE: u64 = 3;
 pub const CAUSE_DEADLINE: u64 = 4;
 /// `ServiceOut::value` on a failure: the open connection's framer failed it; `error` is its own.
 pub const CAUSE_FRAMER: u64 = 5;
-/// `ServiceOut::value` on a refusal: the request's credential is unavailable; nothing was sent.
-pub const CAUSE_CREDENTIAL_UNAVAILABLE: u64 = 6;
-/// `ServiceOut::value` on a refusal: the request's auth refused it; nothing was sent.
-pub const CAUSE_AUTH_REFUSED: u64 = 7;
-/// `ServiceOut::value` on a failure: the request's auth call failed; nothing was sent.
-pub const CAUSE_AUTH_FAILED: u64 = 8;
-
-/// The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`].
-/// `REJECT_ENDPOINT` answers the stream on the next endpoint, or FAILED when none is left.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct StreamIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The stream.
-    pub stream: u64,
-}
-
-/// [`service::READ`]'s and [`service::WRITE`]'s `in`. The buffer is the plugin's, lent for the
-/// call only: the host reads or writes it before the service returns and keeps no hold on it, a
-/// PENDING answer included (the RESUME lends a buffer again).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct IoIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The stream.
-    pub stream: u64,
-    /// The bytes to write, or the buffer to read into.
-    pub buf: *mut u8,
-    /// Their length, or the buffer's capacity.
-    pub len: usize,
-}
-
-/// [`service::UPGRADE_SECURE`]'s `in`: the plugin has exchanged its own negotiation bytes; the host
-/// now runs the security handshake on the stream.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct UpgradeIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The stream.
-    pub stream: u64,
-    /// The name to offer the far end (the SNI, and the name verified); absent = the endpoint's host
-    /// name. FROZEN RULE: when the dial target is a host name, the offered name must equal it
-    /// (case-insensitive, after IDNA), or the upgrade is Refused (BUSBAR-6014); when the dial target
-    /// is an IP literal, any DNS name may be offered (libpq `hostaddr` + `host`). The offered name
-    /// never selects trust anchors: they are those of the dialled target.
-    pub offered_name: AbiStr,
-    /// The trust anchors, by the need's `trust_from` reference; absent = the need's.
-    pub trust: AbiStr,
-    /// Appended: `UPGRADE_*` bits ([`UPGRADE_VERIFY_OFF`], DEPRECATED, refused from 1.7.0); `0` =
-    /// verify as the need's trust says. An `in` that ends before it ([`UPGRADE_IN_V1_SIZE`]) is `0`.
-    pub flags: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-}
-
-/// [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's
-///
-/// DEPRECATED; refused from 1.7.0. Honoured in 1.6.x for an operator-infrastructure need only; each
-/// instance that uses it is flagged once (BUSBAR-6015: a coded warning and an audit record).
-pub const UPGRADE_VERIFY_OFF: u32 = 1;
-
-/// The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`.
-pub const UPGRADE_IN_V1_SIZE: usize = 64;
-
-/// [`service::FACTS`]'s `in`. The host answers the stream's facts as it observed them, a stream
-/// whose connection it refused for its trust anchors included (the refusal is the reply's; the facts
-/// say why): readable until the stream closes.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct FactsIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The stream.
-    pub stream: u64,
-    /// Where the host writes the facts; the strings stay valid until the stream closes.
-    pub facts: *mut StreamFacts,
-}
-
-/// What a stream is, as facts: never key or certificate material.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct StreamFacts {
-    /// `size_of::<StreamFacts>()`.
-    pub size: u32,
-    /// `1` = connection security is established.
-    pub secure: u32,
-    /// The endpoint the stream landed on.
-    pub endpoint: AbiStr,
-    /// The protocol agreed in the security handshake; absent = none.
-    pub agreed_protocol: AbiStr,
-    /// The hash of the far end's certificate (the channel-binding input); absent = not secure.
-    pub peer_cert_hash: AbiStr,
-    /// The far end's key as the connector observed
-    /// it, the pin of its leaf certificate's SubjectPublicKeyInfo in the one spelling
-    /// (`transport::trust::key_pin`); absent = the stream carried no certificate. Where the need's
-    /// trust anchors pin a key the connector refused any other before a request byte left, and
-    /// this still names what the far end served.
-    pub peer_key_pin: AbiStr,
-    /// Appended: `1` = busbar presented its client identity in the handshake (the far end asked
-    /// and the need's trust anchors carry one); `0` = it presented none.
-    pub client_identity: u32,
-    /// Alignment padding; `0`.
-    pub _reserved: u32,
-}
-
-/// [`service::CHECKOUT`]'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CheckoutIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The need whose pool to draw from.
-    pub need: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-}
-
-/// [`service::CHECKIN`]'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CheckinIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The stream.
-    pub stream: u64,
-    /// `CHECKIN_*`.
-    pub disposition: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-}
-
-/// [`service::RANDOM`]'s `in` (RETIRED with its slot: `random.fill` is the one random service).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct RandomIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The buffer.
-    pub buf: *mut u8,
-    /// Its length.
-    pub len: usize,
-}
-
-/// The process identity a plugin may present to a far end.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ProcessIdentity {
-    /// `size_of::<ProcessIdentity>()`.
-    pub size: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The process id.
-    pub pid: u64,
-    /// The OS user.
-    pub os_user: AbiStr,
-    /// The program name.
-    pub program: AbiStr,
-}
-
-/// [`service::IDENTITY`]'s `in`. Never pends; the strings are valid for the process's life.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct IdentityIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// Where the host writes the identity.
-    pub identity: *mut ProcessIdentity,
-}
-
-/// [`ReplyPiece::kind`]: the terminal piece of a reply with no head — what became of what the
-pub const REPLY_ACK: u32 = 1;
-/// [`ReplyPiece::kind`]: the reply's head: its code, its reason and its fields.
-pub const REPLY_HEAD: u32 = 2;
-/// [`ReplyPiece::kind`]: body bytes of the reply.
-pub const REPLY_BODY: u32 = 3;
-/// [`ReplyPiece::kind`]: the terminal piece of a reply that had a head: nothing follows.
-pub const REPLY_END: u32 = 4;
-
-/// ONE PIECE OF A REPLY, as [`service::READ_REPLY`] describes it (OWNER ruling: a plugin that
-/// sends data sees what became of it, over EVERY transport). Every request's reply ends with exactly
-/// ONE terminal piece: [`REPLY_ACK`] (no head: the delivery result, a code and the peer's text), or
-/// [`REPLY_END`] after a [`REPLY_HEAD`] and its [`REPLY_BODY`] pieces. A refusal by the egress class
-/// is an ack failure carrying the class's text. The spans are ranges of the READ_REPLY buffer.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ReplyPiece {
-    /// `REPLY_*`; `0` = none (a transport that answered no piece breaks the rule).
-    pub kind: u32,
-    /// The transport's result code: the reply's status, or its own delivery/result code; `0` =
-    /// none. On [`REPLY_HEAD`] and [`REPLY_ACK`].
-    pub code: u32,
-    /// The text the peer sent with the code, exactly as sent; empty when the transport has none.
-    pub reason: crate::abi::transport::FrameSpan,
-    /// The reply's metadata, ONE field block (`abi::transport::fields`); empty = none. On
-    /// [`REPLY_HEAD`].
-    pub fields: crate::abi::transport::FrameSpan,
-}
-
-/// [`service::READ_REPLY`]'s `in`. The buffer is the plugin's and stays valid until the service
-/// completes: the host writes the piece's bytes into it (a head's reason and field block, or body
-/// bytes) and its descriptor into `piece`; `ServiceOut::len` is the bytes written.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ReplyIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The stream.
-    pub stream: u64,
-    /// The buffer the piece's bytes go into.
-    pub buf: *mut u8,
-    /// Its capacity.
-    pub len: usize,
-    /// Where the host writes the piece's descriptor.
-    pub piece: *mut ReplyPiece,
-}
-
-/// [`RequestPiece::kind`]: the request's head — its method, target, fields and timeout.
-pub const REQUEST_HEAD: u32 = 1;
-/// [`RequestPiece::kind`]: body bytes of the request.
-pub const REQUEST_BODY: u32 = 2;
-/// [`RequestPiece::kind`]: the request is complete; nothing follows.
-pub const REQUEST_END: u32 = 3;
-
-/// ONE PIECE OF A REQUEST on a framed stream, as [`service::WRITE_REQUEST`] describes it: the mirror
-/// of [`ReplyPiece`]. A request is one [`REQUEST_HEAD`], its [`REQUEST_BODY`] pieces and one
-/// [`REQUEST_END`]. The spans are ranges of the WRITE_REQUEST buffer; the words are the approved
-/// per-stream head slots (`method`, `target`), and the fields ONE field block
-/// (`abi::transport::fields`, no pseudo-field).
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RequestPiece {
-    /// `REQUEST_*`.
-    pub kind: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The method. On [`REQUEST_HEAD`].
-    pub method: crate::abi::transport::FrameSpan,
-    /// The target. On [`REQUEST_HEAD`].
-    pub target: crate::abi::transport::FrameSpan,
-    /// The request's fields, one field block; empty = none. On [`REQUEST_HEAD`].
-    pub fields: crate::abi::transport::FrameSpan,
-    /// How long the request may take, milliseconds; `0` = the op's deadline. The host clamps a
-    /// larger value to the op's deadline class. On [`REQUEST_HEAD`].
-    pub timeout_ms: u64,
-}
-
-impl RequestPiece {
-    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    pub const ZERO: Self = Self {
-        kind: 0,
-        _reserved: 0,
-        method: crate::abi::transport::FrameSpan::ZERO,
-        target: crate::abi::transport::FrameSpan::ZERO,
-        fields: crate::abi::transport::FrameSpan::ZERO,
-        timeout_ms: 0,
-    };
-}
-
-/// [`service::WRITE_REQUEST`]'s `in`. The buffer and the descriptor are the plugin's and stay
-/// valid until the service completes; `ServiceOut::len` is the bytes the host took (a body piece
-/// may be taken in part).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct RequestIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The stream.
-    pub stream: u64,
-    /// The piece's bytes: a head's method, target and field block, or body bytes.
-    pub buf: *const u8,
-    /// Their length.
-    pub len: usize,
-    /// The piece's descriptor.
-    pub piece: *const RequestPiece,
-}
 
 /// THE CONNECTOR TABLE: one [`ServiceFn`] per [`service`], in index order. A NULL slot is a
 /// service this host does not offer, and a plugin that needs it refuses to open.
@@ -591,33 +269,33 @@ pub struct ConnectorSlots {
     pub size: u32,
     /// [`SERVICES`].
     pub slots: u32,
-    /// [`service::ESTABLISH`], in [`EstablishIn`].
+    /// [`service::ESTABLISH`], in `EstablishIn`.
     pub establish: Option<ServiceFn>,
-    /// [`service::REJECT_ENDPOINT`], in [`StreamIn`].
+    /// [`service::REJECT_ENDPOINT`], in `StreamIn`.
     pub reject_endpoint: Option<ServiceFn>,
-    /// [`service::SIDE_STREAM`], in [`StreamIn`].
+    /// [`service::SIDE_STREAM`], in `StreamIn`.
     pub side_stream: Option<ServiceFn>,
-    /// [`service::READ`], in [`IoIn`].
+    /// [`service::READ`], in `IoIn`.
     pub read: Option<ServiceFn>,
-    /// [`service::WRITE`], in [`IoIn`].
+    /// [`service::WRITE`], in `IoIn`.
     pub write: Option<ServiceFn>,
-    /// [`service::UPGRADE_SECURE`], in [`UpgradeIn`].
+    /// [`service::UPGRADE_SECURE`], in `UpgradeIn`.
     pub upgrade_secure: Option<ServiceFn>,
-    /// [`service::FACTS`], in [`FactsIn`].
+    /// [`service::FACTS`], in `FactsIn`.
     pub facts: Option<ServiceFn>,
-    /// [`service::CHECKOUT`], in [`CheckoutIn`].
+    /// [`service::CHECKOUT`], in `CheckoutIn`.
     pub checkout: Option<ServiceFn>,
-    /// [`service::CHECKIN`], in [`CheckinIn`].
+    /// [`service::CHECKIN`], in `CheckinIn`.
     pub checkin: Option<ServiceFn>,
-    /// [`service::CLOSE`], in [`StreamIn`].
+    /// [`service::CLOSE`], in `StreamIn`.
     pub close: Option<ServiceFn>,
-    /// [`service::RANDOM`], in [`RandomIn`]: RETIRED, always NULL (`random.fill` is the one random
+    /// [`service::RANDOM`], in `RandomIn`: RETIRED, always NULL (`random.fill` is the one random
     /// service).
     pub random: Option<ServiceFn>,
-    /// [`service::IDENTITY`], in [`IdentityIn`].
+    /// [`service::IDENTITY`], in `IdentityIn`.
     pub identity: Option<ServiceFn>,
-    /// [`service::READ_REPLY`], in [`ReplyIn`].
+    /// [`service::READ_REPLY`], in `ReplyIn`.
     pub read_reply: Option<ServiceFn>,
-    /// [`service::WRITE_REQUEST`], in [`RequestIn`].
+    /// [`service::WRITE_REQUEST`], in `RequestIn`.
     pub write_request: Option<ServiceFn>,
 }

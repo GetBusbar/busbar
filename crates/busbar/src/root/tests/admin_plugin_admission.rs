@@ -155,8 +155,7 @@ async fn serve_admission_with_inputs(
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     busbar_core_admin::install();
 
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     crate::dist_root_install::install();
     let module = crate::root::test_plugins::linked_store_module();
     let settings: serde_json::Value = serde_json::from_str(
@@ -326,19 +325,6 @@ impl<'a> Upload<'a> {
         })
         .expect("an upload body serializes")
     }
-}
-
-/// The install view's fields, by the admin contract's names: what a successful `POST /plugins`
-/// answers.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct InstallShape {
-    file: String,
-    interface_version: u64,
-    name: String,
-    note: String,
-    publisher: String,
-    trust: String,
-    version: String,
 }
 
 fn file_of(row: &serde_json::Value) -> Option<String> {
@@ -612,151 +598,6 @@ async fn install_refuses_a_plugin_whose_release_seal_has_expired() {
     handle.abort();
 }
 
-/// A linked plugin the install-time one-version rule judges today: a still-linked transport door row
-/// (PluginRegistry::linked_copy). The door store these cases first stood on went with WP3 (7d3d78322e); the
-/// rule is the registry's, not the kind's (lead ruling, CAUSES-engine.md "admin_plugin_admission").
-fn linked_transport() -> (&'static str, &'static str, String, Vec<u8>) {
-    crate::dist_root_install::install();
-    let linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(crate::root::boot::linked_row)
-        .collect();
-    let reg = crate::root::loader::PluginRegistry::empty()
-        .link(linked)
-        .expect("the linked rows register");
-    let row = reg
-        .linked()
-        .iter()
-        .find(|row| row.manifest.kind == "transport")
-        .expect("the build links a transport door row");
-    let version = row
-        .plugin_version()
-        .expect("the transport states its version");
-    let canonical: &'static str = Box::leak(row.manifest.name.clone().into_boxed_str());
-    let key: &'static str = Box::leak(row.manifest.alias.clone().into_boxed_str());
-    (
-        canonical,
-        key,
-        version,
-        row.statement().expect("the transport states itself"),
-    )
-}
-
-fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
-    let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
-    let len = |at: usize| u32::from_le_bytes(rendering[at..at + 4].try_into().unwrap()) as usize;
-    let at = head + 4 + len(head);
-    let mut out = rendering[..at].to_vec();
-    out.extend_from_slice(&(version.len() as u32).to_le_bytes());
-    out.extend_from_slice(version.as_bytes());
-    out.extend_from_slice(&rendering[at + 4 + len(at)..]);
-    out
-}
-
-fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
-    let (_, _, _, statement) = linked_transport();
-    let lib = b"junk lib bytes of a linked plugin";
-    let mut m = test_manifest(name, alias, "acme", "1.0.0");
-    m.statement = Some(hex::encode(restated(&statement, version)));
-    unsigned_tarball(m, lib)
-}
-
-#[tokio::test]
-async fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
-    if !isolated_card_case("install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op").await {
-        return;
-    }
-    crate::dist_root_install::install();
-    let dir = tmp_plugins_dir("linked-same");
-    let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
-    let (canonical, key, version, _) = linked_transport();
-    let (status, view) = install(
-        addr,
-        "copy.tar.gz",
-        &unsigned_copy(canonical, key, &version),
-    )
-    .await;
-    assert_eq!(
-        status, 201,
-        "the same plugin at the same version is accepted: {view}"
-    );
-    assert_eq!(view["name"], canonical);
-    let note = view["note"].as_str().unwrap_or("");
-    assert!(note.contains("nothing was written"), "{note}");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    handle.abort();
-}
-
-#[tokio::test]
-async fn install_of_a_linked_plugin_at_another_version_is_refused() {
-    if !isolated_card_case("install_of_a_linked_plugin_at_another_version_is_refused").await {
-        return;
-    }
-    crate::dist_root_install::install();
-    let dir = tmp_plugins_dir("linked-other");
-    let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
-    let (canonical, key, version, _) = linked_transport();
-    let (status, b) = install(
-        addr,
-        "copy.tar.gz",
-        &unsigned_copy(canonical, key, "99.0.0"),
-    )
-    .await;
-    let want = format!(
-        "plugin '{canonical}' arrives by both doors at two versions: linked v{version}, dropped \
-         in v99.0.0 (copy.tar.gz) - one version per plugin: remove one"
-    );
-    assert!(status == 409 && message(&b) == want, "got {status} {b}");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    handle.abort();
-}
-
-#[tokio::test]
-async fn install_of_a_linked_plugin_stating_no_version_is_refused() {
-    if !isolated_card_case("install_of_a_linked_plugin_stating_no_version_is_refused").await {
-        return;
-    }
-    crate::dist_root_install::install();
-    let dir = tmp_plugins_dir("linked-unstated");
-    let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
-    let (canonical, key, version, _) = linked_transport();
-    let lib = b"junk lib bytes of a linked plugin";
-    let tarball = unsigned_tarball(test_manifest(canonical, key, "acme", &version), lib);
-    let (status, b) = install(addr, "copy.tar.gz", &tarball).await;
-    let want = format!(
-        "plugin '{canonical}' states no version in its Statement: the one-version rule cannot \
-         compare it"
-    );
-    assert!(status == 409 && message(&b) == want, "got {status} {b}");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    handle.abort();
-}
-
-#[tokio::test]
-async fn install_judges_trust_before_the_one_version_rule() {
-    if !isolated_card_case("install_judges_trust_before_the_one_version_rule").await {
-        return;
-    }
-    crate::dist_root_install::install();
-    let dir = tmp_plugins_dir("linked-untrusted");
-    let (addr, handle) = serve_admission(dir.clone(), strict_posture(), None).await;
-    let (canonical, key, _, _) = linked_transport();
-    let (status, b) = install(
-        addr,
-        "copy.tar.gz",
-        &unsigned_copy(canonical, key, "99.0.0"),
-    )
-    .await;
-    assert!(
-        status == 409
-            && message(&b).starts_with("plugin rejected by the trust policy")
-            && !message(&b).contains("one version per plugin"),
-        "got {status} {b}"
-    );
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    handle.abort();
-}
-
 #[test]
 fn rollback_resolves_a_trusted_below_floor_target_and_merges_pins() {
     let dir = tmp_plugins_dir("rollback-ok");
@@ -1009,52 +850,6 @@ fn the_root_admission_classes_an_upload_and_writes_nothing() {
         }
     );
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-#[tokio::test]
-async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
-    if !isolated_card_case("test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op").await {
-        return;
-    }
-    crate::dist_root_install::install();
-    let (canonical, key, version, _) = linked_transport();
-    let tarball = unsigned_copy(canonical, key, &version);
-    let file = "linked-copy.tar.gz";
-    let dir = tmp_plugins_dir("linked-copy");
-    let (addr, _handle) = serve_with_plugins_dir(dir.clone()).await;
-
-    let (status, v) = install(addr, file, &tarball).await;
-    assert_eq!(status, 201, "the install view, as every success");
-    let mut fields: Vec<&str> = v
-        .as_object()
-        .unwrap_or_else(|| panic!("the install view is an object: {v}"))
-        .keys()
-        .map(String::as_str)
-        .collect();
-    fields.sort();
-    let shape = serde_json::to_value(InstallShape::default()).expect("the shape serializes");
-    let mut want: Vec<&str> = shape
-        .as_object()
-        .expect("the shape is an object")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    want.sort();
-    assert_eq!(fields, want, "the install view's shape: {v}");
-    let typed: InstallShape = serde_json::from_value(v.clone())
-        .unwrap_or_else(|e| panic!("the install view's field types: {e}: {v}"));
-    assert_eq!(
-        (typed.file.as_str(), typed.name.as_str()),
-        (file, canonical)
-    );
-    assert_eq!(
-        v["note"],
-        "this build links the plugin at this version and the linked build serves it: nothing \
-         was written"
-    );
-    assert!(!dir.join(file).exists(), "nothing is written");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

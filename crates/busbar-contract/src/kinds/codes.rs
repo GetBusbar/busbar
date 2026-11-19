@@ -9,5 +9,5 @@
 
 pub use crate::abi::mechanism::kind::{AUTH, EXPORT, PLANE, STORE};
 pub use crate::abi::mechanism::{
-    check, endpoint, extensions, rendering, KindCode, DOOR_SYMBOL, MECHANISM_VERSION,
+    check, endpoint, extensions, rendering, KindCode, MECHANISM_VERSION,
 };

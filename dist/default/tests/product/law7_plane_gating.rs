@@ -65,7 +65,6 @@ static PROBE: PlaneDecl = PlaneDecl {
         Some(std::sync::Arc::new(()))
     },
     routes: None,
-    admin_routes: None,
     openapi: None,
     hydrate: Some(|_| {
         HYDRATED.fetch_add(1, Ordering::SeqCst);

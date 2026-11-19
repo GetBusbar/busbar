@@ -2238,31 +2238,15 @@ async fn build_app_native(
     };
 
     // Construct serving consumers only after the complete Store governance owner exists.
-    // One instance per identity provider for this build, shared by every role that names it
-    // (WASTE-AUTH-SECRETS W1): the chain, admin_auth and the hosted login methods look it up.
-    // Carried across builds (W2): an instance whose inputs are unchanged and that reports
-    // `reusable()` is handed over from the prior App, not opened again.
-    let mut auth_instances = crate::auth::instances::AuthInstances::carrying(
-        prior.map(|p| Arc::clone(&p.auth_instances)),
-    );
-    let open_auth_axis = || crate::preflight::auth_axis(plugin_registry.clone());
     let auth_mw = Arc::new(
-        AuthMiddleware::build_on(
-            &auth_cfg,
-            plugin_registry.as_ref(),
-            &secret_resolver,
-            &mut auth_instances,
-            &open_auth_axis,
-        )
-        .map_err(|e| format!("auth chain construction failed: {e}"))?,
+        AuthMiddleware::build_on(&auth_cfg, plugin_registry.as_ref(), &secret_resolver)
+            .map_err(|e| format!("auth chain construction failed: {e}"))?,
     );
 
     let admin_modules = crate::auth::AdminAuthChain::build_on(
         &auth_cfg,
         plugin_registry.as_ref(),
         &secret_resolver,
-        &mut auth_instances,
-        &open_auth_axis,
     )
     .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
 
@@ -2271,12 +2255,9 @@ async fn build_app_native(
             &auth_cfg,
             plugin_registry.as_ref(),
             &secret_resolver,
-            &mut auth_instances,
-            &open_auth_axis,
         )
         .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
     );
-    let auth_instances = auth_instances.sealed();
 
     if prior.is_none() {
         accepted_operator(&auth_cfg, &admin_modules.operator);
@@ -2410,9 +2391,6 @@ async fn build_app_native(
 
     let limits = Some(limits_resolved.clone());
 
-    let serve_tables = prior.map_or_else(crate::plane_driver::serve::ServeTables::default, |p| {
-        p.serve_tables.clone()
-    });
     let root_rules = std::sync::Arc::clone(rules);
     let plane_sections = Some(cfg.plane_sections.clone());
 
@@ -2548,7 +2526,6 @@ async fn build_app_native(
     let mut app = App::assemble(
         crate::state::AppParts {
             limits,
-            serve_tables,
             port_seats: prior.map(|app| app.port_seats.clone()).unwrap_or_default(),
             exports: prior
                 .map(|app| Arc::clone(&app.exports))
@@ -2574,7 +2551,6 @@ async fn build_app_native(
             base_hook_names,
             admin_chain,
             admin_modules,
-            auth_instances,
             public_url,
             planes,
             plane_slots,

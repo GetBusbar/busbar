@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::json::JsonContainerTrait as _;
-use busbar_contract::json::{self, JsonValueTrait};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -14,6 +12,16 @@ use super::{tokio_sleep, MemberPermits, WalkTelemetry};
 const A: DestinationId = DestinationId::new(0);
 const B: DestinationId = DestinationId::new(1);
 const FREE: DestinationId = DestinationId::new(2);
+
+/// Permits as the plane seats build them: one semaphore of `n` slots per limited member.
+fn permits<const N: usize>(limits: [(DestinationId, usize); N]) -> MemberPermits {
+    MemberPermits {
+        limits: limits
+            .into_iter()
+            .map(|(d, n)| (d, Arc::new(tokio::sync::Semaphore::new(n))))
+            .collect(),
+    }
+}
 
 #[tokio::test]
 async fn the_clock_reads_the_wall_a_monotonic_origin_and_sleeps_on_the_timer() {
@@ -40,7 +48,7 @@ async fn the_clock_reads_the_wall_a_monotonic_origin_and_sleeps_on_the_timer() {
 
 #[test]
 fn a_limited_member_holds_its_slots_until_they_drop_and_an_unlimited_one_never_fills() {
-    let permits = MemberPermits::new([(A, 1)]);
+    let permits = permits([(A, 1)]);
     let held = permits.try_acquire(A).expect("one slot");
     assert_eq!(held.destination(), A);
     assert!(permits.try_acquire(A).is_none(), "at capacity");
@@ -55,7 +63,7 @@ fn a_limited_member_holds_its_slots_until_they_drop_and_an_unlimited_one_never_f
 
 #[tokio::test]
 async fn a_waiter_takes_the_first_slot_freed_on_any_of_its_members() {
-    let permits = std::sync::Arc::new(MemberPermits::new([(A, 1), (B, 1)]));
+    let permits = std::sync::Arc::new(permits([(A, 1), (B, 1)]));
     let a = permits.try_acquire(A).expect("a's slot");
     let b = permits.try_acquire(B).expect("b's slot");
     let waiter = {
@@ -80,7 +88,7 @@ async fn a_waiter_takes_the_first_slot_freed_on_any_of_its_members() {
 
 #[tokio::test]
 async fn a_wait_over_an_unlimited_member_answers_at_once() {
-    let permits = MemberPermits::new([(A, 0)]);
+    let permits = permits([(A, 0)]);
     let got = permits.acquire_any(&[A, FREE]).await.map(|(d, _)| d);
     assert_eq!(got, Some(FREE));
 }
@@ -93,295 +101,9 @@ fn the_counters_label_a_member_by_name() {
     assert_eq!(t.lane(B), "", "a member the seal did not name");
 }
 
-/// A connection table that opens nothing: the sealing below never dials.
-#[derive(Debug, Default)]
-struct Shut;
-
-impl busbar_contract::conn::Conns for Shut {
-    fn open(
-        &self,
-        _: busbar_contract::conn::InstanceId,
-        _: busbar_contract::conn::NeedId,
-        _: &busbar_contract::conn::OpenDesc<'_>,
-    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
-        Err(busbar_contract::conn::ConnError::Refused)
-    }
-    fn write(
-        &self,
-        _: busbar_contract::conn::InstanceId,
-        _: busbar_contract::conn::ConnId,
-        _: &[u8],
-        _: bool,
-        _: bool,
-    ) -> Result<usize, busbar_contract::conn::ConnError> {
-        Err(busbar_contract::conn::ConnError::Closed)
-    }
-    fn read(
-        &self,
-        _: busbar_contract::conn::InstanceId,
-        _: busbar_contract::conn::ConnId,
-        _: u64,
-        _: &mut [u8],
-    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
-        Err(busbar_contract::conn::ConnError::Closed)
-    }
-    fn wait(
-        &self,
-        _: busbar_contract::conn::InstanceId,
-        _: &[busbar_contract::conn::ConnId],
-        _: u64,
-    ) -> Result<usize, busbar_contract::conn::ConnError> {
-        Err(busbar_contract::conn::ConnError::Closed)
-    }
-    fn facts(
-        &self,
-        _: busbar_contract::conn::InstanceId,
-        _: busbar_contract::conn::ConnId,
-    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
-        Err(busbar_contract::conn::ConnError::Closed)
-    }
-    fn close(
-        &self,
-        _: busbar_contract::conn::InstanceId,
-        _: busbar_contract::conn::ConnId,
-    ) -> Result<(), busbar_contract::conn::ConnError> {
-        Err(busbar_contract::conn::ConnError::Closed)
-    }
-}
-
-impl busbar_contract::conn::PollConns for Shut {
-    fn failure_cause(
-        &self,
-        _: busbar_contract::conn::InstanceId,
-        _: busbar_contract::conn::ConnId,
-    ) -> Option<busbar_contract::conn::ConnCause> {
-        None
-    }
-    fn poll_read(
-        &self,
-        _: busbar_contract::conn::InstanceId,
-        _: busbar_contract::conn::ConnId,
-        _: &mut std::task::Context<'_>,
-        _: &mut [u8],
-    ) -> std::task::Poll<Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError>>
-    {
-        std::task::Poll::Ready(Err(busbar_contract::conn::ConnError::Closed))
-    }
-}
-
-/// A journal that keeps nothing: the sealing below dispatches nothing.
-#[derive(Debug)]
-struct Unwritten;
-
-impl busbar_kernel_egress::ports::Journal for Unwritten {
-    fn dispatched(
-        &self,
-        _: &busbar_kernel_egress::ports::Dispatched,
-    ) -> Result<(), busbar_kernel_egress::ports::DurabilityUnavailable> {
-        Ok(())
-    }
-    fn abandoned(&self, _: &busbar_kernel_egress::ports::Dispatched) {}
-}
-
-fn a_linked_dialect() -> String {
-    let path = concat!(
-        env!("BUSBAR_CORE_DIR"),
-        "/src/root/tests/fixtures/plane_node_dialects.json"
-    );
-    let text = std::fs::read_to_string(path).expect("the dialect fixture reads");
-    let fixture: json::Value = json::parse_value(text.as_bytes()).expect("the fixture is JSON");
-    fixture["body_model"]
-        .as_object()
-        .and_then(|dialects| dialects.iter().next().map(|(key, _)| key.to_string()))
-        .expect("the fixture names a body-model dialect")
-}
-
-async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
-    crate::root::test_plane_registry::register();
-    let dialect = a_linked_dialect();
-    let mut defs = std::collections::HashMap::new();
-    defs.insert(
-        "far".to_string(),
-        busbar_contract::yaml::from_str::<busbar_kernel::config::ProviderDef>(&format!(
-            "protocol: {dialect}\nbase_url: https://far.invalid\n"
-        ))
-        .expect("a provider def"),
-    );
-    let yaml = "providers:\n  far:\n    api_key: { env: BUSBAR_TEST_KEY }\nmodels:\n  patient:\n    provider: far\n    \
-                attempt_timeout_ms: 10000\n  plain:\n    provider: far\npools:\n  fast:\n    \
-                members:\n      - model: patient\n        attempt_timeout_ms: 50\n      - model: \
-                plain\n  slow:\n    members:\n      - model: patient\n";
-    let deploy =
-        busbar_kernel::config::deploy_from_yaml_str(yaml, &crate::root::boot::axis_test_grammar())
-            .expect("parses");
-    let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
-    crate::dist_root_install::install();
-    let empty = busbar_kernel::config::deploy_from_yaml_str(
-        "store: {module: memory}\nauth: {chain: []}\nproviders: {}\nmodels: {}\n",
-        &crate::root::boot::axis_test_grammar(),
-    )
-    .expect("the serving deployment parses");
-    let empty = busbar_kernel::config::resolve(&empty, &Default::default())
-        .expect("the serving deployment resolves");
-    let store = crate::root::real_store::core().await;
-    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
-        Arc::new(crate::root::door_steps::Rules::default());
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        crate::root::test_plugins::plaintext_listeners(empty),
-        Default::default(),
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-        Some(store.clone()),
-        false,
-    )
-    .await
-    .expect("the product builds the timeout sealing application");
-    if !crate::root::kernel::ROOT_CARD.keeps_store() {
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD
-            .keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .core_store_handle()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            )
-            .expect("native rate history attaches");
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .await
-            .expect("the actual configured Store boots its rate history");
-    }
-    limits.keep().await.expect("the serving limits commit");
-    if let Some(rotate) = rotate {
-        rotate.await;
-    }
-    let app = Arc::new(app);
-    let serving = crate::root::model_egress::ModelServing {
-        pools: crate::root::model_egress::ModelPools::of(&cfg),
-        lanes: [("patient".to_string(), 0), ("plain".to_string(), 1)]
-            .into_iter()
-            .collect(),
-        app: crate::root::model_egress::LiveApp::fixed(app),
-    };
-    let route = |provider: &str| busbar_kernel::plane_driver::MemberRoute {
-        ride_anchors: Vec::new(),
-        connection_required: false,
-        need: busbar_contract::conn::NeedId(0),
-        base_url: "https://far.invalid".to_string(),
-        auth: None,
-        provider: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(provider)),
-        keep: busbar_kernel::plane_driver::ResponseKeep::default(),
-        rides: Vec::new(),
-        anchors: busbar_contract::transport::trust::Anchors::default(),
-        spelled: Vec::new(),
-    };
-    let routes: std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute> =
-        [("patient", route("far")), ("plain", route("far"))]
-            .into_iter()
-            .map(|(model, sealed)| (model.to_string(), sealed))
-            .collect();
-    let facts = crate::root::door_steps::door_facts(
-        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("door").unwrap(),
-        &["pool"],
-        &[],
-        &[],
-        "unit",
-        Vec::new(),
-    );
-    let (egress, _shown) = crate::root::model_egress::compose(
-        &facts,
-        &serving,
-        busbar_contract::conn::InstanceId(1),
-        Arc::new(Shut),
-        &routes,
-        Arc::new(Unwritten),
-        busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
-        600,
-    )
-    .expect("the pools seal");
-    egress
-}
-
-fn sealed_attempt_ms(
-    egress: &busbar_kernel::plane_driver::Egress,
-    pool: &str,
-    model: &str,
-) -> Option<u64> {
-    egress
-        .pools
-        .get(pool)
-        .unwrap_or_else(|| panic!("pool `{pool}` is sealed"))
-        .members
-        .iter()
-        .find(|member| member.name == model)
-        .unwrap_or_else(|| panic!("`{model}` is a member of `{pool}`"))
-        .attempt_timeout_ms
-}
-
-#[cfg(linked_section_pools)]
-#[tokio::test]
-async fn the_root_fixture_cohort_keeps_one_actual_fallback_after_timeout_resolution() {
-    let actual = crate::root::test_plane_registry::fallback();
-    assert!(actual.fallback);
-    assert_ne!(actual.key, "neutral-test-fallback");
-    crate::root::test_plane_registry::register();
-    let egress = sealed_timeouts().await;
-    assert_eq!(sealed_attempt_ms(&egress, "fast", "patient"), Some(50));
-    let rows = busbar_kernel::plane_driver::registry::plane_decls();
-    let fallback: Vec<_> = rows.iter().filter(|row| row.fallback).collect();
-    assert_eq!(fallback.len(), 1);
-    assert!(std::ptr::eq(*fallback[0], actual));
-    assert_eq!(
-        busbar_kernel::plane_driver::dispatch::fallback_key(),
-        actual.key
-    );
-}
-
-#[tokio::test]
-async fn a_members_attempt_timeout_wins_over_its_models_default() {
-    let egress = sealed_timeouts().await;
-    assert_eq!(
-        sealed_attempt_ms(&egress, "fast", "patient"),
-        Some(50),
-        "the pool-member override must beat the model-level default"
-    );
-}
-
-#[tokio::test]
-async fn test_model_default_applies_when_member_has_no_override() {
-    let egress = sealed_timeouts().await;
-    assert_eq!(
-        sealed_attempt_ms(&egress, "slow", "patient"),
-        Some(10_000),
-        "a member with no override must fall back to the model-level cap"
-    );
-}
-
-#[tokio::test]
-async fn test_no_cap_anywhere_is_none() {
-    let egress = sealed_timeouts().await;
-    assert_eq!(sealed_attempt_ms(&egress, "fast", "plain"), None);
-}
-
-#[tokio::test]
-async fn test_empty_cands_uses_model_default() {
-    let egress = sealed_timeouts().await;
-    assert_eq!(
-        sealed_attempt_ms(&egress, "patient", "patient"),
-        Some(10_000)
-    );
-    assert_eq!(sealed_attempt_ms(&egress, "plain", "plain"), None);
-}
-
 #[tokio::test]
 async fn the_queue_frees_one_permit_to_exactly_one_of_two_waiters() {
-    let permits = std::sync::Arc::new(MemberPermits::new([(A, 1)]));
+    let permits = std::sync::Arc::new(permits([(A, 1)]));
     let held = permits.try_acquire(A).expect("the one slot");
     let (woke, mut wakes) = tokio::sync::mpsc::unbounded_channel();
     let waiters: Vec<_> = (0..2)
@@ -434,7 +156,7 @@ async fn the_queue_frees_one_permit_to_exactly_one_of_two_waiters() {
 #[tokio::test]
 async fn a_slot_freed_as_its_waiter_parks_is_not_lost() {
     for _ in 0..50 {
-        let permits = std::sync::Arc::new(MemberPermits::new([(A, 1)]));
+        let permits = std::sync::Arc::new(permits([(A, 1)]));
         let held = permits.try_acquire(A).expect("the one slot");
         let waiter = {
             let permits = std::sync::Arc::clone(&permits);
@@ -472,12 +194,23 @@ fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
     busbar_kernel::snapshot::init_for_test(Duration::from_secs(60));
     let attempts = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
     let refused = busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL;
-    let bound = super::LabelBound::new(["declared-word".to_string()]).reaching(
-        "walked-red-arm",
-        Vec::<String>::new(),
-        ["entry-red-arm".to_string()],
-    );
-    let t = WalkTelemetry::new([(A, "own-red-arm".to_string())]).bounded(bound);
+    let bound = super::LabelBound {
+        reach: [(
+            "walked-red-arm".to_string(),
+            // (pool words: the walk's entry names, as no pool label is configured; entries)
+            (
+                std::collections::BTreeSet::from(["entry-red-arm".to_string()]),
+                std::collections::BTreeSet::from(["entry-red-arm".to_string()]),
+            ),
+        )]
+        .into_iter()
+        .collect(),
+        vocabulary: std::collections::BTreeSet::from(["declared-word".to_string()]),
+    };
+    let t = WalkTelemetry {
+        bound,
+        ..WalkTelemetry::new([(A, "own-red-arm".to_string())])
+    };
     let stated = |pool: &str, lane: &str| StatedLabels {
         pool: Some(pool.to_string()),
         lane: Some(lane.to_string()),

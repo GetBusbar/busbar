@@ -7,22 +7,6 @@ rust-version = "1.97"
 description = "The plugin-visible contract: the traits, closed grammars and bounded types every busbar plugin is written against, and nothing else."
 license = "Apache-2.0"
 
-[[example]]
-name = "sdk_door_plugin"
-path = "tests/fixtures/sdk_door_plugin.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "sdk_door_baseline"
-path = "tests/fixtures/sdk_door_baseline.rs"
-crate-type = ["cdylib"]
-
-# B-LOOKUP: the `lookup` module's answers against the scans they replace (median, p99).
-[[bench]]
-name = "b_lookup"
-path = "benches/b_lookup.rs"
-harness = false
-
 [dependencies]
 busbar-json = { path = "../busbar-json" }
 busbar-artifact-metadata = { path = "../busbar-artifact-metadata" }
@@ -45,7 +29,6 @@ serde-saphyr = { workspace = true }
 ciborium = { workspace = true }
 serde_path_to_error = { workspace = true }
 indexmap = { workspace = true }
-async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 foldhash = { workspace = true }
@@ -60,8 +43,6 @@ percent-encoding = { workspace = true }
 sseer = { workspace = true }
 subtle = { workspace = true }
 tracing = { workspace = true }
-tracing-core = { workspace = true }
-tracing-log = { workspace = true }
 
 [dev-dependencies]
 busbar-secure = { path = "../busbar-secure", features = ["test-support"] }
@@ -71,7 +52,6 @@ libc = { workspace = true }
 stats_alloc = { workspace = true }
 serde_json = { workspace = true }
 jsonschema = { workspace = true }
-hyper = { workspace = true }
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }

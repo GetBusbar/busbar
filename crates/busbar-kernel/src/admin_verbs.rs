@@ -2,11 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use busbar_contract::route::RouteMethod;
 
 use crate::plane_driver::EngineHost;
 
@@ -70,22 +68,6 @@ pub enum AdminScope {
     Full,
 }
 
-/// WHAT THE CORE SHIM DOES AROUND A VERB. `Read` is a `GET` that audits nothing; `Audited` is a
-/// mutation whose applied/rejected outcome the core adapter records in the audit trail, deriving the
-/// audit resource kind from the plane decl. The `verb` is the audit action word (`connect`), named once
-/// so the audit action and the route cannot drift apart.
-#[derive(Debug, Clone, Copy)]
-pub enum AdminVerbKind {
-    /// A derived read — no audit.
-    Read,
-    /// A mutation the core adapter audits (applied on success, rejected on refusal).
-    Audited {
-        /// The audit action word (`connect`). The resource kind is derived core-side from the plane
-        /// decl, so a plane cannot invent a naming scheme.
-        verb: &'static str,
-    },
-}
-
 pub struct AdminReqCtx {
     pub host: Arc<dyn EngineHost>,
 
@@ -101,8 +83,6 @@ pub struct AdminReqCtx {
 
     pub query: Option<String>,
 
-    pub serve: crate::plane_driver::serve::ServeTables,
-
     /// The trust decision authority the admin gate built from its admission verdict and the caller's
     /// verb grant; `None` = the plane may not decide trust (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.2a).
     pub trust_authority: Option<crate::host_services::TrustDecisionAuthority>,
@@ -115,10 +95,6 @@ pub enum AdminReply {
 
     Rejected(PlaneVerbError),
 }
-
-pub type AdminReplyFuture = Pin<Box<dyn Future<Output = AdminReply> + Send>>;
-
-pub type AdminHandler = Arc<dyn Fn(AdminReqCtx) -> AdminReplyFuture + Send + Sync>;
 
 pub async fn connect_reply<P: PlaneTrust>(ctx: AdminReqCtx) -> AdminReply {
     let subject = match P::resolve(&ctx.host, &ctx.name) {
@@ -137,18 +113,6 @@ pub async fn connect_reply<P: PlaneTrust>(ctx: AdminReqCtx) -> AdminReply {
 
         Err(e) => AdminReply::Rejected(e),
     }
-}
-
-pub struct AdminRouteSpec {
-    pub method: RouteMethod,
-
-    pub path: String,
-
-    pub scope: AdminScope,
-
-    pub kind: AdminVerbKind,
-
-    pub handler: AdminHandler,
 }
 
 /// THE CONDITION TAGS a plane attaches to a validation refusal ([`PlaneVerbError::ValidationOf`]) —

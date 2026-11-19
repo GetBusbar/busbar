@@ -265,7 +265,7 @@ pub trait LoginCall: Future<Output = LoginOutcome> + Send + Unpin {
     }
 
     /// Why a declined credential was declined, when the plugin said
-    /// ([`crate::abi::auth::EXT_REJECT_HINT`] on a `LOGIN_BAD_CREDENTIAL` reply). The host acts on it
+    /// (`crate::abi::auth::EXT_REJECT_HINT` on a `LOGIN_BAD_CREDENTIAL` reply). The host acts on it
     /// (it stops forwarding attempts for the account) and never shows it to the client. `None`
     /// before the step answered, for any other answer, and when the plugin stated nothing.
     fn reject_hint(&self) -> Option<RejectHint> {
@@ -274,7 +274,7 @@ pub trait LoginCall: Future<Output = LoginOutcome> + Send + Unpin {
 }
 
 /// What a plugin may say about WHY it declined a credential (`complete_login`'s reply extension
-/// [`crate::abi::auth::EXT_REJECT_HINT`]). Additive: a plugin that states nothing is a plain decline.
+/// `crate::abi::auth::EXT_REJECT_HINT`). Additive: a plugin that states nothing is a plain decline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectHint {
     /// The directory reports the account locked (for example Active Directory `data 775`).
@@ -305,7 +305,7 @@ impl LoginCall for LoginSettled {
 
 /// THE SHAPE OF THE CREDENTIAL THE HOST ISSUES for an auth row that reads host-held credentials,
 /// as the row's Statement states it in its `MARK_WORD_ISSUED_*` word marks
-/// ([`crate::plugin_settings::sugar_words::MARK_WORD_ISSUED_ID_PREFIX`] and its siblings), checked at load.
+/// (`crate::plugin_settings::sugar_words::MARK_WORD_ISSUED_ID_PREFIX` and its siblings), checked at load.
 /// Kind-neutral: the host draws every symbol after the prefix from the OS CSPRNG over the stated
 /// alphabets, each symbol with equal weight, and names no format of its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -330,12 +330,12 @@ pub trait AuthCalls: Send + Sync {
     /// The tail's facts (`abi::auth::FACT_*`).
     fn facts(&self) -> u32;
 
-    /// With [`crate::auth_calls::codes::FACT_READS_CREDENTIALS`]: the host-held credential kinds `verify`
+    /// With `crate::auth_calls::codes::FACT_READS_CREDENTIALS`: the host-held credential kinds `verify`
     fn credential_kinds(&self) -> Vec<String> {
         Vec::new()
     }
 
-    /// With [`crate::auth_calls::codes::FACT_READS_CREDENTIALS`]: the shape of the credential the host issues
+    /// With `crate::auth_calls::codes::FACT_READS_CREDENTIALS`: the shape of the credential the host issues
     fn issued_shape(&self) -> Option<IssuedShape> {
         None
     }
@@ -438,107 +438,6 @@ pub struct OperatorClaims {
     pub unreadable: Vec<(String, String)>,
 }
 
-/// THE AUTH AXIS, as the composition root hands it to the kernel (the shape of the export kind's
-pub trait AuthAxis: Send + Sync {
-    /// The config keys of the auth rows this build LINKS, in registration order.
-    fn linked_names(&self) -> Vec<String>;
-
-    /// Whether a `kind: auth` row answers the module key `module` (linked or dropped in).
-    fn answers(&self, module: &str) -> bool;
-
-    /// Whether `module` names a row this build LINKS.
-    fn linked(&self, module: &str) -> bool;
-
-    /// THE OPERATOR CLAIMS: every admitted auth row whose Statement states the operator credential
-    /// fact, and every auth row whose Statement does not read (OPERATOR-FROM-ADMITTED-AUTH §3.2).
-    /// The kernel judges them (first-party only, at most one); the axis never picks one.
-    fn operator_claims(&self) -> OperatorClaims;
-
-    /// OPEN one instance of `module` over `settings` (the provider's settings, one JSON document,
-    fn open(
-        &self,
-        module: &str,
-        label: &str,
-        settings: &crate::plugin_settings::ResolvedSettings,
-    ) -> Result<Arc<dyn AuthCalls>, String>;
-
-    /// The config keys of the auth rows whose Statement states
-    fn credential_readers(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key, read from the Statements without
-    fn issued_credential(&self) -> Option<(String, IssuedShape)> {
-        None
-    }
-
-    /// The inbound carriers the auth row answering `module` states (its Statement's carrier word
-    fn carriers(&self, module: &str) -> Vec<String> {
-        let _ = module;
-        Vec::new()
-    }
-
-    /// The inbound style of an ordinary identity-provider module. The host's Rust convention
-    fn inbound_style(&self, module: &str) -> Option<InboundStyle> {
-        let _ = module;
-        None
-    }
-
-    /// THE HOST'S DEFAULT INBOUND STYLE's carriers: the carrier marks of the one auth row whose
-    fn default_inbound_style(&self) -> Result<Vec<String>, String> {
-        Ok(Vec::new())
-    }
-
-    /// THE AUTH PLUGIN SERVING THE OUTBOUND `style` for a binding under `settings` (THE DESIGN
-    fn serving(
-        &self,
-        style: &str,
-        settings: &serde_json::Value,
-    ) -> Result<Option<OutboundServing>, String> {
-        let _ = (style, settings);
-        Ok(None)
-    }
-
-    /// Validate a declared outbound style's settings without resolving or inventing a credential.
-    fn check_outbound_settings(
-        &self,
-        style: &str,
-        settings: &serde_json::Value,
-    ) -> Result<Vec<String>, String> {
-        let _ = settings;
-        Err(format!(
-            "outbound style '{style}' has no settings-only validator"
-        ))
-    }
-
-    /// CHECK, NEVER DIAL (the `--validate` dry run): bind `credential` under `settings` on a fresh
-    fn check_outbound(
-        &self,
-        style: &str,
-        credential: &[u8],
-        settings: &serde_json::Value,
-    ) -> Result<Vec<String>, String> {
-        let _ = (style, credential, settings);
-        Ok(Vec::new())
-    }
-
-    /// THE OUTBOUND STYLES this build's auth rows declare, as a provider's `auth:` may name them:
-    fn outbound_styles(&self) -> Vec<DeclaredStyle> {
-        Vec::new()
-    }
-}
-
-/// Host-owned metadata for one ordinary inbound verifier, read from its admitted Statement.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InboundStyle {
-    /// The canonical module key, distinct from an operator-configured provider name.
-    pub module: String,
-    /// The module key and its declared aliases. These never name outbound styles implicitly.
-    pub names: Vec<String>,
-    /// The points its inbound verifier requires.
-    pub points: crate::route::AuthPoints,
-}
-
 /// ONE OUTBOUND STYLE an auth row declares ([`AuthAxis::outbound_styles`]): its name and its
 /// `abi::auth::StyleDecl::flags` (the `STYLE_*` bits and its list rank).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -547,44 +446,6 @@ pub struct DeclaredStyle {
     pub name: String,
     /// Its declared flags.
     pub flags: u32,
-}
-
-/// THE ONE ORDER the host lists outbound styles in: `declared` (every row's styles, linked rows
-#[must_use]
-pub fn listed_styles(declared: impl IntoIterator<Item = DeclaredStyle>) -> Vec<DeclaredStyle> {
-    let mut out: Vec<DeclaredStyle> = Vec::new();
-    for style in declared {
-        if !out.iter().any(|s| s.name == style.name) {
-            out.push(style);
-        }
-    }
-
-    out.sort_by_key(|s| match crate::abi::auth::style_rank(s.flags) {
-        0 => u32::MAX,
-        rank => rank,
-    });
-    out
-}
-
-/// ONE AUTH PLUGIN SERVING AN OUTBOUND STYLE ([`AuthAxis::serving`]): its instance, and the style
-/// as its tail states it.
-#[derive(Clone)]
-pub struct OutboundServing {
-    /// The instance, opened for its outbound styles.
-    pub auth: Arc<dyn OutboundAuth>,
-    /// The style's `abi::auth::StyleDecl::flags`.
-    pub flags: u32,
-    /// The style's `abi::auth::StyleDecl::points` (an `AuthPoints` bit set).
-    pub points: u32,
-}
-
-impl std::fmt::Debug for OutboundServing {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OutboundServing")
-            .field("flags", &self.flags)
-            .field("points", &self.points)
-            .finish_non_exhaustive()
-    }
 }
 
 /// One attempt's fixed facts at one AUTH POINT, as the kernel hands them to `fields` (THE

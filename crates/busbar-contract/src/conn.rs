@@ -948,15 +948,6 @@ pub fn is_sealed_fields_field(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(SEALED_FIELDS_FIELD.as_bytes())
 }
 
-/// The field a member-program connection's HEAD carries (the first piece every open on it reads,
-pub const PROGRAM_GENERATION_FIELD: &str = "generation";
-
-/// The host member incarnation. A replacement launch configuration receives a distinct value,
-pub const PROGRAM_INSTANCE_FIELD: &str = "program-instance";
-
-/// Standard-base64 UTF-8 absolute command path from the host-admitted program. This identifies
-pub const PROGRAM_IDENTITY_FIELD: &str = "program-identity";
-
 /// Host-only open constraint: the member incarnation previously observed in its first HEAD.
 pub const PROGRAM_EXPECT_INSTANCE_FIELD: &str = "program-expect-instance";
 

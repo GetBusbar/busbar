@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-pub use busbar_contract::config::{neg1, ModelCfg};
+pub use busbar_contract::config::ModelCfg;
 
 use std::collections::{BTreeSet, HashMap};
 

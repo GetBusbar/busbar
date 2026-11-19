@@ -51,27 +51,20 @@ const OVERLAY_WORDS: &[&str] = &[
 ];
 
 /// Fixed gateway prefixes (§7 table) and the anchor fn each carries (C1 rows).
-const FIXED_PREFIXES: [&str; 5] = [
+const FIXED_PREFIXES: [&str; 3] = [
     "busbar_migrate::",
     "busbar::root::migrate::",
     "busbar_kernel::persistence::startup::Manifest::decode",
-    "plugin_loader::dispatch::migrate::",
-    "busbar_contract::abi::sdk::migrate::",
 ];
-const ANCHOR_SYMBOLS: [&str; 4] = [
+const ANCHOR_SYMBOLS: [&str; 3] = [
     "busbar_migrate::plan",
     "busbar::root::migrate::run",
     "busbar_kernel::persistence::startup::Manifest::decode",
-    "busbar_contract::abi::sdk::migrate::read_answer",
 ];
 
 /// Lines counted for the 5,000 figure: crate, seam, and the call path.
 const COUNTED_DIRS: [&str; 1] = ["crates/busbar-migrate/src"];
-const COUNTED_FILES: [&str; 3] = [
-    "crates/busbar/src/root/migrate.rs",
-    "crates/plugin-loader/src/dispatch/migrate.rs",
-    "crates/busbar-contract/src/abi/sdk/migrate.rs",
-];
+const COUNTED_FILES: [&str; 1] = ["crates/busbar/src/root/migrate.rs"];
 
 pub(crate) fn run(root: &Path) -> Result<Vec<String>, String> {
     let read = |file: &str| {

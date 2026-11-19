@@ -53,33 +53,6 @@ pub fn base64_decode(input: &str) -> Option<SlabBytes> {
     LENIENT.decode(&compact[..end]).ok().map(SlabBytes::from)
 }
 
-/// Audio payload — exactly ONE representation, enforced. `B64` is the lossless common denominator
-/// across upstreams; `Bytes` is a raw binary response body.
-#[derive(Debug, Clone, PartialEq)]
-pub enum MediaPayload {
-    Bytes(SlabBytes),
-    B64(String),
-}
-
-/// Sample parameters for headerless raw PCM (`audio/L16;codec=pcm;rate=24000` and similar codec-only
-/// MIME types), where the wire bytes carry no container header. `None` on `MediaBlob.pcm` for
-/// self-describing formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PcmParams {
-    pub sample_rate: u32,
-    pub channels: u8,
-    pub bit_depth: u8,
-}
-
-/// A single audio payload (transcription input / speech output). One representation + its MIME type,
-/// plus PCM parameters iff the MIME type is headerless raw PCM.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MediaBlob {
-    pub payload: MediaPayload,
-    pub mime_type: String,
-    pub pcm: Option<PcmParams>,
-}
-
 /// A single generated image. ADDITIVE: `b64` and `url` may BOTH be present and both are
 /// kept. `b64` is the common path; `url`/`uri` are additive (some upstreams return a URL, others a
 /// bucket URI). The other fields are upstream-specific extras kept for lossless round-trip.

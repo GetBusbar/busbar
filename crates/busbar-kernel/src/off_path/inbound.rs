@@ -95,23 +95,6 @@ impl Inbound {
         drop(retired);
         Ok(())
     }
-
-    /// Retire every listener generation older than the one before `generation` (a config
-    /// publish).
-    pub fn retire_before(&self, generation: u64) {
-        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
-        let mut retired = Vec::new();
-        tables.retain(|(_, _, old), table| {
-            if old.saturating_add(1) < generation {
-                retired.push(Arc::clone(table));
-                false
-            } else {
-                true
-            }
-        });
-        drop(tables);
-        drop(retired);
-    }
 }
 
 /// A listener's line ids, indexed once when it is installed.

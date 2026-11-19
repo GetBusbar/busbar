@@ -59,7 +59,6 @@ static FALLBACK_PLANE: PlaneDecl = PlaneDecl {
     admission: |_| None,
     build: |_, _| None,
     routes: None,
-    admin_routes: None,
     openapi: None,
     hydrate: None,
     start: None,

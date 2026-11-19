@@ -208,16 +208,11 @@ fn fixture() -> Fixture {
         .build()
         .expect("a runtime");
     busbar_core_connector::io::install_process_reactor(runtime.handle().clone());
-    let connector = Connector::serving(
-        busbar_core_connector::registry::Transports::default(),
-        Arc::new(loopback),
-        None,
-        Arc::new(|_, _| {}),
-    )
-    .pooling(PoolPosture {
-        max_idle_per_host: 4,
-        idle_timeout: Duration::from_secs(60),
-    });
+    let connector =
+        Connector::serving(Arc::new(loopback), None, Arc::new(|_, _| {})).pooling(PoolPosture {
+            max_idle_per_host: 4,
+            idle_timeout: Duration::from_secs(60),
+        });
     let account = Arc::new(Counted::default());
     connector
         .carry_natively(

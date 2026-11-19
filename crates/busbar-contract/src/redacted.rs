@@ -137,11 +137,6 @@ impl Secret<Vec<u8>> {
         Self(vec![0; cap], PhantomData)
     }
 
-    /// The holder's buffer as a call lends it: its address and its length. Writing through it is
-    pub fn lend_mut(&mut self) -> (*mut u8, usize) {
-        (self.0.as_mut_ptr(), self.0.len())
-    }
-
     /// Replace the held bytes with `bytes`: the old ones are wiped first and the allocation is
     /// reused (it grows only when `bytes` is longer than any value it held).
     pub fn refill(&mut self, bytes: &[u8]) {

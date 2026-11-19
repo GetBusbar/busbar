@@ -26,12 +26,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let delegated_token = common::credentials::token_for("admins", &["admins"], AUDIENCE);
     let signing_key = directory.join("signing-key");
@@ -153,12 +148,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let delegated_token = common::credentials::token_for("admins", &["admins"], AUDIENCE);
     let signing_key = directory.join("signing-key");
@@ -427,12 +417,7 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let token_a = common::credentials::token_for("same-subject", &["admins"], AUDIENCE);
     let issuer_b = "https://issuer-b.e2e.invalid";
@@ -590,12 +575,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let token_a = common::credentials::token_for("same-subject", &["admins"], AUDIENCE);
     let issuer_b = "https://issuer-b.e2e.invalid";

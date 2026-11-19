@@ -675,7 +675,7 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
 }
 
 pub use busbar_kernel::config::providers::{
-    neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy, ProviderTable,
+    HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy, ProviderTable,
     ResolvedProvider,
 };
 

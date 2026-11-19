@@ -146,13 +146,6 @@ pub struct WireStatus {
     pub code: u32,
 }
 
-fn serialize_namespace<S: serde::Serializer>(
-    namespace: &str,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(namespace)
-}
-
 impl WireStatus {
     /// A status in the numbering that spelled it.
     #[must_use]
@@ -391,17 +384,6 @@ pub enum Unit0Trigger {
     Upgrade,
     /// The transport's own handshake.
     Handshake,
-}
-
-/// What tells a transport that a frame belongs to a challenge-response exchange.
-///
-/// A transport without one leaves handshake units to the plane, which opens them itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub struct HandshakeTrigger {
-    /// The transport's own name for the frame kind that opens the exchange.
-    pub frame_kind: &'static str,
-    /// The most challenge-response steps the exchange may take.
-    pub max_steps: u8,
 }
 
 /// A declared binding from a signalling exchange to the session it hands off to.
@@ -767,4 +749,11 @@ pub enum Side {
     Accept,
     /// The end that dialled it.
     Dial,
+}
+
+fn serialize_namespace<S: serde::Serializer>(
+    namespace: &str,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(namespace)
 }

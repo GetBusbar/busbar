@@ -47,11 +47,6 @@ impl PermitHandle for Slot {
 }
 
 impl MemberPermits {
-    #[must_use]
-    pub fn available(&self, destination: DestinationId) -> Option<usize> {
-        self.limits.get(&destination).map(|s| s.available_permits())
-    }
-
     fn slot(destination: DestinationId, held: Option<OwnedSemaphorePermit>) -> Permit {
         Permit::new(Box::new(Slot {
             destination,
@@ -163,12 +158,6 @@ impl LabelBound {
 }
 
 impl WalkTelemetry {
-    #[must_use]
-    pub fn bounded(mut self, bound: LabelBound) -> Self {
-        self.bound = bound;
-        self
-    }
-
     #[must_use]
     pub fn labels<'a>(
         &'a self,

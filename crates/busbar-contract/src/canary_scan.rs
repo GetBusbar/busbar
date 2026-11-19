@@ -47,7 +47,7 @@
 //! ```
 //!
 //! Code that holds the secret as text takes [`WipeProof::text`] and [`WipeProof::text_payload`] (the
-//! canary drawn from 64 ASCII characters). [`WipeProof::short_text`] makes a short one: a
+//! canary drawn from 64 ASCII characters). `WipeProof::short_text` makes a short one: a
 //! [`SHORT_CANARY_LEN`]-character canary in a [`SHORT_PAYLOAD_LEN`]-byte payload, under the 30 bytes a
 //! small-string type stores inline, its sentinel and control in blocks of the same size. A test that must also show the secret is still owned
 //! part-way (a pending future, a shared owner not yet dropped) calls [`WipeProof::assert_held`]
@@ -68,8 +68,6 @@ pub const OFFSET: usize = 32;
 pub const PAYLOAD_LEN: usize = 128;
 /// A short payload's length: at most 30 bytes, so a small-string type stores it inline.
 const SHORT_PAYLOAD_LEN: usize = 24;
-/// Characters in a short text canary (at least [`WINDOW`]).
-const SHORT_CANARY_LEN: usize = 20;
 /// Where a short canary sits in its payload: two filler bytes on each side.
 const SHORT_OFFSET: usize = 2;
 /// The filler around the canary.
@@ -258,16 +256,6 @@ impl WipeProof {
         Self::with_canary(Pattern::random_text(CANARY_LEN), LONG)
     }
 
-    /// As [`Self::text`], short: a [`SHORT_CANARY_LEN`]-character canary in a
-    /// [`SHORT_PAYLOAD_LEN`]-byte payload (two filler bytes each side), so a small-string type
-    /// would store it inline. Its sentinel and positive control are blocks of the same size, so the
-    /// control shows that a dropped, unwiped [`SHORT_PAYLOAD_LEN`]-byte block is found. Plant it
-    /// with [`Self::text_payload`].
-    #[must_use]
-    pub fn short_text() -> Self {
-        Self::with_canary(Pattern::random_text(SHORT_CANARY_LEN), SHORT)
-    }
-
     /// An ASCII alphanumeric canary, unchanged by URL/form encoding, using the same masked scanner and
     /// controls as [`Self::new`]. Write it directly into guarded ASCII staging with [`Self::write_canary`].
     /// [`Self::payload`] still has binary filler and is not a UTF-8 payload.
@@ -304,12 +292,12 @@ impl WipeProof {
     }
 
     /// A staging string holding the text canary (a [`PAYLOAD_LEN`]-byte ASCII payload, the canary at
-    /// [`OFFSET`]; for [`Self::short_text`], [`SHORT_PAYLOAD_LEN`] bytes, the canary at
+    /// [`OFFSET`]; for `Self::short_text`, [`SHORT_PAYLOAD_LEN`] bytes, the canary at
     /// [`SHORT_OFFSET`]). It is [`SecureString`]: clone the text into the code under test and drop
     /// this before [`Self::assert_absent`].
     ///
     /// # Panics
-    /// If the canary contains non-text bytes; use [`Self::text`], [`Self::short_text`] or
+    /// If the canary contains non-text bytes; use [`Self::text`], `Self::short_text` or
     /// [`Self::new_text`].
     #[must_use]
     pub fn text_payload(&self) -> SecureString {
@@ -356,7 +344,7 @@ impl WipeProof {
     }
 
     /// Write the canary into `out` (which must be the canary's length: [`CANARY_LEN`] bytes, or
-    /// [`SHORT_CANARY_LEN`] for [`Self::short_text`]), for code that takes the secret as a slice.
+    /// [`SHORT_CANARY_LEN`] for `Self::short_text`), for code that takes the secret as a slice.
     ///
     /// # Panics
     /// If `out` is not the canary's length.

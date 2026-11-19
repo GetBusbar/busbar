@@ -69,41 +69,7 @@ pub(crate) mod provisioning_mount;
         clippy::allow_attributes_without_reason
     )
 )]
-pub mod dispatch;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
 pub mod door_steps;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod doors;
 pub mod durability;
 // busbar:request-path
 #[cfg_attr(
@@ -140,26 +106,6 @@ pub mod exit;
     )
 )]
 pub mod exports;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod inbound;
-#[cfg(all(test, linked_every_plane_door))]
-#[path = "tests/inbound.rs"]
-mod inbound_tests;
 pub(crate) mod ingress_context;
 pub mod kernel;
 pub mod keyset;
@@ -184,7 +130,6 @@ pub(crate) mod core_watch;
 pub mod listener;
 pub(crate) mod listener_native;
 pub(crate) mod loader;
-pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
 pub(crate) mod migrate;
 /// Migrate-on-boot steps 4 and 5S/5C: core's records step over the opened store.
@@ -208,40 +153,6 @@ pub(crate) mod port_mount;
 /// builds only.
 #[cfg(feature = "test-harness")]
 pub(crate) mod store_kit_run;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod model_egress;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod observe;
 // The request-path modules' code that runs off the request path: once per configuration, generation
 // or process lifecycle, never per request.
 pub(crate) mod off_path;
@@ -310,26 +221,7 @@ pub(crate) mod secret_grammar;
 pub mod serve;
 pub mod settings_public;
 pub mod shutdown;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-#[cfg(test)]
-pub mod transports;
 pub mod units_admin;
-pub mod userinfo;
 
 #[cfg(test)]
 #[path = "tests/admin_plugin_admission.rs"]
@@ -363,21 +255,8 @@ pub(crate) mod test_plugins;
 pub(crate) mod store_double;
 
 #[cfg(test)]
-#[path = "tests/linked_door_root.rs"]
-mod linked_door_root;
-
-#[cfg(test)]
-#[path = "tests/plane_registry.rs"]
-pub(crate) mod test_plane_registry;
-
-#[cfg(test)]
 #[path = "tests/real_store.rs"]
 pub(crate) mod real_store;
-
-#[cfg(test)]
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-#[cfg(test)]
-owner_test_sources!(root_stdio);
 
 pub(crate) mod selected_report;
 #[cfg(test)]

@@ -7,7 +7,6 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
     process::dest_judge(&Destinations::default()).expect("the default")
 }
 
-#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_process_has_one_connector_and_every_path_takes_it() {
     const CHILD: &str = "BUSBAR_TEST_CONNECTOR_SINGLETON_CHILD";
@@ -30,22 +29,18 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
         );
         return;
     }
-    let doors = crate::LINKED_TRANSPORT_DOORS;
-    assert!(!doors.is_empty(), "this build links a transport door");
     let built = process::build_with_secrets(
-        || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
         Arc::new(|_, _| {}),
         PoolPosture::NONE,
         busbar_core_connector::spawn_env::linked_spawn_secret,
     );
-    let built = built.expect("the linked doors build a connector");
+    let built = built.expect("the process connector builds");
     let installed = install(Arc::clone(&built)).expect("the first install is the one");
     assert!(Arc::ptr_eq(installed, &built));
     assert!(Arc::ptr_eq(the(), &built), "the() is the installed one");
     let second = process::build_with_secrets(
-        || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
         Arc::new(|_, _| {}),
@@ -172,7 +167,6 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 #[tokio::test]
 async fn metadata_stays_refused_across_reload() {
     crate::dist_root_install::install();
-    crate::root::test_plane_registry::register();
     let boot = deployment(
         &[],
         "security:\n  blocked_metadata_hosts: [169.254.169.254]\n",
@@ -232,7 +226,6 @@ async fn metadata_stays_refused_across_reload() {
 async fn provider_configuration_never_grants_global_hostname_authority_across_reload() {
     use busbar_contract::services::codes::DEST_INTERNAL;
     crate::dist_root_install::install();
-    crate::root::test_plane_registry::register();
     let private_a = vec!["\x310.0.0.5".parse().unwrap()];
     let private_b = vec!["\x310.0.0.9".parse().unwrap()];
     let verdict = |judge: &dyn DestJudge, host: &str, answer: &[std::net::IpAddr]| {
@@ -341,159 +334,4 @@ fn a_provider_host_grants_no_authority_to_generic_destination_judging() {
         Some(DEST_METADATA),
         "operator infrastructure refuses metadata whatever is carved"
     );
-}
-
-#[cfg(linked_every_auth)]
-#[test]
-fn every_linked_auth_plugins_outbound_need_is_refused_without_selected_route_authority() {
-    use busbar_contract::services::codes::DEST_INTERNAL;
-    let private = vec!["\x310.0.0.5".parse().unwrap()];
-    let strict = guard_for(&deployment(&[], "").destinations()).expect("the default guard");
-    let listed = deployment(&[], "");
-    let listed = guard_for(&listed.destinations()).expect("a guard");
-    let mut outbound = 0usize;
-    for &(key, _, door) in crate::LINKED.auths {
-        let row = crate::root::loader::dispatch::LinkedRow::of(door)
-            .unwrap_or_else(|e| panic!("`{key}`'s door states itself: {e}"));
-        let read = busbar_contract::rendering::read(&row.statement)
-            .unwrap_or_else(|e| panic!("`{key}`'s Statement reads: {e:?}"));
-        for (n, need) in read.needs.iter().enumerate() {
-            if need.direction != busbar_contract::conn::codes::DIRECTION_OUTBOUND {
-                continue;
-            }
-            outbound += 1;
-            let class = busbar_core_connector::guard::judged_class(
-                need.egress_class,
-                !need.target_from.is_empty(),
-            );
-            assert_eq!(
-                strict
-                    .judge_answer("token.internal", &private, class)
-                    .err()
-                    .map(|r| r.verdict),
-                Some(DEST_INTERNAL),
-                "`{key}`'s outbound need {n} (class {}, judged {class}) must refuse a private \
-                 token endpoint with no allow entry",
-                need.egress_class
-            );
-            assert_eq!(
-                listed
-                    .judge_answer("token.internal", &private, class)
-                    .unwrap_err()
-                    .verdict,
-                DEST_INTERNAL,
-                "`{key}`'s outbound need {n}: no global hostname grant exists"
-            );
-            assert_eq!(
-                metadata_verdict(strict.as_ref(), "token.internal", class),
-                Some(DEST_METADATA),
-                "`{key}`'s outbound need {n}: metadata is refused"
-            );
-            assert!(
-                ![EGRESS_OPEN_WEB, EGRESS_LOOPBACK_ALLOWED].contains(&need.egress_class),
-                "`{key}`'s outbound need {n}: 1.5.5 minted over plaintext to a private token \
-                 endpoint, which open-web and loopback-allowed refuse"
-            );
-        }
-    }
-    assert!(
-        outbound > 0,
-        "the linked auth rows declare an outbound need (the mint needs), so this cell proves one"
-    );
-}
-
-#[cfg(linked_every_transport)]
-#[test]
-fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
-    use busbar_contract::conn::codes::{DIRECTION_OUTBOUND, EGRESS_OPERATOR_INFRASTRUCTURE};
-    use busbar_contract::conn::{
-        ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
-    };
-    use busbar_contract::rendering::{ReadBlob, ReadNeed};
-    let doors = crate::LINKED_TRANSPORT_DOORS;
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a runtime");
-    rt.block_on(async {
-        let c = process::build_with_secrets(
-            || entries(doors, &TransportSettings::default()),
-            judge(),
-            &[],
-            Arc::new(|_, _| {}),
-            PoolPosture::NONE,
-            busbar_core_connector::spawn_env::linked_spawn_secret,
-        )
-        .expect("the linked doors build a connector");
-        let program = busbar_contract::conn::Program::from_settings(
-            &serde_json::json!({
-                "command": "/bin/sh",
-                "args": ["-c", "echo \"got:$DECLARED\"; read line; echo \"again:$line\""],
-                (busbar_contract::conn::PROGRAM_ENV_KEY): {"DECLARED": "yes"},
-            }),
-            &Default::default(),
-        )
-        .expect("a program");
-
-        let frame = |conn: ConnId| {
-            let c = &c;
-            async move {
-                let mut buf = [0_u8; 128];
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                loop {
-                    match c.read(InstanceId(7), conn, 1, &mut buf) {
-                        Ok(piece) => break Some(buf[..piece.len].to_vec()),
-                        Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
-                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                        }
-                        _ => break None,
-                    }
-                }
-            }
-        };
-        let mut line_framed = Vec::new();
-        for (n, (key, _)) in (0u32..).zip(doors.iter()) {
-            let need = ReadNeed {
-                direction: DIRECTION_OUTBOUND,
-                egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
-                transport: (*key).to_owned(),
-                auth: String::new(),
-                target_from: "settings.server".to_owned(),
-                trust_from: String::new(),
-                details: ReadBlob {
-                    fmt: 0,
-                    flags: 0,
-                    bytes: Vec::new(),
-                },
-                timeout_ms: 0,
-                keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
-                keep_response_headers: Vec::new(),
-                deny_response_headers: Vec::new(),
-            };
-            let (owner, id) = (InstanceId(7), NeedId(n));
-
-            if c.declare_program(owner, id, &need, &program).is_err() {
-                continue;
-            }
-
-            let Ok(conn) = c.open(owner, id, &OpenDesc::default()) else {
-                continue;
-            };
-            if frame(conn).await.as_deref() == Some(b"got:yes".as_slice()) {
-                assert_eq!(c.write(owner, conn, b"{\"id\":1}", true, false), Ok(8));
-                assert_eq!(
-                    frame(conn).await.as_deref(),
-                    Some(b"again:{\"id\":1}".as_slice()),
-                    "a message is one line to the program; its answer one frame back"
-                );
-                line_framed.push(*key);
-            }
-            c.close(owner, conn).expect("closes");
-        }
-        assert_eq!(
-            line_framed.len(),
-            1,
-            "exactly one linked door frames a program line by line"
-        );
-    });
 }

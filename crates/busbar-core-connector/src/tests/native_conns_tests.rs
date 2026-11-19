@@ -134,14 +134,9 @@ fn loopback(target: &str, _: u32, _: Judged) -> Option<Result<SocketAddr, Verdic
     )
 }
 
-/// A connector with no old transport entry (so `http` is served natively), judging loopback literals only.
+/// A connector serving `http` natively, judging loopback literals only.
 fn connector() -> Connector {
-    Connector::serving(
-        crate::registry::Transports::default(),
-        Arc::new(loopback),
-        None,
-        Arc::new(|_, _| {}),
-    )
+    Connector::serving(Arc::new(loopback), None, Arc::new(|_, _| {}))
 }
 
 fn need() -> ReadNeed {

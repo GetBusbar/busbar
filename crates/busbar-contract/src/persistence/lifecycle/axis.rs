@@ -25,8 +25,6 @@ pub type BootstrapCall<'a> =
     Pin<Box<dyn Future<Output = Result<Arc<Response>, Error>> + Send + 'a>>;
 /// A retained native preparation capability.
 pub type Prepared = Arc<dyn PreparedStore>;
-/// Door selection and preparation; ordinary OPEN is not executed.
-pub type PrepareCall<'a> = Pin<Box<dyn Future<Output = Result<Prepared, Error>> + Send + 'a>>;
 /// Existing primitive backend restricted to the retained inactive upgrade target.
 pub trait MigrationTarget: PersistenceBackend {
     /// Durable upgrade whose session and target remain retained by this capability.
