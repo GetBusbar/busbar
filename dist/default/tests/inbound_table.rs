@@ -284,6 +284,10 @@ store: {{module: memory}}
 public_url: "http://127.0.0.1:{data_port}"
 limits:
   request_body_max_bytes: {BODY_CAP}
+# The data listener's `/metrics` is the Prometheus exporter's route, mounted only when one is
+# configured (operations.md, "Health & readiness"; so in v1.5.5 too).
+export:
+  metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}
 identity-providers:
   admin-tokens:
     module: admin-tokens
@@ -659,8 +663,10 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
     rows.sort_by_key(|row| row.path.ends_with("/restart"));
     let (mut answered, mut refused) = (0, 0);
     let mut failures: Vec<String> = Vec::new();
+    let mut budget = ConfigBudget::default();
     for row in &rows {
         let (addr, token) = if row.admin {
+            budget.spend(&row.method, &row.path);
             (&booted.admin, ADMIN_TOKEN)
         } else {
             (&booted.data, good.as_str())
