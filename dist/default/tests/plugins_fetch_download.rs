@@ -239,7 +239,12 @@ fn fetch_over(
 }
 
 /// [`fetch_over`] a registry the loopback judge admits.
-fn fetch_once(path: &str, response: &str, then: Then, cap: usize) -> (Result<Vec<u8>, String>, String) {
+fn fetch_once(
+    path: &str,
+    response: &str,
+    then: Then,
+    cap: usize,
+) -> (Result<Vec<u8>, String>, String) {
     fetch_over(&registry(Arc::new(loopback)), path, response, then, cap)
 }
 

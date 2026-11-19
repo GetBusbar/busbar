@@ -54,12 +54,7 @@ const SETTLE: Duration = Duration::from_millis(200);
 fn a_plaintext_registry_is_refused_on_every_host_and_nothing_is_dialled() {
     let table = table();
     let (port, seen) = counting_listener();
-    for host in [
-        "registry.example.com",
-        "10.0.0.7",
-        "127.0.0.1",
-        "localhost",
-    ] {
+    for host in ["registry.example.com", "10.0.0.7", "127.0.0.1", "localhost"] {
         let url = format!("http://{host}:{port}/releases/busbar-oracle-fetch-1.0.0.tar.gz");
         let err = download(&table, &url, &[], 4096)
             .expect_err("a plaintext registry is never downloaded from");

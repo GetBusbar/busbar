@@ -11,12 +11,7 @@ use super::{plugin_fetch_admits, plugin_fetch_status_refusal};
 /// the rule's own words; the same URLs over https are admitted.
 #[test]
 fn a_plaintext_plugins_fetch_url_is_refused_on_every_host_in_its_words() {
-    for host in [
-        "registry.example.com",
-        "10.0.0.7",
-        "127.0.0.1",
-        "localhost",
-    ] {
+    for host in ["registry.example.com", "10.0.0.7", "127.0.0.1", "localhost"] {
         let url = format!("http://{host}:8443/releases/busbar-oracle-fetch-1.0.0.tar.gz");
         assert_eq!(
             plugin_fetch_admits(&url, &[]),
