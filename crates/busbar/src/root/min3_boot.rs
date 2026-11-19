@@ -1029,9 +1029,8 @@ impl Steps<'_> {
         let tickets = ticket_store(&self.shared.records, self.core.signing_key.as_ref());
         let driver =
             driver.with_tickets(Arc::new(TicketGate::new(Arc::clone(&tickets), who.clone())));
-        let rt = tokio::runtime::Handle::current();
         // K9: the seat's egress walk and carrier over the boot's upstream table, under the instance's core-held
-        // `insecure_transport.accept`.
+        // `insecure_transport.accept`. Neither holds a runtime handle: a session awaits them on its own task.
         let seat = SeatShared {
             upstreams: self.seat.upstreams.clone(),
             catalogs: self.seat.catalogs.clone(),
@@ -1049,7 +1048,6 @@ impl Steps<'_> {
             &who,
             driver.caller().clone(),
             driver.port(),
-            rt.clone(),
         )
         .map_err(|why| OpenError::Unknown(format!("plane `{}`: {why}", spec.name)))?;
         // This cap bounds each validated configuration output, not aggregate process memory.
@@ -1097,9 +1095,8 @@ impl Steps<'_> {
             self.shared.push.clone(),
             Arc::clone(&self.shared.signals) as Arc<dyn SessionSignals>,
             who.clone(),
-            rt.clone(),
         )
-        .with_work(Arc::new(DurableDecider::new(work, recovers, rt)))
+        .with_work(Arc::new(DurableDecider::new(work, recovers)))
         .with_services(plane_services(&self.shared.observations, tickets, judge));
         self.seats
             .lock()

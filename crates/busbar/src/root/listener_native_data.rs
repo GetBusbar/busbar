@@ -339,7 +339,9 @@ impl http_body::Body for DataBody {
 type Head = (u16, HeaderMap, Arc<StorageCredit>);
 struct SinkState {
     head: Option<oneshot::Sender<Head>>,
-    body: Option<mpsc::Sender<BodyItem>>,
+    /// The bounded `mpsc(1)` to the response body, polled for room by the session's own task: at most one body
+    /// item in flight, and the session waits (it is not a thread that blocks) until the body has taken it.
+    body: Option<tokio_util::sync::PollSender<BodyItem>>,
     trailers: bool,
 }
 struct Sink {
@@ -381,76 +383,93 @@ fn fields(source: &StorageSource, fields: HeadFields) -> Result<(HeaderMap, Stor
     Ok((map, credit))
 }
 
+impl Sink {
+    /// One item, whose body room (if it needs any) is already reserved.
+    fn put(&self, state: &mut SinkState, item: ToClient) -> Result<(), ()> {
+        match item {
+            ToClient::Head {
+                status,
+                fields: values,
+            } => {
+                let (headers, credit) = fields(&self.source, values)?;
+                state
+                    .head
+                    .take()
+                    .ok_or(())?
+                    .send((status, headers, Arc::new(credit)))
+                    .map_err(|_| ())?;
+            }
+            ToClient::Body(bytes) => {
+                let credit = self.source.try_reserve(bytes.capacity()).map_err(|_| ())?;
+                let bytes = Bytes::from_owner(ChargedBytes {
+                    bytes,
+                    _credit: credit,
+                });
+                state
+                    .body
+                    .as_mut()
+                    .ok_or(())?
+                    .send_item(BodyItem {
+                        frame: Frame::data(bytes),
+                        trailers: None,
+                    })
+                    .map_err(|_| ())?;
+            }
+            ToClient::Trailers(values) => {
+                let (headers, credit) = fields(&self.source, values)?;
+                state.trailers = true;
+                state
+                    .body
+                    .as_mut()
+                    .ok_or(())?
+                    .send_item(BodyItem {
+                        frame: Frame::trailers(headers),
+                        trailers: Some(credit),
+                    })
+                    .map_err(|_| ())?;
+            }
+            ToClient::End => {
+                self.ended.store(true, std::sync::atomic::Ordering::Release);
+                state.body.take();
+            }
+            ToClient::Msg { .. } => return Err(()),
+        }
+        Ok(())
+    }
+}
+
 impl ClientSink for Sink {
-    fn items(&self, items: Vec<ToClient>) -> bool {
+    fn poll_items(&self, cx: &mut Context<'_>, items: &mut Vec<ToClient>) -> Poll<bool> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for item in items {
-            let result = (|| -> Result<(), ()> {
-                match item {
-                    ToClient::Head {
-                        status,
-                        fields: values,
-                    } => {
-                        let (headers, credit) = fields(&self.source, values)?;
-                        state
-                            .head
-                            .take()
-                            .ok_or(())?
-                            .send((status, headers, Arc::new(credit)))
-                            .map_err(|_| ())?;
-                    }
-                    ToClient::Body(bytes) => {
-                        if state.head.is_some() || state.trailers {
-                            return Err(());
-                        }
-                        let credit = self.source.try_reserve(bytes.capacity()).map_err(|_| ())?;
-                        let bytes = Bytes::from_owner(ChargedBytes {
-                            bytes,
-                            _credit: credit,
-                        });
-                        state
-                            .body
-                            .as_ref()
-                            .ok_or(())?
-                            .blocking_send(BodyItem {
-                                frame: Frame::data(bytes),
-                                trailers: None,
-                            })
-                            .map_err(|_| ())?;
-                    }
-                    ToClient::Trailers(values) => {
-                        if state.head.is_some() || state.trailers {
-                            return Err(());
-                        }
-                        let (headers, credit) = fields(&self.source, values)?;
-                        state.trailers = true;
-                        state
-                            .body
-                            .as_ref()
-                            .ok_or(())?
-                            .blocking_send(BodyItem {
-                                frame: Frame::trailers(headers),
-                                trailers: Some(credit),
-                            })
-                            .map_err(|_| ())?;
-                    }
-                    ToClient::End => {
-                        self.ended.store(true, std::sync::atomic::Ordering::Release);
-                        state.body.take();
-                    }
-                    ToClient::Msg { .. } => return Err(()),
+        while let Some(next) = items.first() {
+            if matches!(next, ToClient::Body(_) | ToClient::Trailers(_)) {
+                if state.head.is_some() || state.trailers {
+                    state.body.take();
+                    return Poll::Ready(false);
                 }
-                Ok(())
-            })();
-            if result.is_err() {
+                // The body's one slot: wait (this task's waker is kept) until the response body took the last item.
+                let Some(body) = state.body.as_mut() else {
+                    return Poll::Ready(false);
+                };
+                match body.poll_reserve(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Err(_)) => {
+                        state.body.take();
+                        return Poll::Ready(false);
+                    }
+                    Poll::Ready(Ok(())) => {}
+                }
+            }
+            let item = items.remove(0);
+            if self.put(&mut state, item).is_err() {
                 state.body.take();
-                return false;
+                return Poll::Ready(false);
             }
         }
-        true
+        Poll::Ready(true)
     }
 }
 
@@ -595,7 +614,7 @@ pub(super) async fn prepare(
             source: lease.storage().clone(),
             state: Mutex::new(SinkState {
                 head: Some(head_tx),
-                body: Some(body_tx),
+                body: Some(tokio_util::sync::PollSender::new(body_tx)),
                 trailers: false,
             }),
             ended: ended.clone(),
@@ -641,7 +660,7 @@ pub(super) async fn prepare(
             served
         });
         // The listener retains this future until completion. On cancellation we close the
-        // unpublished response receivers, then join the actual blocking Task before settling.
+        // unpublished response receivers, then join the session's task before settling.
         // Dropping a JoinHandle cannot establish that an upstream effect stopped.
         let head = tokio::select! {
             biased;
@@ -756,13 +775,14 @@ mod tests {
             source: source(),
             state: Mutex::new(SinkState {
                 head: Some(head_tx),
-                body: Some(body_tx),
+                body: Some(tokio_util::sync::PollSender::new(body_tx)),
                 trailers: false,
             }),
             ended: ended.clone(),
         };
-        let producer = tokio::task::spawn_blocking(move || {
-            sink.items(vec![
+        // The producer is a task on this same runtime: it waits for the body's one slot, it does not block.
+        let producer = tokio::spawn(async move {
+            let mut items = vec![
                 ToClient::Head {
                     status: 200,
                     fields: Vec::new(),
@@ -770,7 +790,8 @@ mod tests {
                 ToClient::Body(b"payload".to_vec()),
                 ToClient::Trailers(vec![(b"x-checksum".to_vec(), b"value".to_vec())]),
                 ToClient::End,
-            ])
+            ];
+            std::future::poll_fn(|cx| sink.poll_items(cx, &mut items)).await
         });
         assert_eq!(head_rx.await.unwrap().0, 200);
         let mut body = DataBody {

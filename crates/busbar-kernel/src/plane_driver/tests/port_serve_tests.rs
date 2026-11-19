@@ -18,15 +18,35 @@ use busbar_plugin_abi::plane::{
 use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_ports::{FactRef, PortError};
 
-use super::{run_session, Books, Drive, TicketGate, UnitBooks};
+use super::{Books, Drive, TicketGate, UnitBooks};
 use crate::plane_driver::cancel::{CancelBill, Checkpoint, MoneySeam};
 use crate::plane_driver::port_auth::TicketDoor;
 use crate::plane_driver::port_intents::{IntentHost, Looked, Namespace, Resolver, WorkOutcome};
 use crate::plane_driver::port_money::{AuditRow, PortMoney};
-use crate::plane_driver::port_session::{Calls, Effects, SessionError, ToClient};
+use crate::plane_driver::port_session::{finish, Calls, Effects, SessionError, ToClient};
 use crate::plane_driver::port_upstream::{
-    Candidate, Failure, Members, SendFailed, UpReply, UpSend,
+    Candidate, Failure, Members, SendFailed, UpOpen, UpReply, UpSend, Whole,
 };
+
+/// A session with no walk, driven to its end on a test runtime.
+fn run_session<K: Calls + ?Sized>(
+    calls: &K,
+    req: &PlaneIn<'_>,
+    body: &[u8],
+    drive: Drive<'_>,
+) -> Result<super::Ran, SessionError> {
+    finish(super::run_session(calls, req, body, drive))
+}
+
+/// A session over a walk and a carrier, driven to its end on a test runtime.
+fn run_walked<K: Calls + ?Sized, M: Members, S: UpSend>(
+    calls: &K,
+    req: &PlaneIn<'_>,
+    body: &[u8],
+    drive: Drive<'_, M, S>,
+) -> Result<super::Ran, SessionError> {
+    finish(super::run_session(calls, req, body, drive))
+}
 use crate::plane_driver::usage::{Ending, SessionUsage};
 use crate::plane_driver::AuditSink;
 use crate::plane_grants::{TicketAdmitted, TicketDenied, TicketMint, Tickets};
@@ -251,31 +271,45 @@ impl Books for Log {
 struct Store;
 
 impl IntentHost for Store {
-    fn lookup(
-        &self,
+    fn lookup<'a>(
+        &'a self,
         _: Scope,
         _: u32,
         _: u32,
-        key: &[u8],
-        looked: &mut Looked,
-    ) -> Result<(), RecordsDenied> {
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
         looked.push(&[key], b"v");
-        Ok(())
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn store<'a>(
+        &'a self,
+        _: Scope,
+        _: u32,
+        _: u64,
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn delete(&self, _: Scope, _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn delete<'a>(&'a self, _: Scope, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn commit(&self, _: Scope, _: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
-        Ok(CommitOutcome::Applied)
+    fn commit<'a>(
+        &'a self,
+        _: Scope,
+        _: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(CommitOutcome::Applied)))
     }
-    fn work<'a>(&self, _: &crate::plane_driver::port_intents::WorkIntent<'a>) -> WorkOutcome<'a> {
-        WorkOutcome::unsupported()
+    fn work<'a>(
+        &'a self,
+        _: &'a crate::plane_driver::port_intents::WorkIntent<'a>,
+    ) -> BoxFut<'a, WorkOutcome<'a>> {
+        Box::pin(std::future::ready(WorkOutcome::unsupported()))
     }
-    fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn push<'a>(&'a self, _: u64, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
     fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
 }
@@ -304,7 +338,7 @@ struct Walk {
 }
 
 impl Members for Walk {
-    fn next(&mut self, _: &crate::plane_driver::port_upstream::Wants) -> Option<Candidate> {
+    async fn next(&mut self, _: &crate::plane_driver::port_upstream::Wants) -> Option<Candidate> {
         self.queue.pop_front()
     }
     fn declined(&mut self, _: &Candidate) {}
@@ -322,16 +356,19 @@ impl Members for Walk {
 struct Far;
 
 impl UpSend for Far {
-    fn send(
-        &mut self,
-        _: &Candidate,
+    type Rest<'a> = Whole;
+
+    async fn open<'a>(
+        &'a mut self,
+        _: &'a Candidate,
         _: crate::plane_driver::port_session::UpExchange,
-    ) -> Result<UpReply, SendFailed> {
+    ) -> Result<UpOpen<Whole>, SendFailed> {
         Ok(UpReply {
             status: 200,
             headers: Vec::new(),
             body: b"ok".to_vec(),
-        })
+        }
+        .opened())
     }
 }
 
@@ -340,11 +377,11 @@ fn run(plane: &Plane, walk: Option<&mut Walk>, books: &Log) -> Result<super::Ran
     let resolver = Resolver::new(&store, Some([1; 32]));
     let refusals = CoreRefusals::new();
     let mut far = Far;
-    let (members, send): (Option<&mut dyn Members>, Option<&mut dyn UpSend>) = match walk {
+    let (members, send): (Option<&mut Walk>, Option<&mut Far>) = match walk {
         Some(w) => (Some(w), Some(&mut far)),
         None => (None, None),
     };
-    run_session(
+    run_walked(
         plane,
         &req(),
         b"{}",
@@ -1052,7 +1089,8 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
         },
         context: fixture.context.clone(),
     };
-    tokio::task::spawn_blocking(move || {
+    // The session runs on this test's own task, as a request's session does.
+    {
         let plane = Plane {
             request: vec![It::Emit, It::Respond(200), It::End],
             ..Plane::default()
@@ -1061,21 +1099,17 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
         let resolver = Resolver::new(&store, None);
         let refusals = CoreRefusals::new();
         let books = Log::default();
-        let result = run_session(
-            &plane,
-            &req(),
-            b"{}",
-            Drive {
-                resolver: &resolver,
-                members: None,
-                send: None,
-                dialect: "test",
-                refusals: &refusals,
-                effects: &effects,
-                books: &books,
-                carrier: None,
-            },
-        );
+        let drive: Drive<'_> = Drive {
+            resolver: &resolver,
+            members: None,
+            send: None,
+            dialect: "test",
+            refusals: &refusals,
+            effects: &effects,
+            books: &books,
+            carrier: None,
+        };
+        let result = super::run_session(&plane, &req(), b"{}", drive).await;
         match result {
             Err(SessionError::HookRefused(refusal)) => {
                 assert_eq!(refusal.status, 409);
@@ -1088,9 +1122,7 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
             1,
             "the refused unit is booked once"
         );
-    })
-    .await
-    .unwrap();
+    }
     let signals = tokio::time::timeout(std::time::Duration::from_secs(1), received.recv())
         .await
         .expect("a gate refusal fires its response tap")
@@ -1265,7 +1297,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
             self.constrained = Some(constraint);
             true
         }
-        fn next(&mut self, _: &Wants) -> Option<Candidate> {
+        async fn next(&mut self, _: &Wants) -> Option<Candidate> {
             self.queue.pop_front()
         }
         fn declined(&mut self, _: &Candidate) {}
@@ -1333,7 +1365,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
                     ..Ranked::default()
                 };
                 let mut far = Far;
-                let result = run_session(
+                let result = run_walked(
                     &plane,
                     &req(),
                     b"{}",

@@ -494,7 +494,6 @@ async fn catalog_composition_keeps_model_definitions_out_of_channel_registration
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
     )
     .unwrap();
     let registrations: Arc<dyn Upstreams> = shared.upstreams["mcp"].clone();
@@ -533,7 +532,6 @@ async fn seat_request_inventory_retains_the_actual_candidate_catalog() {
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
     )
     .unwrap();
     drop(shared);
@@ -563,8 +561,7 @@ async fn catalog_selector_cannot_alias_the_registration_request_domain() {
         Accept::default(),
         &who(7),
         caller(),
-        Arc::new(Quiet),
-        Handle::current()
+        Arc::new(Quiet)
     )
     .is_err());
     assert!(
@@ -648,7 +645,6 @@ async fn a_seat_with_configured_upstreams_is_composed_with_its_walk_and_its_carr
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
     )
     .expect("the seat composes");
     assert!(wiring.upstream.is_some(), "a FORWARD has a walk to run");
@@ -715,7 +711,6 @@ async fn a_seat_with_no_connection_table_still_gets_its_carrier_and_walks_nothin
         &who(3),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
     )
     .expect("the seat composes");
     assert!(wiring.upstream.is_none());
@@ -891,8 +886,7 @@ async fn a_seat_without_its_retained_channel_account_refuses_before_declaring_ro
         Accept::default(),
         &who(7),
         caller(),
-        Arc::new(Quiet),
-        Handle::current()
+        Arc::new(Quiet)
     )
     .is_err());
     assert!(table.declared.lock().unwrap().is_empty());
@@ -908,7 +902,6 @@ async fn the_seat_exposes_the_same_instance_account_to_original_unit_admission()
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
     )
     .unwrap();
     let budget = &shared.channel_budgets["mcp"];

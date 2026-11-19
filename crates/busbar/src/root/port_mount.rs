@@ -267,6 +267,17 @@ struct Pipe {
 }
 
 impl ClientSink for Pipe {
+    /// The body channel has no bound here, so items are taken at once and nothing waits.
+    fn poll_items(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        items: &mut Vec<ToClient>,
+    ) -> std::task::Poll<bool> {
+        std::task::Poll::Ready(self.items(std::mem::take(items)))
+    }
+}
+
+impl Pipe {
     fn items(&self, items: Vec<ToClient>) -> bool {
         for item in items {
             match item {
@@ -547,6 +558,16 @@ struct Counted {
 }
 
 impl ClientSink for Counted {
+    fn poll_items(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        items: &mut Vec<ToClient>,
+    ) -> std::task::Poll<bool> {
+        std::task::Poll::Ready(self.items(std::mem::take(items)))
+    }
+}
+
+impl Counted {
     fn items(&self, items: Vec<ToClient>) -> bool {
         for item in &items {
             if let ToClient::Head { status, .. } = item {

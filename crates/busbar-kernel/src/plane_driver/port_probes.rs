@@ -24,8 +24,10 @@ pub trait ProbeFar: Send + Sync + 'static {
     fn suppressing(&self, member: usize) -> bool;
     /// The member as the plane's `Target` states it; `None` = no such member.
     fn candidate(&self, member: usize) -> Option<Candidate>;
+    /// The carrier a probe exchange uses.
+    type Sender: UpSend;
     /// The carrier for one probe exchange to this member; `None` = it cannot be reached at all.
-    fn sender(&self, member: usize, timeout: Duration) -> Option<Box<dyn UpSend + Send>>;
+    fn sender(&self, member: usize, timeout: Duration) -> Option<Self::Sender>;
     /// What the probe found: a breaker input.
     fn reported(&self, member: usize, outcome: ProbeOutcome);
 }
@@ -83,25 +85,26 @@ impl<K: Calls + ?Sized + Send + Sync + 'static, F: ProbeFar> ProbeTarget for Por
         let Some(mut send) = self.far.sender(member, timeout) else {
             return;
         };
-        let calls = Arc::clone(&self.calls);
-        let effects = Arc::clone(&self.effects);
-        let (dialect, model) = (self.dialect.clone(), self.model.clone());
-        // The plane's calls are synchronous: the probe runs off the executor.
-        let ran = tokio::task::spawn_blocking(move || {
-            probe_member(&*calls, &candidate, &dialect, &model, &mut *send, &*effects)
-        })
+        // The plane's calls are direct entries on this task; the far end is awaited between them.
+        let ran = probe_member(
+            &*self.calls,
+            &candidate,
+            &self.dialect,
+            &self.model,
+            &mut send,
+            &*self.effects,
+        )
         .await;
         match ran {
-            Ok(Ok(ProbeOutcome::Declined)) => {}
-            Ok(Ok(outcome)) => self.far.reported(member, outcome),
-            Ok(Err(error)) => {
+            Ok(ProbeOutcome::Declined) => {}
+            Ok(outcome) => self.far.reported(member, outcome),
+            Err(error) => {
                 tracing::warn!(?error, member, "a plane probe could not run");
                 if let Some(port) = &self.charge {
                     charge(&**port, &error);
                 }
                 self.far.reported(member, ProbeOutcome::Unhealthy);
             }
-            Err(_) => tracing::warn!(member, "a plane probe was cancelled"),
         }
     }
 }

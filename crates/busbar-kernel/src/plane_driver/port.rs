@@ -32,9 +32,8 @@ use super::port_egress::{PortUpstream, SessionFacts};
 use super::port_intents::{IntentHost, Namespace, Resolver};
 use super::port_money::PortMoney;
 use super::port_routes::{admin_hydrate, recovery_request, recovery_route, Mounted, PortRoutes};
-use super::port_serve::{run_session, AuditOnly, Books, Drive, Ran, UnitBooks};
+use super::port_serve::{AuditOnly, Books, Ran, SessionRun, UnitBooks};
 use super::port_session::{ClientSink, Effects, SessionError, ToClient};
-use super::port_upstream::{Members, UpSend};
 
 use super::AuditSink;
 use crate::push::StorePushQueue;
@@ -310,8 +309,8 @@ impl PortDriver {
     }
 
     /// Serves one request of a mounted route: admission (§12.11, the call site of `admit` for HTTP), then the
-    /// whole session ([`run_session`]) with its books. The plane's calls are synchronous, so they run off the
-    /// executor.
+    /// whole session ([`run_session`]) with its books, on the caller's own task. The plane's calls are direct
+    /// entries made between the session's awaits; nothing is handed to another thread.
     ///
     /// # Errors
     /// [`ServeError`]; a refusal is not an error, it is [`Served::Refused`].
@@ -434,45 +433,41 @@ impl PortDriver {
             (_, Principal::Verified(subject)) => Some(subject),
             _ => None,
         };
-        let port = Arc::clone(&self.port);
-        let refusals = Arc::clone(&self.refusals);
-        let audit = Arc::clone(&self.audit);
-        let services = Arc::clone(&self.services);
-        let classes = Arc::clone(&self.classes);
-        let owner = self.caller.incarnation().clone();
-        tokio::task::spawn_blocking(move || {
-            // Capture the count owner itself, including when the HTTP body is empty.
-            // Cancelling the caller's await does not cancel an executing blocking call.
-            let _request = request;
-            serve_blocking(
-                &*port,
-                &*refusals,
-                &*audit,
-                LineEffects {
-                    carriers: services.line_carriers(),
-                    owner: &owner,
-                },
-                Serving {
-                    route,
-                    admission,
-                    http,
-                    principal,
-                    unit,
-                    upstream,
-                    client,
-                    carrier,
-                    intents,
-                    models,
-                    invocation,
-                    pending_admission,
-                    hook_binder,
-                    classes,
-                    now_s: arrived,
-                },
-            )
-        })
-        .await
-        .map_err(|_| ServeError::Cancelled)?
+        // The count owner is held for the whole session, including when the HTTP body is empty; dropping this
+        // future between two crossings cancels the plugin session and releases it at once.
+        let _request = request;
+        // A panic in the session (core's side of a crossing; a plugin's own panic is a FAULT from busbar-ffi) ends
+        // this one request as `Cancelled`, as it did when the session ran on a blocking thread, and the core's
+        // task goes on: one `catch_unwind` frame per poll, no allocation.
+        let session = serve_session(
+            &*self.port,
+            &*self.refusals,
+            &*self.audit,
+            LineEffects {
+                carriers: self.services.line_carriers(),
+                owner: self.caller.incarnation(),
+            },
+            Serving {
+                route,
+                admission,
+                http,
+                principal,
+                unit,
+                upstream,
+                client,
+                carrier,
+                intents,
+                models,
+                invocation,
+                pending_admission,
+                hook_binder,
+                classes: Arc::clone(&self.classes),
+                now_s: arrived,
+            },
+        );
+        futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(session))
+            .await
+            .map_err(|_| ServeError::Cancelled)?
     }
 
     /// Render a core refusal in this exact admitted route's dialect without opening a unit.
@@ -706,20 +701,20 @@ where
     build
 }
 
-/// What a seat's core-built sessions (a line, a recovery poll) run against, owned so they can move onto a blocking
-/// thread: the driver's plane and books, and the seat's intents, walk and carrier.
-struct Seated {
-    port: Arc<dyn PlanePort>,
-    refusals: Arc<dyn RefusalMap>,
-    audit: Arc<dyn AuditSink>,
-    services: Arc<KernelServices>,
-    owner: Incarnation,
-    intents: Arc<dyn IntentHost>,
-    upstream: Option<Arc<dyn PortUpstream>>,
-    carrier: Option<Arc<PortCarrier>>,
+/// What a seat's core-built sessions (a line, a recovery poll) run against, borrowed from the seat for the session:
+/// the driver's plane and books, and the seat's intents, walk and carrier.
+struct Seated<'s> {
+    port: &'s dyn PlanePort,
+    refusals: &'s dyn RefusalMap,
+    audit: &'s dyn AuditSink,
+    services: &'s KernelServices,
+    owner: &'s Incarnation,
+    intents: &'s dyn IntentHost,
+    upstream: Option<&'s Arc<dyn PortUpstream>>,
+    carrier: Option<&'s Arc<PortCarrier>>,
 }
 
-impl Seated {
+impl Seated<'_> {
     /// A session's effects: emits to the line carriers; no client sink (the items are collected).
     fn effects(&self) -> ServeEffects<'_> {
         ServeEffects {
@@ -727,7 +722,7 @@ impl Seated {
             admission: None,
             lines: LineEffects {
                 carriers: self.services.line_carriers(),
-                owner: &self.owner,
+                owner: self.owner,
             },
             client: None,
             invocation: None,
@@ -738,13 +733,13 @@ impl Seated {
     /// What a session of this seat is driven against, with `effects`.
     fn driving<'a>(&'a self, effects: &'a ServeEffects<'a>) -> Driving<'a> {
         Driving {
-            port: &*self.port,
-            refusals: &*self.refusals,
-            audit: &*self.audit,
+            port: self.port,
+            refusals: self.refusals,
+            audit: self.audit,
             effects,
-            intents: &*self.intents,
-            upstream: self.upstream.as_ref(),
-            carrier: self.carrier.as_ref(),
+            intents: self.intents,
+            upstream: self.upstream,
+            carrier: self.carrier,
         }
     }
 }
@@ -758,23 +753,23 @@ pub enum RecoverRefused {
 }
 
 impl PortSeat {
-    fn seated(&self) -> Seated {
+    fn seated(&self) -> Seated<'_> {
         Seated {
-            port: Arc::clone(&self.driver.port),
-            refusals: Arc::clone(&self.driver.refusals),
-            audit: Arc::clone(&self.driver.audit),
-            services: Arc::clone(&self.driver.services),
-            owner: self.driver.caller.incarnation().clone(),
-            intents: Arc::clone(&self.intents),
-            upstream: self.upstream.clone(),
-            carrier: self.carrier.clone(),
+            port: &*self.driver.port,
+            refusals: &*self.driver.refusals,
+            audit: &*self.driver.audit,
+            services: &self.driver.services,
+            owner: self.driver.caller.incarnation(),
+            intents: &*self.intents,
+            upstream: self.upstream.as_ref(),
+            carrier: self.carrier.as_ref(),
         }
     }
 
     /// Serves one line of `carrier` (IF §12.23 rule 3): admitted as the carrier's principal, then driven like any
     /// other session (FORWARD over this seat's walk, intents, upstream exchanges, channels, `end`). The response line,
     /// without its terminator, is the to-client BODY bytes, empty when the plane wrote none; EMITs went to their
-    /// carriers before it. The plane's calls are synchronous, so they run off the executor.
+    /// carriers before it. The plane's calls are direct entries on this task.
     ///
     /// # Errors
     /// [`LineRefused`]: no line route, a broken session, or a cancelled task.
@@ -804,22 +799,17 @@ impl PortSeat {
         // Caller-scoped records, WORK and audit rows take a verified principal only.
         let principal = from.authenticated.then(|| Arc::clone(&from.principal));
         let seated = self.seated();
-        tokio::task::spawn_blocking(move || {
-            // Capture the complete owner, including custody. Capturing only `line.bytes`
-            // would let cancellation of the waiting caller retire a still-running input.
-            let input = line;
-            line_blocking(
-                &seated,
-                &route,
-                admission,
-                principal.as_deref(),
-                carrier.get(),
-                request_id,
-                &input.bytes,
-            )
-        })
+        // The complete input owner, custody included, is held for the whole session.
+        line_session(
+            &seated,
+            &route,
+            admission,
+            principal.as_deref(),
+            carrier.get(),
+            request_id,
+            &line.bytes,
+        )
         .await
-        .map_err(|_| LineRefused::Cancelled)?
     }
 
     /// Delivers one durable-work poll (IF §12.24 step 3): `recovery_request` on the ROUTE_RECOVERY route the work's
@@ -848,22 +838,24 @@ impl PortSeat {
             )));
         }
         let reference = work.reference();
-        let target = Box::<str>::from(work.target());
-        let subject = Box::<str>::from(subject);
         let seated = self.seated();
-        tokio::task::spawn_blocking(move || {
-            recover_blocking(&seated, &route, &reference, &subject, &target, request_id)
-        })
+        recover_session(
+            &seated,
+            &route,
+            &reference,
+            subject,
+            work.target(),
+            request_id,
+        )
         .await
-        .map_err(|_| RecoverRefused::Session(ServeError::Cancelled))?
         .map_err(RecoverRefused::Session)
     }
 }
 
-/// One line on a blocking thread: a refused admission is rendered by the plane (`render(RENDER_REFUSAL)`), else the
+/// One line on the caller's task: a refused admission is rendered by the plane (`render(RENDER_REFUSAL)`), else the
 /// whole session; either way the body is the response line.
-fn line_blocking(
-    seated: &Seated,
+async fn line_session(
+    seated: &Seated<'_>,
     route: &Mounted,
     admission: Result<Admitted, ClientRefusal>,
     principal: Option<&str>,
@@ -899,14 +891,15 @@ fn line_blocking(
         admitted.identity_records(),
         admitted.ticket_record(),
     );
-    let served = drive_blocking(
+    let served = drive_session(
         &seated.driving(&effects),
         route.route,
         &req,
         line,
         principal,
         None,
-    );
+    )
+    .await;
     match served {
         Ok(Served::Ran(ran)) => line_of(ran.client),
         Ok(Served::Refused(refused)) => line_of(refused.items),
@@ -917,9 +910,9 @@ fn line_blocking(
     }
 }
 
-/// One recovery poll on a blocking thread. What the plane answers the (absent) client is dropped.
-fn recover_blocking(
-    seated: &Seated,
+/// One recovery poll on the caller's task. What the plane answers the (absent) client is dropped.
+async fn recover_session(
+    seated: &Seated<'_>,
     route: &Mounted,
     work: &str,
     subject: &str,
@@ -929,7 +922,7 @@ fn recover_blocking(
     let effects = seated.effects();
     let identity = busbar_ports::auth::Identity::of_subject(subject);
     let req = recovery_request(route, work, identity.identity_records(), target, request_id);
-    drive_blocking(
+    drive_session(
         &seated.driving(&effects),
         route.route,
         &req,
@@ -937,6 +930,7 @@ fn recover_blocking(
         Some(subject),
         None,
     )
+    .await
     .map(|_| ())
 }
 
@@ -1061,7 +1055,7 @@ pub struct Unit {
 
 /// What the route layer hands [`PortDriver::serve`] beside the request.
 pub struct ServeIn<'a> {
-    /// The original process admission, retained through the blocking call even for an empty body.
+    /// The original process admission, retained through the whole session even for an empty body.
     pub request: crate::limits::process_admission::RequestLease,
     /// The exact pre-money allocation and one callback; mutually exclusive with `unit`.
     pub admission: Option<Arc<super::port_admission::Pending>>,
@@ -1113,7 +1107,7 @@ impl NativeServed {
     }
 }
 
-/// Minted only by the original native serving call after its blocking Task has joined.
+/// Minted only by the original native serving call after its session has ended.
 pub struct NativeTaskRetirement {
     pending: Arc<crate::auth::native_data::NativeDataPending>,
     decision: Option<ClientRefusal>,
@@ -1159,13 +1153,13 @@ pub enum ServeError {
     Cancelled,
 }
 
-/// One request, on a blocking thread: the admission's refusal, or the session.
+/// One request: the admission's refusal, or the session.
 enum ServingAdmission {
     Credentials(Result<Admitted, ClientRefusal>),
     Data(Arc<crate::auth::native_data::NativeDataPending>),
 }
 
-/// One request's owned inputs, moved onto its blocking thread with it.
+/// One request's owned inputs, held by its session.
 struct Serving {
     route: Arc<Mounted>,
     admission: ServingAdmission,
@@ -1185,7 +1179,7 @@ struct Serving {
     now_s: u64,
 }
 
-fn serve_blocking(
+async fn serve_session(
     port: &dyn PlanePort,
     refusals: &dyn RefusalMap,
     audit: &dyn AuditSink,
@@ -1313,7 +1307,7 @@ fn serve_blocking(
             Err(error) => Err(ServeError::Session(error)),
         };
     }
-    drive_blocking(
+    drive_session(
         &Driving {
             port,
             refusals,
@@ -1329,6 +1323,7 @@ fn serve_blocking(
         principal.as_ref().map(Subject::as_str),
         unit.as_ref(),
     )
+    .await
 }
 
 /// What a session is driven against: the plane, its refusal map and audit sink, the session's effects, and the
@@ -1344,11 +1339,11 @@ struct Driving<'a> {
     carrier: Option<&'a Arc<PortCarrier>>,
 }
 
-/// One admitted request's whole session, on a blocking thread, for every origin (a mounted route, a line, a
+/// One admitted request's whole session, on the caller's task, for every origin (a mounted route, a line, a
 /// recovery poll): intents resolved under the verified `principal`, a FORWARD walked over `upstream`, channels over
 /// `carrier`, the books (`unit`, else audit rows only). A request the plane refused or failed is rendered by the
 /// plane; a broken session charges the image.
-fn drive_blocking(
+async fn drive_session(
     on: &Driving<'_>,
     route: u32,
     req: &PlaneIn<'_>,
@@ -1400,24 +1395,16 @@ fn drive_blocking(
             (Some(books), None) => books,
             (None, None) => &audit_books,
         };
-        let go = |members: Option<&mut dyn Members>, send: Option<&mut dyn UpSend>| {
-            run_session(
-                port,
-                req,
-                body,
-                Drive {
-                    resolver: &resolver,
-                    // The casts shorten each trait object's own lifetime bound to the borrow (the one `Drive` lifetime):
-                    // behind `&mut` the two cannot otherwise differ, and the carrier borrow below pins that lifetime.
-                    members: members.map(|m| m as &mut dyn Members),
-                    send: send.map(|s| s as &mut dyn UpSend),
-                    dialect,
-                    refusals,
-                    effects,
-                    books,
-                    carrier: session.as_ref(),
-                },
-            )
+        let run = SessionRun {
+            port,
+            req,
+            body,
+            resolver: &resolver,
+            dialect,
+            refusals,
+            effects,
+            books,
+            carrier: session.as_ref(),
         };
         match upstream {
             Some(upstream) => {
@@ -1432,13 +1419,9 @@ fn drive_blocking(
                         .unwrap_or(busbar_contract::UnitKey::new(0)),
                     pending: effects.admission.clone(),
                 };
-                let mut ran = None;
-                upstream.walk(facts, &mut |members, send| {
-                    ran = Some(go(Some(members), Some(send)));
-                });
-                ran.unwrap_or(Err(SessionError::NotDriven))
+                upstream.walk(facts, run).await
             }
-            None => go(None, None),
+            None => run.alone().await,
         }
     };
     match ran {
