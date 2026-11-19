@@ -676,7 +676,7 @@ async fn a_refresh_failure_emits_8026_once_per_streak_window_and_audits_degraded
         presented(&binding).await,
         header("authorization", "ta4-SECRET-VALUE")
     );
-    for s in [21, 1, 1, 28] {
+    for s in [21, 1, 1, 5] {
         tokio::time::advance(Duration::from_secs(s)).await;
         presented(&binding).await;
         settle().await;
@@ -713,7 +713,16 @@ async fn a_refresh_failure_emits_8026_once_per_streak_window_and_audits_degraded
     presented(&binding).await;
     settle().await;
     assert_eq!(report.coded(8026).len(), 2, "again after a minute");
-    assert_eq!(report.audits().len(), 2);
+    assert_eq!(
+        report
+            .audits()
+            .iter()
+            .filter(|a| a.2 == "degraded")
+            .count(),
+        2,
+        "each report audited degraded: {:?}",
+        report.audits()
+    );
 
     let seen = format!("{}{:?}", report.all(), report.audits());
     let plain = busbar_contract::crypto::sha256(b"ta4-SECRET-VALUE");

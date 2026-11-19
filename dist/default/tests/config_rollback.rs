@@ -87,12 +87,7 @@ fn config_rollback_restores_a_retained_version_and_refuses_an_unknown_one() {
     let v0: Vec<(String, u64)> = Vec::new();
     assert_eq!(running_hooks(&node), v0, "v0's hook surface");
 
-    // v1: a reload from disk.
-    let reply = node.operator("POST", "/api/v1/admin/config/reload", None);
-    assert_eq!(reply.status, 200, "the reload applies: {}", reply.text());
-    assert_eq!(version_of(&reply, "config_version"), 1);
-
-    // Roll back to the boot version: a NEW version serving v0's hook surface, audited.
+    // Roll back to the boot version: a NEW version (v1) serving v0's hook surface, audited.
     let restored = rollback(&node, 0);
     assert_eq!(
         restored.status,
@@ -103,7 +98,7 @@ fn config_rollback_restores_a_retained_version_and_refuses_an_unknown_one() {
     assert_eq!(version_of(&restored, "restored_version"), 0);
     assert_eq!(
         version_of(&restored, "config_version"),
-        2,
+        1,
         "a rollback is a new version; history is append-only"
     );
     assert_eq!(

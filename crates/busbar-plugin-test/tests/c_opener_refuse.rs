@@ -587,7 +587,8 @@ mod fixed_piece {
                 adapter
                     .channel(&mut session, &target, &mut |_| delivered += 1)
                     .is_ok(),
-                ok
+                ok,
+                "facts {facts:#x} attempt {attempt}"
             );
             assert_eq!(fixture::channels(), calls);
             assert_eq!(delivered, usize::from(ok));
