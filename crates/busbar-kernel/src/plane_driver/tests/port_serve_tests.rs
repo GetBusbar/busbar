@@ -346,9 +346,21 @@ struct Walk {
     failed: usize,
     /// The Retry-After the walk states once it is exhausted.
     wait: Option<u32>,
+    /// The walk an admitted request resolves against (the egress walk's own, made for its unit).
+    request: Option<crate::plane_driver::request_admission::RequestWalk>,
 }
 
 impl Members for Walk {
+    fn request_walk(&self) -> Option<&crate::plane_driver::request_admission::RequestWalk> {
+        self.request.as_ref()
+    }
+    fn select_request(
+        &mut self,
+        receipt: &crate::plane_driver::request_admission::RequestPoolReceipt,
+        _: &crate::plane_driver::port_upstream::Wants,
+    ) -> bool {
+        self.request.is_some() && receipt.walk_key().is_some()
+    }
     async fn next(&mut self, _: &crate::plane_driver::port_upstream::Wants) -> Option<Candidate> {
         self.queue.pop_front()
     }
@@ -1472,7 +1484,7 @@ fn an_upgrade_whose_money_is_refused_is_answered_before_any_dial_and_any_101() {
     use crate::plane_driver::port_admission::Pending;
     use crate::plane_driver::port_duplex::{ClientEvent, ClientMessages};
     use crate::plane_driver::port_session::ClientSink;
-    use crate::plane_driver::request_admission::{RequestAllocation, RequestRoutes};
+    use crate::plane_driver::request_admission::{RequestAllocation, RequestRoutes, RequestWalk};
     use crate::refusal::RefusalMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Poll};
@@ -1506,6 +1518,42 @@ fn an_upgrade_whose_money_is_refused_is_answered_before_any_dial_and_any_101() {
         41,
     )
     .unwrap();
+    // The walk the seat's egress makes for this unit, and a catalog in which the model the plane
+    // wants ("m") is a walk the key may take: the walk resolves, so the money is what refuses.
+    let request_walk = RequestWalk::new(&context).unwrap();
+    let routes = {
+        use crate::config::{self, providers, Grammar};
+        use crate::plane_driver::provider_catalog::ProviderPlane;
+        let grammar = Grammar::empty();
+        let definitions = providers::catalog_from_str(
+            "provider:\n  protocol: wire\n  base_url: https://upstream.example\n",
+            &grammar,
+        )
+        .unwrap();
+        let deployment = config::deploy_from_yaml_str(
+            "providers:\n  provider: {api_key: none}\nmodels:\n  m:\n    provider: provider\n    upstream_model: wire-m\n",
+            &grammar,
+        )
+        .unwrap();
+        let mut resolved = config::resolve_with_provider_planes(
+            &deployment,
+            &definitions,
+            &[ProviderPlane {
+                instance: "seat".into(),
+                image: "image".into(),
+                dialects: ["wire".into()].into(),
+                schema: r#"{"type":"object","additionalProperties":false}"#.into(),
+            }],
+        )
+        .unwrap();
+        RequestRoutes::new(
+            "seat",
+            None,
+            Some(Arc::new(resolved.catalogs.remove("seat").unwrap())),
+            None,
+        )
+        .unwrap()
+    };
     let allocation = RequestAllocation::new(
         context,
         Arc::new(crate::cost::CostModel::resolve_parts(
@@ -1520,9 +1568,10 @@ fn an_upgrade_whose_money_is_refused_is_answered_before_any_dial_and_any_101() {
     let count = asked.clone();
     let pending = Pending::new(
         allocation,
-        Arc::new(RequestRoutes::new("seat", None, None, None).unwrap()),
+        Arc::new(routes),
         None,
-        move |_receipt| {
+        move |receipt| {
+            assert!(receipt.walk_key().is_some(), "the walk resolved before money");
             count.fetch_add(1, Ordering::SeqCst);
             // The key's budget is spent.
             Err(CoreRefusals::new().for_core(0, busbar_plugin_abi::fail::refused::R_RATE_LIMITED))
@@ -1587,6 +1636,7 @@ fn an_upgrade_whose_money_is_refused_is_answered_before_any_dial_and_any_101() {
     let effects = Upgrading(&pending, &side);
     let mut walk = Walk {
         queue: [candidate()].into(),
+        request: Some(request_walk),
         ..Walk::default()
     };
     let mut far = Dialled(0);

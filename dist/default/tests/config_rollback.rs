@@ -109,7 +109,11 @@ fn version_of(reply: &e2e_support::Reply, field: &str) -> u64 {
 fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_targets() {
     let boot_tail = format!("{}{}", hooks(&["first"]), pools(None));
     let node = Deployment::new("config-rollback")
-        .provider("mock", "openai", &format!("http://127.0.0.1:{}", closed_port()))
+        .provider(
+            "mock",
+            "openai",
+            &format!("http://127.0.0.1:{}", closed_port()),
+        )
         .section("models:\n  test-model:\n    provider: mock\n")
         .plugin("hook", WEBREQUEST_HOOK_IMAGE)
         .section(&boot_tail)
@@ -160,7 +164,11 @@ fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_ta
         unknown.text()
     );
     assert_eq!(rollback_audit(&node, "config:v424242"), ["rejected"]);
-    assert_eq!(running_hooks(&node), ["first"], "a refused rollback changes nothing");
+    assert_eq!(
+        running_hooks(&node),
+        ["first"],
+        "a refused rollback changes nothing"
+    );
 
     // v3: the disk config attaches `second` to the pool. Restoring v2's surface (`first` only)
     // would leave the pool naming a hook that no longer exists: re-validation refuses it.

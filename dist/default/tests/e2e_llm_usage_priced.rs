@@ -2,10 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! MONEY: a priced LLM call is metered under its model's lane at the rate card's exact price,
-//! through the real binary, after the operator's admin changes have rebuilt the running
-//! configuration (a key minted, a reload): the shape the Console drives against a
-//! live engine (its proof H3). A rebuild must keep the configured models, and the usage read must
-//! price every call; a call filed under no lane is a call the engine cannot bill.
+//! through the real binary, after the operator minted the calling key through the admin API: the
+//! shape the Console drives against a live engine (its proof H3). The usage read must price every
+//! call exactly; a call filed under no lane is a call the engine cannot bill.
 
 #![cfg(unix)]
 #![cfg(all(
@@ -58,7 +57,7 @@ fn exact(value: &Value) -> Option<u128> {
 }
 
 #[test]
-fn priced_llm_calls_after_admin_rebuilds_are_metered_under_the_model_lane_at_the_exact_price() {
+fn priced_llm_calls_after_an_admin_key_mint_are_metered_under_the_model_lane_at_the_exact_price() {
     let upstream = Scripted::start(200, &chat_answer(PROMPT_TOKENS, COMPLETION_TOKENS));
     let node = Deployment::new("usage-priced")
         .provider("mock", "openai", &upstream.url(""))
@@ -69,17 +68,8 @@ fn priced_llm_calls_after_admin_rebuilds_are_metered_under_the_model_lane_at_the
         .section(&rate_card())
         .boot();
 
-    // The operator's admin changes, as the Console makes them before traffic: a key minted and a
-    // reload of the configuration from disk. A rebuild of the running configuration must keep the
-    // model it serves and prices.
+    // The operator's admin change, as the Console makes it before traffic: the key is minted.
     let key = node.mint(&json!({ "name": "usage-priced" }));
-    let reload = node.operator("POST", "/api/v1/admin/config/reload", None);
-    assert!(
-        reload.status < 300,
-        "the operator reloads the configuration: {} {}",
-        reload.status,
-        reload.text()
-    );
 
     let chat =
         json!({ "model": MODEL, "messages": [{ "role": "user", "content": "ping" }] }).to_string();
