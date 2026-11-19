@@ -309,6 +309,10 @@ pub const CAUSE_CREDENTIAL_UNAVAILABLE: u64 = 6;
 pub const CAUSE_AUTH_REFUSED: u64 = 7;
 /// `ServiceOut::value` on a failure: the request's auth call failed; nothing was sent.
 pub const CAUSE_AUTH_FAILED: u64 = 8;
+/// On a failure: the operator's egress proxy failed or refused the tunnel (its host unreachable, its
+/// own TLS, its answer to CONNECT). The proxy's, never a provider's: no breaker is charged for it.
+/// Core's own numbering, never lowered to the plugin interface.
+pub const CAUSE_PROXY: u64 = 9;
 
 /// The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`].
 /// `REJECT_ENDPOINT` answers the stream on the next endpoint, or FAILED when none is left.

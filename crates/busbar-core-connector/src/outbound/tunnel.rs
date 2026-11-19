@@ -40,8 +40,8 @@ use busbar_contract::secure::SecureVec;
 use crate::proxy_route::{ProxyChoice, ProxyHop};
 
 /// The cause stage of a failure at the operator's proxy, in the connection table's own numbering
-/// (after `CAUSE_FRAMER = 5`). Not part of the plugin interface.
-pub(crate) const CAUSE_PROXY: u64 = 6;
+/// (`busbar_contract::conn::codes`). Not part of the plugin interface.
+pub(crate) use busbar_contract::conn::codes::CAUSE_PROXY;
 
 /// The audit verdict of a dial the proxy refused or failed.
 pub(crate) const VERDICT_PROXY: &str = "proxy";
