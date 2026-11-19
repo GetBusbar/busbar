@@ -769,9 +769,10 @@ busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", 
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "06a8ade187e1cd961b348d45face2f2b2a1add27" }
 # THE HTTP TRANSPORT (kind: transport), a MIN-3 image pulled at a pinned rev; the logic crate whose `PLUGIN` header
-# the root admits. The pin is house/boot c3ead54: dev 693464d plus four framing fixes (house/lean 3938603) and the
-# `listen` and `admin_listen` slot declarations (D_LISTENER_SLOT).
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "c3ead54ee453e1cfc1569a933e8acb47abce5172" }
+# the root admits. The pin is house/boot-provenance cefd6aa: house/boot c3ead54 (dev 693464d, four framing fixes,
+# the `listen` and `admin_listen` slot declarations) plus delivery provenance (FB_WIRE_PROVENANCE: every accepted
+# byte a WIRE_PART, each response's terminal unit held until E_RELEASE), which the native listener requires.
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "cefd6aa597877144ffd2e69142f0d0c020524af1" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
 busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "7ba0ce7e4db6073ffa1126265174f5046bda92c7" }
