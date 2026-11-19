@@ -59,6 +59,13 @@ struct LaneNames {
     consulted: u64,
 }
 
+/// The op class of the one aggregate line per (listener, reason) of refused requests that had no
+/// identity, per flush interval (design 2, A5).
+pub(crate) const REFUSALS_OP_CLASS: &str = "refusals";
+
+/// The op class of the line a metered response waits for under `advanced.wait_for_commit`.
+pub(crate) const RESPONSE_OP_CLASS: &str = "response";
+
 struct ResponseIntentOwner {
     store: Arc<busbar_kernel::persistence::facade::CoreStore>,
     service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
@@ -163,6 +170,9 @@ pub(crate) struct Node {
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
     response_intent: std::sync::OnceLock<ResponseIntentOwner>,
 
+    /// The cores' audit state and the flusher that pulls it (design 2, A3).
+    cores: crate::root::durability::core_audit::CoreFlusher,
+
     /// The node the bound book seals as: the node half of every unit id this node stamps.
     sealing: std::sync::OnceLock<crate::root::durability::LineIdentity>,
 
@@ -196,6 +206,7 @@ impl Node {
             book: std::sync::OnceLock::new(),
             lane: std::sync::OnceLock::new(),
             response_intent: std::sync::OnceLock::new(),
+            cores: crate::root::durability::core_audit::CoreFlusher::default(),
             sealing: std::sync::OnceLock::new(),
             kernel: Arc::new(kernel),
 
@@ -358,13 +369,19 @@ impl Node {
     /// Response finalization can refuse exhausted identity before publishing any output.
     /// All node stamps share this allocator, so an ordinary arrival cannot wrap it first.
     pub(crate) fn checked_arrived(&self) -> Result<Arrived, &'static str> {
-        let mono = self
-            .mono
+        let mono = self.checked_mono()?;
+        Ok(Arrived::at(self.clock.now(), mono))
+    }
+
+    /// The node's next monotonic reading alone, for an operation whose wall reading was already
+    /// taken once (an admin request's arrival): the pair a record stamps is that one wall reading
+    /// and this one ordering reading, never a unit key standing in for either.
+    pub(crate) fn checked_mono(&self) -> Result<u64, &'static str> {
+        self.mono
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
             })
-            .map_err(|_| "node monotonic clock exhausted")?;
-        Ok(Arrived::at(self.clock.now(), mono))
+            .map_err(|_| "node monotonic clock exhausted")
     }
 
     #[cfg(test)]
@@ -499,9 +516,246 @@ impl Node {
             Err(error) => tracing::warn!(?error, "store slot settle pass failed"),
         }
     }
+    /// Why a request that would create a record must be refused now, judged by the age of the
+    /// flusher's last good commit (design 2, A8), never by a count of held records: the journal
+    /// failed for this process, or nothing has been committed for longer than the stall limit.
     #[must_use]
     pub(crate) fn journal_refusal(&self) -> Option<String> {
-        self.lane.get().and_then(|journal| journal.refuses_money())
+        let journal = self.lane.get()?;
+        if let Some(error) = journal.failed() {
+            return Some(format!("native journal custody failed: {error:?}"));
+        }
+        self.cores
+            .stalled(tokio::time::Instant::now())
+            .then(|| "records have not been committed for longer than the stall limit".into())
+    }
+
+    /// A new core's audit state, pulled by this node's flusher (design 2, A1). The core's
+    /// listener loop owns it and hands it to each connection.
+    pub(crate) fn core_audit(&self) -> Arc<crate::root::durability::core_audit::CoreAudit> {
+        self.cores.core()
+    }
+
+    /// ONE FLUSH (design 2, A3): pull every core, link each line into the chain in monotonic
+    /// order, write one aggregate line per non-zero (listener, reason) refusal count of the
+    /// interval, and commit the group with everything else the journal holds. The notary signs the
+    /// head this publishes. What could not be staged or committed is carried to the next flush;
+    /// waiters are released only by a commit that holds their item.
+    pub(crate) async fn flush_cores(&self) -> Result<(), String> {
+        let (Some(book), Some(journal)) = (self.book.get(), self.lane.get()) else {
+            return Ok(());
+        };
+        let (from_ms, to_ms) = self.cores.interval(self.clock.now());
+        let mut pulled = self.cores.pull();
+        if let Some(why) = journal.refuses_money() {
+            self.cores.carry(pulled);
+            return Err(why);
+        }
+        let refusals = std::mem::take(&mut pulled.refusals);
+        let mut lost = 0usize;
+        {
+            let mut held = book.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (_core, inputs) in std::mem::take(&mut pulled.lines) {
+                let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
+                if held
+                    .stage_line(inputs, pass, &self.durability_token)
+                    .is_err()
+                {
+                    lost += 1;
+                }
+            }
+            for count in refusals {
+                let Ok(mono) = self.checked_mono() else {
+                    lost += 1;
+                    continue;
+                };
+                let inputs = self.refusal_line(&count, from_ms, to_ms, mono);
+                let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
+                if held
+                    .stage_line(inputs, pass, &self.durability_token)
+                    .is_err()
+                {
+                    lost += 1;
+                }
+            }
+        }
+        if lost != 0 {
+            busbar_kernel::diag_error!(
+                busbar_kernel::diagnostics::DURABILITY_STALLED,
+                reason = "stage",
+                lines = lost,
+                "audit lines handed over by requests could not be staged and are lost"
+            );
+        }
+        match journal.flush().await {
+            Ok(()) => {
+                for (core, through) in pulled.cores {
+                    core.records().settled(through);
+                }
+                self.cores.good(tokio::time::Instant::now());
+                Ok(())
+            }
+            Err(error) => {
+                // Staged lines stay with the journal, which retries them; their waiters are
+                // released by the next flush that commits.
+                self.cores.carry(pulled);
+                Err(crate::root::cold::native_journal_refused(&error))
+            }
+        }
+    }
+
+    /// The line a metered response hands over under `advanced.wait_for_commit` (design 2, A7):
+    /// its principal, its unit, the time its response was registered (this node's one reading for
+    /// it) and, filled at release, its status. Its unit's own line, with usage, follows after
+    /// delivery as without the setting; this one is what the release waited for.
+    pub(crate) fn response_line(
+        &self,
+        admission: &busbar_kernel::plane_driver::request_admission::AdmittedRequest,
+    ) -> Result<AuditInputs, &'static str> {
+        let registered = self.checked_arrived()?;
+        let card = crate::root::kernel::ROOT_CARD.pin();
+        Ok(AuditInputs {
+            subject: Subject::PrincipalId(admission.key().id.as_str().into()),
+            what: What {
+                unit_key: admission.unit(),
+                incarnation: 0,
+                op_class: RecordOpClass::new(RESPONSE_OP_CLASS),
+                destination: None,
+                parent: None,
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: registered.secs(),
+            mono: registered.mono(),
+            origin: self.kernel.origin(OriginKind::Client),
+            outcome: OutcomeFacts {
+                unit_end: Outcome::Completed,
+                step: None,
+                finish: RecordFinish::Complete,
+                hook_failed: false,
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            usage: RecordUsage {
+                lines: Vec::new(),
+                tier_bp: 10_000,
+                fee_count: 0,
+                rate_card_version: card_in_force(card.as_ref(), registered.ms()),
+                bucket_chain_ref: String::new(),
+            },
+            controls: Controls {
+                policy_epoch: policy_in_force(card.as_ref(), registered.ms()),
+                ..Controls::default()
+            },
+            correlation_label: None,
+            unit: busbar_kernel_audit::UnitFacts {
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                ..busbar_kernel_audit::UnitFacts::at(registered.ms())
+            },
+        })
+    }
+
+    /// The one aggregate line for `count` refusals of one (listener, reason) between `from_ms`
+    /// and `to_ms`: subject `Aggregate`, op class `refusals`, the listener in `destination`, the
+    /// count in `attempts_total`, the interval's start in `wall_ms` and its end in `wall`.
+    fn refusal_line(
+        &self,
+        count: &crate::root::durability::core_audit::RefusalCount,
+        from_ms: u64,
+        to_ms: u64,
+        mono: u64,
+    ) -> AuditInputs {
+        let card = crate::root::kernel::ROOT_CARD.pin();
+        AuditInputs {
+            subject: Subject::Aggregate,
+            what: What {
+                unit_key: self.mint(),
+                incarnation: 0,
+                op_class: RecordOpClass::new(REFUSALS_OP_CLASS),
+                destination: Some(count.listener.to_string()),
+                parent: None,
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: to_ms / 1_000,
+            mono,
+            origin: self.kernel.origin(OriginKind::Arrival),
+            outcome: OutcomeFacts {
+                unit_end: Outcome::Refused(count.step, count.reason),
+                step: Some(count.step),
+                finish: RecordFinish::Error,
+                hook_failed: false,
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            usage: RecordUsage {
+                lines: Vec::new(),
+                tier_bp: 10_000,
+                fee_count: 0,
+                rate_card_version: card_in_force(card.as_ref(), to_ms),
+                bucket_chain_ref: String::new(),
+            },
+            controls: Controls {
+                policy_epoch: policy_in_force(card.as_ref(), to_ms),
+                ..Controls::default()
+            },
+            correlation_label: None,
+            unit: busbar_kernel_audit::UnitFacts {
+                status: count.status,
+                attempts_total: u32::try_from(count.count).unwrap_or(u32::MAX),
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                ..busbar_kernel_audit::UnitFacts::at(from_ms)
+            },
+        }
+    }
+
+    /// THE FLUSHER (design 2, A3): pulls every core every `advanced.usage_flush_interval_ms`
+    /// (read at each tick: a live change applies at the next one), or at once when an
+    /// administrative change or a metered request under `advanced.wait_for_commit` asks. A request
+    /// never wakes it otherwise. A flush that fails is retried at the next tick; the first failure
+    /// after a good flush is logged, and the stall is reported once it passes the stall limit.
+    pub(crate) async fn run_core_flusher(self: Arc<Self>) {
+        let shutdown = busbar_kernel::detached::worker_shutdown();
+        self.cores.started(tokio::time::Instant::now());
+        let mut failing = false;
+        let mut reported = false;
+        loop {
+            let every = std::time::Duration::from_millis(
+                busbar_kernel::limits::usage_flush_interval_ms().clamp(1, 1_000),
+            );
+            let stopping = tokio::select! {
+                biased;
+                () = busbar_kernel::detached::shutdown_fired(shutdown.clone()) => true,
+                () = self.cores.wake().notified() => false,
+                () = tokio::time::sleep(every) => false,
+            };
+            match self.flush_cores().await {
+                Ok(()) => {
+                    if failing {
+                        tracing::info!("audit flusher committed again; durable service resumed");
+                    }
+                    (failing, reported) = (false, false);
+                }
+                Err(why) => {
+                    if !failing {
+                        tracing::warn!(reason = %why, "audit flusher could not commit; retrying each tick");
+                    }
+                    failing = true;
+                    if !reported && self.cores.stalled(tokio::time::Instant::now()) {
+                        busbar_kernel::diag_error!(
+                            busbar_kernel::diagnostics::DURABILITY_STALLED,
+                            reason = %why,
+                            "records have not been committed for longer than the stall limit; \
+                             requests that need a record are refused"
+                        );
+                        reported = true;
+                    }
+                }
+            }
+            if stopping {
+                return;
+            }
+        }
     }
 
     fn seal_end(

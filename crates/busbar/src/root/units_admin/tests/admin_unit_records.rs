@@ -64,6 +64,32 @@ async fn an_admitted_admin_unit_seals_one_record() {
     assert_eq!(record.wall, 1_700_000_000);
 }
 
+/// Clock standard: an admin record's `mono` is the node's monotonic reading taken for this
+/// operation, never its unit key standing in for one (a unit key orders nothing on the node's
+/// clock and repeats across boots).
+#[tokio::test]
+async fn an_admin_record_stamps_the_node_monotonic_reading_not_its_unit_key() {
+    let mut walked = request("POST", "/api/v1/admin/keys");
+    // Far above any reading this process's node has taken, so it cannot fall in the window.
+    walked.unit = (1u64 << 48) + a_fresh_unit();
+    let unit = walked.unit;
+    let node = crate::root::plane_node::node();
+    let before = node.checked_mono().unwrap();
+    let (_, records) = walk(operator_door(), walked).await;
+    let after = node.checked_mono().unwrap();
+    let record = records
+        .iter()
+        .find(|record| record.what.unit_key.get() == unit)
+        .expect("the admin unit sealed its record");
+    assert_ne!(record.mono, unit, "the record's monotonic stamp is its unit key");
+    assert!(
+        before < record.mono && record.mono < after,
+        "the record's mono {} is not the node's reading between {before} and {after}",
+        record.mono
+    );
+    assert_eq!(record.wall, 1_700_000_000, "the arrival's one wall reading");
+}
+
 #[tokio::test]
 async fn a_refused_admin_unit_seals_a_refused_record() {
     let walked = request("POST", "/api/v1/admin/keys");

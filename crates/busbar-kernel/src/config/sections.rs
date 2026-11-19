@@ -247,6 +247,15 @@ pub struct AdvancedCfg {
     /// graceful shutdown flushes fully. Default 100.
     #[serde(default = "default_usage_flush_interval_ms")]
     pub usage_flush_interval_ms: u64,
+    /// Answer only after the request's records are committed (`advanced.wait_for_commit`). Off by
+    /// default: a request's audit record, ledger and usage entries are committed in groups every
+    /// `usage_flush_interval_ms` after it is answered, so an ungraceful crash can lose the records
+    /// of requests answered in the last unflushed interval. On: a request that writes a record
+    /// releases its last byte only after the group commit that holds it (one store commit of
+    /// latency, shared with every request in that group). Administrative changes wait either way.
+    /// A configuration without the key behaves as `false`.
+    #[serde(default)]
+    pub wait_for_commit: bool,
     /// Tokio worker-thread count (`advanced.worker_threads`, migrated from `BUSBAR_WORKER_THREADS`).
     /// A BOOT-TIME knob read once before the runtime is built — not runtime-mutable via the overlay.
     /// Absent (`None`) ⇒ one worker per available core (`available_parallelism`, capped at
@@ -364,6 +373,7 @@ impl Default for AdvancedCfg {
             shutdown: super::shutdown::AdvancedShutdownCfg::default(),
             rate_sweep_interval: default_rate_sweep_interval(),
             usage_flush_interval_ms: default_usage_flush_interval_ms(),
+            wait_for_commit: false,
             worker_threads: None,
             upstream_http1_only: false,
             upstream_h2_prior_knowledge: false,

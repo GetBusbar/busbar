@@ -1,31 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Admission-bound response plans and exact native confirmation before terminal-byte release.
-//! Owner approval: release !578 at e29f0e45, 2026-11-17T04:22:01.967Z. The general signer probe
-//! remains in force; only the fixed ResponseIntent purpose is reachable here.
+//! Admission-bound response plans and the one release of each response's terminal byte.
+//!
+//! Design 2 (owner, 18 Nov: "Off the path, wait_for_commit OFF by default"): no response signs,
+//! and no ordinary response waits for a commit. The final response intent of release !578 (a
+//! signed record, durably confirmed before every response's last byte) is retired: what a response
+//! records is decided once, at registration ([`ResponseRecord`]):
+//! - nothing, for a response with no principal, no usage and no decision of its own (a health
+//!   check), or one whose unit's own line already records it;
+//! - a count per (listener, reason) on its core, for a refusal of a request that has no identity;
+//! - under `advanced.wait_for_commit`, a metered response's line on its core's outbox, and the
+//!   release waits for the group commit that holds it.
+//!
+//! Records the retired intent wrote (`response.final-intent.v1`, each signed singly) keep
+//! verifying by their own rule at boot ([`verify_history`]).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use busbar_contract::persistence::Durability;
+use busbar_contract::caps::{ReasonCode, StepName};
 pub(crate) use busbar_contract::response_delivery::{FinalResponseIntent, ResponseDisposition};
 use busbar_contract::response_delivery::{ResponseKey, ResponseStop};
 use busbar_core_connector::response_delivery::{
     DeliveryCancel, DeliveryInput, DeliveryWatch, ReleasePublisher, ResponseHandles,
 };
-use busbar_kernel::persistence::journal::runtime::{Carried, RuntimeJournal, StagedRun};
+use busbar_kernel::persistence::journal::runtime::RuntimeJournal;
 use busbar_kernel_audit::response_intent::{
-    is_response_intent, verify_response_intent, PreparedResponseIntent, ResponseIntentStamp,
+    is_response_intent, verify_response_intent, ResponseIntentStamp,
 };
-use busbar_kernel_audit::AuditKeySet;
-use busbar_kernel_wal::journal::{Entry, RecordClass};
+use busbar_kernel_audit::{AuditInputs, AuditKeySet};
+use busbar_kernel_wal::journal::RecordClass;
 use tokio::time::Instant;
 
-use super::signer::{ResponseIntent, SignerHandle};
+use super::core_audit::CoreAudit;
 
-/// Validate matching historical records already read by boot under the verified persisted key.
-/// This performs no journal scan and can never construct a live response or permit.
+/// Validate the retired intent records (version 1, signed singly) already read by boot under the
+/// verified persisted key. This performs no journal scan and can never construct a live response.
 pub(crate) fn verify_history(
     book: &super::Durability,
     keys: &AuditKeySet,
@@ -53,12 +64,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-/// A content-free refusal to prepare, confirm or publish this response's final intent.
+/// A content-free refusal to prepare or publish this response's release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FinalIntentError {
     Integrity,
     Capacity,
-    Signer,
+    /// Durability is unavailable: the response's record could not be committed.
     Journal,
     Cancelled,
     Deadline,
@@ -78,24 +89,36 @@ impl From<ResponseStop> for FinalIntentError {
 impl std::fmt::Display for FinalIntentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Integrity => "response intent identity or publication differs",
-            Self::Capacity => "response intent admission capacity exhausted",
-            Self::Signer => "response intent signature unavailable",
-            Self::Journal => "response intent native confirmation unavailable",
-            Self::Cancelled => "response intent cancelled",
-            Self::Deadline => "response intent deadline expired",
+            Self::Integrity => "response identity or publication differs",
+            Self::Capacity => "response admission capacity exhausted",
+            Self::Journal => "response record durability unavailable",
+            Self::Cancelled => "response cancelled",
+            Self::Deadline => "response deadline expired",
         })
     }
 }
 
 impl std::error::Error for FinalIntentError {}
 
-/// One root service for this actual journal incarnation, with one typed signer capability.
+/// WHAT A RESPONSE RECORDS, decided once at registration from its authority (design 2, A5, A7).
+pub(crate) enum ResponseRecord {
+    /// Nothing: no principal, no usage and no decision of its own, or its unit's own line records it.
+    Nothing,
+    /// A refusal of a request with no identity: one count on its core for (listener, step, reason).
+    Counted {
+        listener: Arc<str>,
+        step: StepName,
+        reason: ReasonCode,
+    },
+    /// `advanced.wait_for_commit`: this line goes to the core's outbox and the release waits for
+    /// the group commit that holds it.
+    Committed(Box<AuditInputs>),
+}
+
+/// One root service for this actual journal incarnation: response identities only.
 pub(crate) struct ResponseIntentService {
     journal: Arc<RuntimeJournal>,
     incarnation: u64,
-    keys: AuditKeySet,
-    signer: SignerHandle<ResponseIntent>,
     connection_generation: AtomicU64,
 }
 
@@ -108,28 +131,20 @@ impl ResponseIntentService {
         self.incarnation
     }
 
-    /// Construct once from the actual bound book and authenticated retained verification keys.
-    pub(crate) fn new(
-        journal: Arc<RuntimeJournal>,
-        incarnation: u64,
-        keys: AuditKeySet,
-        signer: SignerHandle<ResponseIntent>,
-    ) -> Result<Arc<Self>, FinalIntentError> {
-        let id = signer.key_id().map_err(|_| FinalIntentError::Signer)?;
-        if keys.get(id).is_none() {
-            return Err(FinalIntentError::Integrity);
-        }
-        Ok(Arc::new(Self {
+    /// Construct once from the actual bound book.
+    pub(crate) fn new(journal: Arc<RuntimeJournal>, incarnation: u64) -> Arc<Self> {
+        Arc::new(Self {
             journal,
             incarnation,
-            keys,
-            signer,
             connection_generation: AtomicU64::new(0),
-        }))
+        })
     }
 
-    /// Allocate an actual root connection identity, never a process-global substitute incarnation.
-    pub(crate) fn connection(self: &Arc<Self>) -> Result<ResponseConnection, FinalIntentError> {
+    /// Allocate an actual root connection identity on the core whose audit state `core` is.
+    pub(crate) fn connection(
+        self: &Arc<Self>,
+        core: Arc<CoreAudit>,
+    ) -> Result<ResponseConnection, FinalIntentError> {
         let previous = self
             .connection_generation
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -140,6 +155,7 @@ impl ResponseIntentService {
             service: Arc::clone(self),
             generation: previous + 1,
             stream: AtomicU64::new(0),
+            core,
         })
     }
 }
@@ -149,9 +165,15 @@ pub(crate) struct ResponseConnection {
     service: Arc<ResponseIntentService>,
     generation: u64,
     stream: AtomicU64,
+    core: Arc<CoreAudit>,
 }
 
 impl ResponseConnection {
+    /// The audit state of the core this connection runs on.
+    pub(crate) fn core(&self) -> &Arc<CoreAudit> {
+        &self.core
+    }
+
     /// Bind a fresh host stream to its original actual unit, or explicitly admitted no-unit case.
     pub(crate) fn key(
         &self,
@@ -181,6 +203,7 @@ impl ResponseConnection {
         key: ResponseKey,
         handles: ResponseHandles,
         deadline: Instant,
+        record: ResponseRecord,
     ) -> Result<(ResponsePlan, Arc<ResponseFinalizer>), FinalIntentError> {
         if key.node != self.service.journal.node()
             || key.incarnation != self.service.incarnation
@@ -197,7 +220,7 @@ impl ResponseConnection {
         }
         let scope = Arc::new(ResponseScope {
             key,
-            service: Arc::clone(&self.service),
+            core: Arc::clone(&self.core),
             deadline,
             watch: handles.watch,
             input: handles.input,
@@ -205,7 +228,11 @@ impl ResponseConnection {
             publisher: handles.release,
             cancelled: AtomicBool::new(false),
             frozen: Mutex::new(None),
-            state: tokio::sync::Mutex::new(FinalState::default()),
+            state: tokio::sync::Mutex::new(FinalState {
+                record: Some(record),
+                ticket: None,
+                published: false,
+            }),
         });
         let plan = ResponsePlan {
             scope: Arc::clone(&scope),
@@ -259,7 +286,6 @@ impl ResponsePlan {
     pub(crate) fn freeze(
         mut self,
         disposition: ResponseDisposition,
-        stamp: ResponseIntentStamp,
     ) -> Result<FinalResponseIntent, FinalIntentError> {
         match disposition {
             ResponseDisposition::End { status } if self.head.flatten() != status => {
@@ -276,14 +302,6 @@ impl ResponsePlan {
             final_publication_ordinal: self.ordinal,
             disposition,
         };
-        let key_id = self
-            .scope
-            .service
-            .signer
-            .key_id()
-            .map_err(|_| FinalIntentError::Signer)?;
-        let prepared = PreparedResponseIntent::new(intent, stamp, key_id)
-            .map_err(|_| FinalIntentError::Integrity)?;
         let mut frozen = lock(&self.scope.frozen);
         if frozen.is_some() {
             return Err(FinalIntentError::Integrity);
@@ -291,11 +309,7 @@ impl ResponsePlan {
         self.scope
             .publisher
             .freeze(intent.key, intent.final_publication_ordinal)?;
-        *frozen = Some(Frozen {
-            intent,
-            stamp,
-            prepared,
-        });
+        *frozen = Some(intent);
         self.frozen = true;
         Ok(intent)
     }
@@ -309,22 +323,16 @@ impl Drop for ResponsePlan {
     }
 }
 
-struct Frozen {
-    intent: FinalResponseIntent,
-    stamp: ResponseIntentStamp,
-    prepared: PreparedResponseIntent,
-}
-
 struct ResponseScope {
     key: ResponseKey,
-    service: Arc<ResponseIntentService>,
+    core: Arc<CoreAudit>,
     deadline: Instant,
     watch: DeliveryWatch,
     input: DeliveryInput,
     cancel: DeliveryCancel,
     publisher: ReleasePublisher,
     cancelled: AtomicBool,
-    frozen: Mutex<Option<Frozen>>,
+    frozen: Mutex<Option<FinalResponseIntent>>,
     state: tokio::sync::Mutex<FinalState>,
 }
 
@@ -360,11 +368,11 @@ impl Drop for ResponseScope {
     }
 }
 
-#[derive(Default)]
 struct FinalState {
-    signature: Option<Vec<u8>>,
-    run: Option<Arc<StagedRun>>,
-    permit_issued: bool,
+    /// What this response still has to record; taken by the first finalize that records it.
+    record: Option<ResponseRecord>,
+    /// The outbox ticket of a committed record handed over, awaited by a retry.
+    ticket: Option<busbar_kernel::outbox::Ticket>,
     published: bool,
 }
 
@@ -375,26 +383,9 @@ pub(crate) enum ReleasePublication {
     AlreadyPublished,
 }
 
-/// Root-private confirmation and publication authority retained by the native response supervisor.
+/// Root-private publication authority retained by the native response supervisor.
 pub(crate) struct ResponseFinalizer {
     scope: Arc<ResponseScope>,
-}
-
-// No Clone, Deserialize, Default, exposed fields or historical constructor.
-struct ReleasePermit {
-    owner: Arc<ResponseScope>,
-    intent: FinalResponseIntent,
-    carried: Carried,
-    durability: Durability,
-    consumed: bool,
-}
-
-impl Drop for ReleasePermit {
-    fn drop(&mut self) {
-        if !self.consumed {
-            self.owner.stop(ResponseStop::Cancelled);
-        }
-    }
 }
 
 struct Waiter {
@@ -431,12 +422,8 @@ impl ResponseFinalizer {
         self.scope.cancel.clone()
     }
 
-    /// The same journal used by this admitted node; it must match S9's captured stamp attachment.
-    pub(crate) fn journal(&self) -> &Arc<RuntimeJournal> {
-        &self.scope.service.journal
-    }
-
-    /// Confirm the frozen original and publish its one control, independently of held E_END.
+    /// Record what this response records (nothing, a count, or under `wait_for_commit` a line
+    /// whose group commit it awaits) and publish its one release, independently of held E_END.
     pub(crate) async fn finalize(
         &self,
         intent: FinalResponseIntent,
@@ -463,136 +450,46 @@ impl ResponseFinalizer {
     ) -> Result<ReleasePublication, FinalIntentError> {
         // This single driver lock survives in the scope across cancelled waiters and exact retries.
         let mut state = self.scope.state.lock().await;
-        {
-            let frozen = lock(&self.scope.frozen);
-            if frozen.as_ref().map(|f| f.intent) != Some(intent) {
-                return Err(FinalIntentError::Integrity);
-            }
+        if *lock(&self.scope.frozen) != Some(intent) {
+            return Err(FinalIntentError::Integrity);
         }
         if state.published {
             return Ok(ReleasePublication::AlreadyPublished);
         }
-        let permit = self.confirm_release_intent(intent, &mut state).await?;
-        self.publish_release(permit, &mut state)?;
-        Ok(ReleasePublication::Published)
-    }
-
-    async fn confirm_release_intent(
-        &self,
-        intent: FinalResponseIntent,
-        state: &mut FinalState,
-    ) -> Result<ReleasePermit, FinalIntentError> {
         self.scope.check_live()?;
-        if state.permit_issued {
-            return Err(FinalIntentError::Integrity);
-        }
-        if state.run.is_none() {
-            if state.signature.is_none() {
-                // A fixed stack copy avoids holding a synchronous lock across the signer wait.
-                let prepared = {
-                    let frozen = lock(&self.scope.frozen);
-                    let frozen = frozen.as_ref().ok_or(FinalIntentError::Integrity)?;
-                    PreparedResponseIntent::new(
-                        frozen.intent,
-                        frozen.stamp,
-                        frozen.prepared.key_id(),
-                    )
-                    .map_err(|_| FinalIntentError::Integrity)?
+        match state.record.take() {
+            None | Some(ResponseRecord::Nothing) => {}
+            Some(ResponseRecord::Counted {
+                listener,
+                step,
+                reason,
+            }) => {
+                let status = match intent.disposition {
+                    ResponseDisposition::End { status } => status.unwrap_or(0),
+                    ResponseDisposition::Refuse { status, .. } => status,
                 };
-                let signature = self
-                    .scope
-                    .service
-                    .signer
-                    .sign_response_intent(&prepared)
-                    .await
-                    .map_err(|_| FinalIntentError::Signer)?;
-                self.scope.check_live()?;
-                state.signature = Some(signature);
-            }
-            let entry = {
-                let frozen = lock(&self.scope.frozen);
-                let frozen = frozen.as_ref().ok_or(FinalIntentError::Integrity)?;
-                let signature = state
-                    .signature
-                    .as_deref()
-                    .ok_or(FinalIntentError::Integrity)?;
-                let body = frozen
-                    .prepared
-                    .signed_body(signature)
-                    .map_err(|_| FinalIntentError::Signer)?;
-                let verified = verify_response_intent(
-                    &body,
-                    self.scope.key.node,
-                    frozen.stamp,
-                    &self.scope.service.keys,
-                )
-                .map_err(|_| FinalIntentError::Signer)?;
-                if verified.map(|record| record.intent) != Some(intent) {
-                    return Err(FinalIntentError::Integrity);
-                }
-                Entry::new(RecordClass::Checkpoint, body)
-                    .under(frozen.stamp.lease_epoch, frozen.stamp.policy_epoch)
-                    .at(frozen.stamp.wall, frozen.stamp.mono)
-            };
-            self.scope.check_live()?;
-            // No asynchronous crossing between staging and installing the exact retained original.
-            state.run = Some(
                 self.scope
-                    .service
-                    .journal
-                    .stage_run(&[entry])
-                    .map_err(|_| FinalIntentError::Journal)?,
-            );
-            state.signature = None;
+                    .core
+                    .count_refusal(&listener, step, reason, status);
+            }
+            Some(ResponseRecord::Committed(mut line)) => {
+                if let ResponseDisposition::End { status: Some(status) }
+                | ResponseDisposition::Refuse { status, .. } = intent.disposition
+                {
+                    line.unit.status = status;
+                }
+                state.ticket = Some(self.scope.core.records().append_and_ask(*line));
+            }
         }
-        let run = state.run.as_ref().ok_or(FinalIntentError::Integrity)?;
-        self.scope
-            .service
-            .journal
-            .confirm(run)
-            .await
-            .map_err(|_| FinalIntentError::Journal)?;
-        self.scope.check_live()?;
-        let carried = run.carried().next().ok_or(FinalIntentError::Integrity)?;
-        if run.records().len() != 1 {
-            return Err(FinalIntentError::Integrity);
-        }
-        state.permit_issued = true;
-        Ok(ReleasePermit {
-            owner: Arc::clone(&self.scope),
-            intent,
-            carried,
-            durability: self.scope.service.journal.durability(),
-            consumed: false,
-        })
-    }
-
-    fn publish_release(
-        &self,
-        mut permit: ReleasePermit,
-        state: &mut FinalState,
-    ) -> Result<(), FinalIntentError> {
-        self.scope.check_live()?;
-        let run = state.run.as_ref().ok_or(FinalIntentError::Integrity)?;
-        if !Arc::ptr_eq(&permit.owner, &self.scope)
-            || permit.intent.key != self.scope.key
-            || run.carried().next() != Some(permit.carried)
-            || !self
-                .scope
-                .service
-                .journal
-                .is_confirmed(run)
-                .map_err(|_| FinalIntentError::Journal)?
-            || permit.durability != self.scope.service.journal.durability()
-            || state.published
-        {
-            return Err(FinalIntentError::Integrity);
+        if let Some(ticket) = state.ticket {
+            // The one wait of this kind on a request: only under `advanced.wait_for_commit`.
+            self.scope.core.records().committed(ticket).await;
+            self.scope.check_live()?;
         }
         self.scope
             .publisher
-            .publish(permit.intent.key, permit.intent.final_publication_ordinal)?;
+            .publish(intent.key, intent.final_publication_ordinal)?;
         state.published = true;
-        permit.consumed = true;
-        Ok(())
+        Ok(ReleasePublication::Published)
     }
 }

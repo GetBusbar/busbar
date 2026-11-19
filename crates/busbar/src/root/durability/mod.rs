@@ -58,6 +58,7 @@ pub(crate) use audit::{AuditWindowAt, FrozenNativeAudit, LineIdentity, NativeSta
 mod audit_page;
 
 pub(crate) mod audit_services;
+pub(crate) mod core_audit;
 pub(crate) mod notary;
 pub(crate) mod predecessor;
 pub(crate) mod response_intent;

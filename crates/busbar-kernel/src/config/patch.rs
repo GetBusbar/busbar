@@ -66,6 +66,7 @@ section_patch!(
     AdvancedPatch => crate::config::AdvancedCfg {
         rate_sweep_interval: u32,
         usage_flush_interval_ms: u64,
+        wait_for_commit: bool,
         // BOOT-TIME (restart-to-apply), same class as `emit_server_timing` was: `server_timing` is
         // baked into router middleware state, so a live PUT is stored but does not take effect until a restart (see `reload_to_apply_fields`).
         response_headers: crate::config::ResponseHeadersCfg,

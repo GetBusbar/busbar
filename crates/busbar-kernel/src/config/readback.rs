@@ -170,6 +170,7 @@ impl ConfiguredView {
             json!({
                 "rate_sweep_interval": l.rate_sweep_interval,
                 "usage_flush_interval_ms": l.usage_flush_interval_ms,
+                "wait_for_commit": l.wait_for_commit,
                 "upstream_http1_only": l.upstream_http1_only,
                 "upstream_h2_prior_knowledge": l.upstream_h2_prior_knowledge,
                 "block_private_addresses": cfg.guard.block_private_addresses,

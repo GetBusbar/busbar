@@ -42,10 +42,19 @@ pub(crate) fn rate_sweep_interval() -> u32 {
         .unwrap_or(DEFAULT_RATE_SWEEP_INTERVAL)
 }
 
-pub(crate) fn usage_flush_interval_ms() -> u64 {
+/// `advanced.usage_flush_interval_ms` as live: the flush cadence of usage counters and of the
+/// cores' audit records, and so the most a crash can lose of either.
+pub fn usage_flush_interval_ms() -> u64 {
     get()
         .map(|l| l.usage_flush_interval_ms)
         .unwrap_or(DEFAULT_USAGE_FLUSH_INTERVAL_MS)
+}
+
+/// `advanced.wait_for_commit` as live: whether a request that writes a record answers only after
+/// the group commit that holds it. Off when no configuration is installed.
+#[must_use]
+pub fn wait_for_commit() -> bool {
+    get().is_some_and(|l| l.wait_for_commit)
 }
 
 pub(crate) fn default_policy_timeout_ms() -> u64 {

@@ -53,6 +53,7 @@ fn every_patch_mirrors_every_field_of_its_section() {
         shutdown: _,
         rate_sweep_interval,
         usage_flush_interval_ms,
+        wait_for_commit,
         response_headers,
 
         worker_threads: _,
@@ -69,6 +70,7 @@ fn every_patch_mirrors_every_field_of_its_section() {
     let _ = AdvancedPatch {
         rate_sweep_interval: Some(rate_sweep_interval),
         usage_flush_interval_ms: Some(usage_flush_interval_ms),
+        wait_for_commit: Some(wait_for_commit),
         response_headers: Some(response_headers),
     };
 
