@@ -187,10 +187,7 @@ where
         .load(std::sync::atomic::Ordering::Acquire);
     root::min3_admin_auth::install(&mut app, Arc::clone(&auth), epoch)
         .expect("install this candidate's actual native admin authority");
-    let served = root::serve::Served {
-        tables: app.serve_tables.clone(),
-        ..Default::default()
-    };
+    let served = root::serve::Served::default();
     let owners = root::min3_physical::SlotOwners {
         auth,
         epoch,

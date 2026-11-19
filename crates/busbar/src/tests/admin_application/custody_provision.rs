@@ -265,12 +265,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))

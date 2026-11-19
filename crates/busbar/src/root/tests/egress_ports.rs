@@ -13,6 +13,16 @@ const A: DestinationId = DestinationId::new(0);
 const B: DestinationId = DestinationId::new(1);
 const FREE: DestinationId = DestinationId::new(2);
 
+/// Permits as the plane seats build them: one semaphore of `n` slots per limited member.
+fn permits<const N: usize>(limits: [(DestinationId, usize); N]) -> MemberPermits {
+    MemberPermits {
+        limits: limits
+            .into_iter()
+            .map(|(d, n)| (d, Arc::new(tokio::sync::Semaphore::new(n))))
+            .collect(),
+    }
+}
+
 #[tokio::test]
 async fn the_clock_reads_the_wall_a_monotonic_origin_and_sleeps_on_the_timer() {
     let clock = HostClock::system(tokio_sleep);
@@ -38,7 +48,7 @@ async fn the_clock_reads_the_wall_a_monotonic_origin_and_sleeps_on_the_timer() {
 
 #[test]
 fn a_limited_member_holds_its_slots_until_they_drop_and_an_unlimited_one_never_fills() {
-    let permits = MemberPermits::new([(A, 1)]);
+    let permits = permits([(A, 1)]);
     let held = permits.try_acquire(A).expect("one slot");
     assert_eq!(held.destination(), A);
     assert!(permits.try_acquire(A).is_none(), "at capacity");
@@ -53,7 +63,7 @@ fn a_limited_member_holds_its_slots_until_they_drop_and_an_unlimited_one_never_f
 
 #[tokio::test]
 async fn a_waiter_takes_the_first_slot_freed_on_any_of_its_members() {
-    let permits = std::sync::Arc::new(MemberPermits::new([(A, 1), (B, 1)]));
+    let permits = std::sync::Arc::new(permits([(A, 1), (B, 1)]));
     let a = permits.try_acquire(A).expect("a's slot");
     let b = permits.try_acquire(B).expect("b's slot");
     let waiter = {
@@ -78,7 +88,7 @@ async fn a_waiter_takes_the_first_slot_freed_on_any_of_its_members() {
 
 #[tokio::test]
 async fn a_wait_over_an_unlimited_member_answers_at_once() {
-    let permits = MemberPermits::new([(A, 0)]);
+    let permits = permits([(A, 0)]);
     let got = permits.acquire_any(&[A, FREE]).await.map(|(d, _)| d);
     assert_eq!(got, Some(FREE));
 }
@@ -93,7 +103,7 @@ fn the_counters_label_a_member_by_name() {
 
 #[tokio::test]
 async fn the_queue_frees_one_permit_to_exactly_one_of_two_waiters() {
-    let permits = std::sync::Arc::new(MemberPermits::new([(A, 1)]));
+    let permits = std::sync::Arc::new(permits([(A, 1)]));
     let held = permits.try_acquire(A).expect("the one slot");
     let (woke, mut wakes) = tokio::sync::mpsc::unbounded_channel();
     let waiters: Vec<_> = (0..2)
@@ -146,7 +156,7 @@ async fn the_queue_frees_one_permit_to_exactly_one_of_two_waiters() {
 #[tokio::test]
 async fn a_slot_freed_as_its_waiter_parks_is_not_lost() {
     for _ in 0..50 {
-        let permits = std::sync::Arc::new(MemberPermits::new([(A, 1)]));
+        let permits = std::sync::Arc::new(permits([(A, 1)]));
         let held = permits.try_acquire(A).expect("the one slot");
         let waiter = {
             let permits = std::sync::Arc::clone(&permits);
@@ -184,12 +194,23 @@ fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
     busbar_kernel::snapshot::init_for_test(Duration::from_secs(60));
     let attempts = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
     let refused = busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL;
-    let bound = super::LabelBound::new(["declared-word".to_string()]).reaching(
-        "walked-red-arm",
-        Vec::<String>::new(),
-        ["entry-red-arm".to_string()],
-    );
-    let t = WalkTelemetry::new([(A, "own-red-arm".to_string())]).bounded(bound);
+    let bound = super::LabelBound {
+        reach: [(
+            "walked-red-arm".to_string(),
+            // (pool words: the walk's entry names, as no pool label is configured; entries)
+            (
+                std::collections::BTreeSet::from(["entry-red-arm".to_string()]),
+                std::collections::BTreeSet::from(["entry-red-arm".to_string()]),
+            ),
+        )]
+        .into_iter()
+        .collect(),
+        vocabulary: std::collections::BTreeSet::from(["declared-word".to_string()]),
+    };
+    let t = WalkTelemetry {
+        bound,
+        ..WalkTelemetry::new([(A, "own-red-arm".to_string())])
+    };
     let stated = |pool: &str, lane: &str| StatedLabels {
         pool: Some(pool.to_string()),
         lane: Some(lane.to_string()),

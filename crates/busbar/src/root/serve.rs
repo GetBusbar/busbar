@@ -122,6 +122,12 @@ impl Services {
         })
     }
 
+    /// No serving kernel: a test drain with no records to flush.
+    #[cfg(test)]
+    pub(crate) fn idle() -> Arc<Self> {
+        Arc::new(Self { kernel: None })
+    }
+
     pub(crate) fn kernel(&self) -> Option<Arc<KernelServices>> {
         self.kernel.clone()
     }

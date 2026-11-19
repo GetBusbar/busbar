@@ -20,8 +20,16 @@ fn book(budget: &std::sync::Arc<ProcessAdmission>) -> TerminalBook {
     )
 }
 
+/// A book entry with no live owners (the test-only original state, nothing staged or funded).
 fn unit(node: &super::super::Node) -> RetainedUnit {
-    RetainedUnit::reserved(node.kernel.next_call())
+    RetainedUnit {
+        call: node.kernel.next_call(),
+        state: super::super::RetainedState::Original {
+            staged: None,
+            receipt: None,
+            credit: None,
+        },
+    }
 }
 
 #[test]
@@ -285,65 +293,3 @@ async fn native_pulse_examines_at_most_64_candidates() {
     );
 }
 
-/// The original request lease class selects the partition; the RAII reservation unwinds
-/// before effects and leaves no record behind.
-#[test]
-fn reservation_uses_the_request_class_and_unwinds_before_effects() {
-    let node = super::super::Node::new();
-    let call = node.kernel.next_call();
-    let key = UnitKey::new(7);
-    let reservation = node
-        .reserve_terminal(AdmissionClass::Operator, key, call)
-        .expect("funded reservation");
-    {
-        let book = node
-            .lost
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let book = book.as_ref().unwrap();
-        assert!(book.get(AdmissionClass::Operator, key).is_some());
-        assert!(book.get(AdmissionClass::Data, key).is_none());
-    }
-    drop(reservation);
-    assert_eq!(node.terminal_pending(), 0);
-}
-
-/// Absent process storage binding refuses a new unit before any effect; no default account.
-#[test]
-fn unbound_terminal_storage_refuses_before_effects() {
-    let node = super::super::Node::new();
-    *node
-        .lost
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    let call = node.kernel.next_call();
-    assert!(node
-        .reserve_terminal(AdmissionClass::Data, UnitKey::new(1), call)
-        .is_none());
-    assert_eq!(node.terminal_pending(), 0);
-}
-
-/// Data saturation cannot consume the protected Operator reserve through the Node.
-#[test]
-fn saturated_data_terminal_storage_keeps_operator_reservations() {
-    let node = super::super::Node::new();
-    let process = budget(4, 2);
-    node.rebind_terminal_storage(&process);
-    let data = process.connection_storage(AdmissionClass::Data);
-    let _held = data.try_reserve(2 * Layout::new::<Entry>().size()).unwrap();
-    assert!(node
-        .reserve_terminal(
-            AdmissionClass::Data,
-            UnitKey::new(1),
-            node.kernel.next_call()
-        )
-        .is_none());
-    let operator = node
-        .reserve_terminal(
-            AdmissionClass::Operator,
-            UnitKey::new(2),
-            node.kernel.next_call(),
-        )
-        .expect("the Operator reserve remains available");
-    drop(operator);
-}

@@ -560,7 +560,7 @@ impl Fixture {
             node_lease: None,
             flusher,
             governance: governed.then(|| seen.gov.clone()),
-            late: Services::bootstrap(),
+            late: Services::idle(),
             book: Some(book),
             startup,
             predecessor: None,
@@ -575,13 +575,11 @@ pub(super) fn money_driver(
     clock: &Arc<DrainClock>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
 ) -> JoinHandle<()> {
-    tokio::spawn(crate::root::measurements::maintenance(
-        busbar_kernel::governance::run_budget_flusher(
-            gov.clone(),
-            shutdown_tx.subscribe(),
-            None,
-            Some(Arc::clone(clock)),
-        ),
+    tokio::spawn(busbar_kernel::governance::run_budget_flusher(
+        gov.clone(),
+        shutdown_tx.subscribe(),
+        None,
+        Some(Arc::clone(clock)),
     ))
 }
 

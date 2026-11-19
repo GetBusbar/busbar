@@ -75,6 +75,8 @@ async fn assert_three_once(journal: &RuntimeJournal) {
     );
 }
 
+// The admission refusal is read from the bound journal itself (what the deleted
+// `Node::journal_refusal` returned) until the native unit gate, `Node::money_gate`, lands here.
 #[tokio::test]
 async fn live_tick_reopens_admission_after_store_pressure_without_another_unit() {
     let (faults, core, journal, tick) = fixture(871).await;
@@ -83,18 +85,18 @@ async fn live_tick_reopens_admission_after_store_pressure_without_another_unit()
     assert_eq!(faults.waiting(), 0, "staging performs no backend crossing");
     faults.pause(false);
     faults.refusing.store(true, Ordering::SeqCst);
-    assert!(tick.node.journal_refusal().is_some());
+    assert!(journal.refuses_money().is_some());
     assert!(tick.tick().await.is_err());
     assert_eq!(
         journal.pending_records(),
         3,
         "refusal retains every original frame"
     );
-    assert!(tick.node.journal_refusal().is_some());
+    assert!(journal.refuses_money().is_some());
     faults.refusing.store(false, Ordering::SeqCst);
     tick.tick().await.unwrap();
     assert!(
-        tick.node.journal_refusal().is_none(),
+        journal.refuses_money().is_none(),
         "the live node admits after recovery"
     );
     assert_eq!(journal.pending_records(), 0);
@@ -123,7 +125,7 @@ async fn live_tick_does_not_duplicate_a_batch_with_an_unknown_store_commit() {
         3,
         "the exact unknown original stays owned"
     );
-    assert!(tick.node.journal_refusal().is_some());
+    assert!(journal.refuses_money().is_some());
     assert_eq!(
         faults.applied(),
         1,
@@ -140,6 +142,6 @@ async fn live_tick_does_not_duplicate_a_batch_with_an_unknown_store_commit() {
             && candidate.candidate().id == sent[0].candidate().id));
     faults.lose_acks.store(false, Ordering::SeqCst);
     tick.tick().await.unwrap();
-    assert!(tick.node.journal_refusal().is_none());
+    assert!(journal.refuses_money().is_none());
     assert_three_once(&journal).await;
 }

@@ -26,12 +26,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the actual built OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("actual OIDC statement reads")
-        .expect("actual OIDC states its door");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("valid actual OIDC statement")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let audit_token =
         common::credentials::token_for("audit-overlay-groups", &["audit-overlay-groups"], AUDIENCE);

@@ -160,7 +160,6 @@ impl PlaneFixture {
             native_fixture: Some(owner),
             billing: Some(billing),
             post: Some(post),
-            tables: app.serve_tables.clone(),
             ..Default::default()
         };
         (served, workers)
@@ -650,19 +649,13 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("actual Store rendering reads")
-        .expect("actual Store exports its declaration");
-    let module = busbar_contract::rendering::read(&statement)
-        .expect("actual Store declaration is valid")
-        .name;
     let directory = crate::root::test_plugins::scratch("initial-runtime-candidate-boundary");
-    let mut manifest = crate::root::test_plugins::manifest(
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
+    let module = manifest.name.clone();
     let library = std::fs::read(library_path).expect("actual Store image reads");
     std::fs::write(
         directory.join("store.tar.gz"),

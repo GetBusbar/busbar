@@ -38,12 +38,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let delegated_token = common::credentials::token_for(
         &principal.id,
@@ -183,12 +178,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let delegated_token = common::credentials::token_for(
         &principal.id,
@@ -558,12 +548,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let delegated_token = common::credentials::token_for(
         &principal.id,
@@ -706,12 +691,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let delegated_token = common::credentials::token_for(
         &principal.id,
@@ -854,12 +834,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let delegated_token = common::credentials::token_for(
         &principal.id,

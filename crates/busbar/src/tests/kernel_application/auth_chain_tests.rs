@@ -27,12 +27,7 @@ fn test_chain_identifies_with_module_and_principal() {
     crate::dist_root_install::install();
     let artifact = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::rendering::read(&statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&artifact).name;
     let directory = common::plugins::scratch(
         "auth-ordinary-chain-test_chain_identifies_with_module_and_principal",
     );
@@ -83,12 +78,7 @@ fn test_nonempty_chain_fails_closed_on_all_pass() {
     crate::dist_root_install::install();
     let artifact = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::rendering::read(&statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&artifact).name;
     let directory = common::plugins::scratch(
         "auth-ordinary-chain-test_nonempty_chain_fails_closed_on_all_pass",
     );
@@ -152,12 +142,7 @@ fn test_keys_in_chain_sets_flag_not_module() {
     crate::dist_root_install::install();
     let artifact = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::rendering::read(&statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&artifact).name;
     let directory =
         common::plugins::scratch("auth-ordinary-chain-test_keys_in_chain_sets_flag_not_module");
     common::credentials::install_auth_plugin(&directory, &module, "test-groups-module", true);
@@ -228,12 +213,7 @@ fn test_auth_middleware_debug_redacts_tokens() {
     crate::dist_root_install::install();
     let artifact = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::rendering::read(&statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&artifact).name;
     let directory =
         common::plugins::scratch("auth-ordinary-chain-test_auth_middleware_debug_redacts_tokens");
     common::credentials::install_auth_plugin(&directory, &module, "test-groups-module", true);
@@ -279,12 +259,7 @@ fn a_keys_only_chain_is_not_an_open_front_door() {
     crate::dist_root_install::install();
     let artifact = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::rendering::read(&statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&artifact).name;
     let directory =
         common::plugins::scratch("auth-ordinary-chain-a_keys_only_chain_is_not_an_open_front_door");
     common::credentials::install_auth_plugin(&directory, &module, "test-groups-module", true);
@@ -337,12 +312,7 @@ fn a_verified_oidc_role_is_bound_under_the_provider_name() {
     crate::dist_root_install::install();
     let artifact = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::rendering::read(&statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&artifact).name;
     let directory = common::plugins::scratch(
         "auth-ordinary-chain-a_verified_oidc_role_is_bound_under_the_provider_name",
     );
@@ -405,12 +375,7 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
     crate::dist_root_install::install();
     let artifact = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::rendering::read(&statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&artifact).name;
     let directory = common::plugins::scratch("auth-real-pending-jwks");
     common::credentials::install_auth_plugin(&directory, &module, "slow-idp", true);
     let plugins = crate::root::test_plugins::trusted_config(&directory);

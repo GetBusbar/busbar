@@ -121,17 +121,11 @@ fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, S
     } else {
         required_artifact(variable)
     };
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
-        .expect("the actual product statement reads")
-        .expect("the actual product exports its statement");
-    let facts = busbar_contract::rendering::read(&statement)
-        .expect("the actual product statement is valid");
-    let mut manifest = plugins::manifest(kind, &facts.name, "third-party");
-    manifest.version = facts.version;
-    manifest.statement = Some(hex::encode(statement));
+    let mut manifest = plugins::native_manifest(kind, &path, "third-party");
+    let name = manifest.name.clone();
     if kind == "hook" {
         assert_eq!(
-            facts.name, "busbar-hook-webrequest",
+            name, "busbar-hook-webrequest",
             "the supplied hook must be the actual webrequest product"
         );
 
@@ -144,7 +138,7 @@ fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, S
     let archive = plugins::signed(&plugins::key(0x33), manifest, &library);
     let hash = busbar_contract::redacted::sha256_hex(&archive);
     std::fs::write(directory.join(file), archive).expect("stage the signed actual product");
-    (facts.name, hash)
+    (name, hash)
 }
 
 async fn provider() -> (

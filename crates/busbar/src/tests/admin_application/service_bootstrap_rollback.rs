@@ -316,26 +316,15 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
                 std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
                     .expect("the nonanchor rollback requires the actual built MySQL Store"),
             );
-            let target_statement =
-                busbar_plugin_loader::dispatch::rendering_of_library(&target_path)
-                    .expect("the actual nonanchor Store Statement reads")
-                    .expect("the actual nonanchor Store exports its Statement");
-            let read = busbar_contract::rendering::read(&target_statement)
-                .expect("the nonanchor Statement is valid");
-            assert_eq!(
-                read.kind,
-                busbar_contract::kinds::codes::KindCode::Store as u32
-            );
+            // The native manifest completes only when the image's stamp states a Store.
+            let manifest = crate::root::test_plugins::native_manifest("store", &target_path, "acme");
             assert_ne!(
-                read.name, module,
+                manifest.name, module,
                 "anchor and nonanchor are actual distinct Store implementations"
             );
-            let mut manifest = plugins::manifest("store", &read.name, "acme");
-            manifest.version = read.version.clone();
-            manifest.statement = Some(hex::encode(target_statement));
             (
-                read.name,
-                read.version,
+                manifest.name.clone(),
+                manifest.version.clone(),
                 std::fs::read(target_path).unwrap(),
                 manifest,
             )

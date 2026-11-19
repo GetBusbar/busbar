@@ -12,7 +12,7 @@ fn response_clock_shares_the_actual_node_sequence_and_samples_wall_once() {
     }
     let clock = Arc::new(Clock(std::sync::atomic::AtomicU64::new(0)));
     let node = Node::with_clock(clock.clone());
-    assert_eq!(node.arrived(), Arrived::at(12_345, 0));
+    assert_eq!(node.checked_arrived().unwrap(), Arrived::at(12_345, 0));
     let stamp = node.checked_arrived().unwrap();
     assert_eq!(stamp, Arrived::at(12_345, 1));
     assert_eq!(stamp.secs(), 12);
@@ -142,7 +142,7 @@ async fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
 #[tokio::test]
 async fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let node = Node::new();
-    let taken: Vec<Arrived> = (0..4).map(|_| node.arrived()).collect();
+    let taken: Vec<Arrived> = (0..4).map(|_| node.checked_arrived().unwrap()).collect();
 
     for pair in taken.windows(2) {
         let (before, after) = (pair[0], pair[1]);
@@ -400,32 +400,6 @@ async fn the_nodes_interner_leaks_a_lane_name_once() {
     assert!(std::ptr::eq(first.as_str(), again.as_str()));
 }
 
-#[tokio::test]
-async fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
-    let node = Node::new();
-    let mut names = node
-        .lane_names
-        .lock()
-        .expect("the node's lane table is never poisoned");
-
-    let first = names
-        .resolve(LANE)
-        .expect("an unfrozen image interns a lane");
-    for _ in 0..64 {
-        let again = names
-            .resolve(LANE)
-            .expect("a repeated lane is the same lane");
-        assert!(std::ptr::eq(first.as_str(), again.as_str()));
-    }
-    assert_eq!(names.consulted(), 1);
-
-    let _ = names.resolve("a-second-configured-lane");
-    assert_eq!(
-        names.consulted(),
-        2,
-        "a name the node has not resolved still reaches the interner, exactly once"
-    );
-}
 
 #[tokio::test]
 async fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
