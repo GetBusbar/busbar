@@ -21,6 +21,7 @@ use crate::inbound::native::{
 };
 use crate::plane_driver::port::PortSeat;
 use crate::plane_driver::port_admission::{AdmittedUnit, Pending};
+use crate::plane_driver::port_routes::Mounted;
 use crate::plane_driver::request_admission::{
     AdmittedRequest, RequestAllocation, RequestPoolReceipt, RequestRoutes,
 };
@@ -67,6 +68,33 @@ impl NativeDataRoute {
         &self.owners.inventory
     }
 
+    /// Whether this path can admit `mounted` on `seat` at all, before any owner exists: the
+    /// route-shape half of [`Self::bind`]. Err names what it lacks. A route this path cannot admit
+    /// is never served unadmitted: the listener leaves it unmounted.
+    pub fn admits(app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
+        if app.oauth_as.is_some() {
+            return Err("the native data path does not serve under oauth_as");
+        }
+        if seat.audience.is_some() {
+            return Err("the native data path does not serve an audience-bound plane");
+        }
+        if mounted.flags != 0 || mounted.catalog {
+            return Err("the native data path admits no catalog, line, recovery or flagged route");
+        }
+        if mounted.auth != AUTH_PRINCIPAL || mounted.effective != AUTH_PRINCIPAL {
+            return Err("the native data path admits principal routes only");
+        }
+        if mounted.resource_kinds.is_empty()
+            || seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
+        {
+            return Err("the native data path admits a route only through its selected resources");
+        }
+        if seat.driver.has_hooks(mounted.route) {
+            return Err("the native data path does not run route hooks");
+        }
+        Ok(())
+    }
+
     pub fn bind(
         app: &App,
         seat: &PortSeat,
@@ -77,17 +105,7 @@ impl NativeDataRoute {
             return Err(DataRefused::Unsupported);
         };
         let mounted = target.mounted();
-        if app.oauth_as.is_some()
-            || seat.audience.is_some()
-            || mounted.flags != 0
-            || mounted.catalog
-            || mounted.auth != AUTH_PRINCIPAL
-            || mounted.effective != AUTH_PRINCIPAL
-            || mounted.resource_kinds.is_empty()
-            || seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
-            || seat.driver.has_hooks(mounted.route)
-            || !owners.chain.is_data()
-        {
+        if Self::admits(app, seat, mounted).is_err() || !owners.chain.is_data() {
             return Err(DataRefused::Unsupported);
         }
         if !seat.driver.caller().same_incarnation(target.caller())

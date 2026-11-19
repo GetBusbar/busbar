@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use busbar_contract::route::AuthPoints;
 use busbar_contract::route::{RouteAuth, RouteMethod};
+use busbar_kernel::auth::native_data::NativeDataRoute;
+use busbar_kernel::auth::native_upgrade::NativeUpgradeRoute;
 use busbar_kernel::state::App;
 
 use super::boot::ListenerNeeds;
@@ -321,8 +323,14 @@ pub(crate) fn unserved_line(instance: &str, route: u32, header: &str) -> String 
     )
 }
 
+/// The one line logged, at boot and on every apply, for a route no native path can admit.
+pub(crate) fn unadmitted_line(instance: &str, route: u32, pattern: &str, why: &str) -> String {
+    format!("route '{instance}/{route}' ({pattern}) is not served: {why}")
+}
+
 /// The effective chains of `served`'s routes against this candidate's opened auth instances, and the
-/// routes not served, each logged once here (boot and apply both assemble through this).
+/// routes not served (no instance reads their credential header, or no native path admits them),
+/// each logged once here (boot and apply both assemble through this).
 fn route_chains(
     app: &App,
     served: &Served,
@@ -351,11 +359,27 @@ fn route_chains(
     )?;
     let mut chains = super::port_mount::RouteChains::new();
     for seat in &served.ports {
-        let Some(routes) = names.get(&seat.instance) else {
-            continue;
-        };
+        let routes = names.get(&seat.instance);
         for route in served_routes(seat) {
-            let Some(names) = routes.get(&route.route) else {
+            // Nothing is served without its admission: a route neither native path can admit is
+            // not mounted (one line), whatever its chain.
+            let admitted = if route.flags & busbar_plugin_abi::plane::ROUTE_UPGRADE != 0 {
+                NativeUpgradeRoute::admits(app, seat, route)
+            } else {
+                NativeDataRoute::admits(app, seat, route)
+            };
+            if let Err(why) = admitted {
+                tracing::warn!(
+                    "{}",
+                    unadmitted_line(&seat.instance, route.route, &route.pattern, why)
+                );
+                chains
+                    .entry(seat.instance.clone())
+                    .or_default()
+                    .insert(route.route, None);
+                continue;
+            }
+            let Some(names) = routes.and_then(|routes| routes.get(&route.route)) else {
                 continue;
             };
             let chain = match names {
