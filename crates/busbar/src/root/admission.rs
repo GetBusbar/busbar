@@ -108,31 +108,14 @@ impl PluginAdmission for RootAdmission {
     fn bootstrap_probe_selected(
         &self,
         tarball: &[u8],
-        config_path: &std::path::Path,
-        provider_urls: &[String],
+        _config_path: &std::path::Path,
+        _provider_urls: &[String],
     ) -> Result<bool, Refusal> {
-        let unpacked = unpack_checked(tarball, " bootstrap candidate")?;
-        if !matches!(unpacked.manifest.kind.as_str(), "transport" | "plane") {
-            return Ok(false);
-        }
-        let Some(stated) = unpacked
-            .manifest
-            .stated_rendering()
-            .map_err(Refusal::Validation)?
-        else {
-            return Ok(false);
-        };
-        let candidate = super::loader::boot::Candidate::from_manifest(
-            stated,
-            &unpacked.manifest,
-            super::loader::boot::Origin::Dropped {
-                file: "bootstrap candidate".into(),
-                bytes: std::sync::Arc::new(unpacked.lib_bytes),
-            },
-        )
-        .map_err(Refusal::Validation)?;
-        Ok(unpacked.manifest.kind == "plane"
-            || candidate.serves(&super::boot::transport_uses_for(config_path, provider_urls)))
+        // The bootstrap selection read a dropped-in transport or plane door's Statement. Every
+        // plugin is a MIN-3 image now: no dropped-in door is selected for the bootstrap, and the
+        // archive still has to unpack and verify.
+        unpack_checked(tarball, " bootstrap candidate")?;
+        Ok(false)
     }
 
     fn is_tarball(&self, file: &str) -> bool {

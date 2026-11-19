@@ -3,11 +3,8 @@
 
 use std::sync::Arc;
 
-use super::linked::{linked_exports, Linked};
-use super::loader::{
-    boot::*, dispatch::LoadError, dispatch::ManifestFacts, LinkedPlugin, PluginRegistry,
-};
-use busbar_contract::abi::mechanism::KindCode;
+use super::loader::{boot::*, LinkedPlugin, PluginRegistry};
+use busbar_contract::kinds::KindCode;
 use busbar_contract::plugin_rows::PluginRows;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
@@ -180,13 +177,6 @@ pub(crate) async fn admit_format_with(
     }
 }
 
-// The stall window's per-plane step must cover one READY as the host bounds it.
-const _: () = assert!(
-    busbar_kernel::persistence::startup::READY_STEP.as_secs()
-        >= busbar_plugin_loader::dispatch::ready::READY_DEADLINE.as_secs()
-            + busbar_plugin_loader::dispatch::ready::CANCEL_GRACE.as_secs()
-);
-
 /// The wait line (FIRST-START-TAKEOVER §2.2; #319 r4 §8 for a record-format conversion): on the
 /// first wait and every 10 s after.
 fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
@@ -352,8 +342,7 @@ pub(crate) fn registry_rows(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
 ) -> Result<Arc<dyn PluginRows>, String> {
-    let mut linked: Vec<_> = i.linked.iter().map(linked_row).collect();
-    linked.extend(linked_exports(crate::LINKED.export_doors)?);
+    let linked: Vec<_> = i.linked.iter().map(linked_row).collect();
     let registry = registry_with_floor(linked, i.plugins, !i.inventory_only, &mut |n| match n {
         Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
         Note::Off => note(BuildNote::Off),
@@ -380,25 +369,19 @@ pub(crate) fn registry_rows(
 
 #[must_use]
 pub(crate) fn linked_row(row: &LinkedRow) -> LinkedPlugin {
-    let former = crate::LINKED.former;
     match *row {
         LinkedRow::Auth((key, canonical, door)) => {
             LinkedPlugin::auth_door_named(canonical, key, door)
-                .with_former_names(super::linked::words_of(former, "auth", key))
         }
     }
 }
 
 #[must_use]
 pub(crate) fn linked_registry() -> PluginRegistry {
-    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
+    let linked: Vec<_> = busbar_kernel::preflight::linked_rows()
         .iter()
         .map(linked_row)
         .collect();
-    linked.extend(
-        linked_exports(crate::LINKED.export_doors)
-            .expect("the build's linked export declarations must be valid"),
-    );
     PluginRegistry::empty()
         .link(linked)
         .expect("the build's linked plugin declarations must not conflict")
@@ -515,62 +498,17 @@ pub(crate) fn validate_dealt<'s>(
     Ok(())
 }
 
-fn validate_door(door: &DoorPlane, settings: &[u8]) -> Result<(), String> {
-    use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_JSON};
-    use busbar_contract::abi::mechanism::lifecycle::{slot as life, ValidateIn};
-    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-    let mut err = [0_u8; 1024];
-    let mut i: ValidateIn = blank_in();
-    i.settings = Blob {
-        ptr: settings.as_ptr(),
-        len: settings.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    };
-    i.err_buf = err.as_mut_ptr();
-    i.err_cap = err.len();
-    let mut f = super::loader::dispatch::Frame::new(i, blank_out::<OutHead>());
-    let called = door.answer(life::VALIDATE, &mut f);
-    if called.outcome == Outcome::Ready {
-        return Ok(());
-    }
-    Err(called.error.map_or_else(
-        || format!("{:?}", called.outcome),
-        |e| String::from_utf8_lossy(&e).into_owned(),
-    ))
-}
-
 pub fn discover(registry: &PluginRegistry) -> Result<Vec<Candidate>, String> {
     discovered(registry, |_| true)
 }
 
-pub(crate) fn listener_candidates(linked: &Linked) -> Result<Vec<Candidate>, String> {
-    listener_candidates_from(linked, dropped_registry())
-}
-
-fn listener_candidates_from(
-    linked: &Linked,
-    registry: Option<&PluginRegistry>,
-) -> Result<Vec<Candidate>, String> {
-    let mut candidates = registry.map(discover).transpose()?.unwrap_or_default();
-
-    candidates.retain(|candidate| !matches!(candidate.kind, KindCode::Plane | KindCode::Export));
-    candidates.extend(
-        dropped_registry()
-            .map(|registry| discovered(registry, |kind| matches!(kind, "plane" | "export")))
-            .transpose()?
-            .unwrap_or_default(),
-    );
-    for door in linked.plane_doors {
-        let candidate = Candidate::linked(*door)?;
-        if !candidates
-            .iter()
-            .any(|c| c.kind == candidate.kind && c.name == candidate.name)
-        {
-            candidates.push(candidate);
-        }
-    }
-    Ok(candidates)
+/// The dropped-in candidates whose declared inbound needs the listener plan reads. No linked row
+/// is a door any more: every linked plugin is a MIN-3 image.
+pub(crate) fn listener_candidates() -> Result<Vec<Candidate>, String> {
+    dropped_registry()
+        .map(discover)
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 /// A declared inbound need and the physical listener on which it is served.
@@ -608,7 +546,7 @@ pub fn configured_listener_needs(
     sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<ListenerNeeds, String> {
     let mut listeners = listener_projection(
-        listener_candidates(&crate::LINKED)?,
+        listener_candidates()?,
         &cfg.hooks,
         &cfg.export_defs,
         sections,
@@ -1639,244 +1577,6 @@ fn configured_block() -> Option<PluginsCfg> {
     plugins.enabled.then_some(plugins)
 }
 
-pub(crate) fn discover_planes(
-    linked: &Linked,
-    dropped: Option<&crate::root::loader::PluginRegistry>,
-) {
-    let set = match dropped {
-        Some(registry) => registry.open_planes(linked.plane_doors),
-        None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
-    };
-    let set = set.and_then(|mut set| {
-        let mut named = false;
-        for door in set.doors.iter_mut().take(linked.plane_doors.len()) {
-            let words = super::linked::words_of(linked.former, "plane", &door.name);
-            named |= !words.is_empty();
-            *door = door.clone().answering(words);
-        }
-        if named {
-            crate::root::loader::boot::one_owner(&set.doors)?;
-        }
-        Ok(set)
-    });
-    let set = set.unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    });
-    let _ = DOOR_CANDIDATES.set(set.doors);
-}
-
-#[must_use]
-pub(crate) fn unbound_sections() -> Vec<&'static str> {
-    let bound = door_planes();
-    DOOR_CANDIDATES
-        .get()
-        .map_or(&[][..], Vec::as_slice)
-        .iter()
-        .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
-        .filter_map(|c| c.verbs.first())
-        .filter_map(|section| {
-            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
-        })
-        .filter(|decl| !decl.fallback)
-        .map(|decl| decl.config_section)
-        .collect()
-}
-
-static PROVIDER_URLS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
-
-pub(crate) fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
-    let next = urls.into_iter().collect();
-    let previous = std::mem::replace(
-        &mut *PROVIDER_URLS.write().unwrap_or_else(|p| p.into_inner()),
-        next,
-    );
-    drop(previous);
-}
-
-fn transport_uses() -> Uses {
-    let urls = PROVIDER_URLS
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
-    transport_uses_for(&config_path(), &urls)
-}
-
-pub(crate) fn transport_uses_for(path: &std::path::Path, urls: &[String]) -> Uses {
-    let mut uses = plan(path).reaching(urls.iter().map(String::as_str));
-    uses.schemes.extend(
-        crate::LINKED_TRANSPORT_DOORS
-            .iter()
-            .filter_map(|(_, door)| Candidate::linked(*door).ok())
-            .flat_map(|c| c.schemes),
-    );
-    uses
-}
-
-pub(crate) fn check_bootstrap_transports(plugins: &PluginsCfg) -> Result<(), String> {
-    let Some(registry) = REGISTRY.get() else {
-        return Ok(());
-    };
-    let uses = transport_uses();
-    let mut selected = std::collections::BTreeSet::new();
-    for row in registry
-        .loadable()
-        .iter()
-        .filter(|row| row.manifest.kind == "transport")
-    {
-        if row
-            .candidate()?
-            .is_some_and(|candidate| candidate.serves(&uses))
-        {
-            selected.insert(row.manifest.name.clone());
-        }
-    }
-    busbar_kernel::appbuild::validate_bootstrap_artifacts(registry, &selected, plugins)
-}
-
-pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
-    std::sync::OnceLock::new();
-
-static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
-
-pub(crate) type DoorPlane = std::sync::Arc<
-    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>,
->;
-
-pub(crate) fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
-    let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
-    let uses = Uses {
-        roots: sections.into_iter().map(str::to_string).collect(),
-        ..Uses::default()
-    };
-    let used = crate::root::loader::boot::used_planes(&uses, doors);
-
-    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
-        crate::root::connector::the().clone();
-    let bound = crate::root::loader::boot::load_planes(
-        &used,
-        plugin_logs(),
-        std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
-        crate::root::dispatch::dispatcher().adopter(),
-        u32::MAX,
-        crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(conns)),
-    )
-    .unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    })
-    .into_iter()
-    .map(|(instance, plane)| (instance, std::sync::Arc::new(plane)))
-    .collect::<Vec<(String, DoorPlane)>>();
-
-    let path = crate::root::cli::resolve_config_path(crate::root::cli::argv().config.as_deref());
-    if let Some(doc) = document(std::path::Path::new(&path)) {
-        let seats = doors.iter().map(|c| {
-            (
-                c.name.as_str(),
-                Seat::of(kind_of(c.kind), &c.verbs, &c.name),
-            )
-        });
-        let refused = validate_dealt(&doc, seats, |instance, settings| {
-            bound
-                .iter()
-                .find(|(name, _)| name == instance)
-                .map_or(Ok(()), |(_, door)| validate_door(door, settings))
-        });
-        if let Err(refusal) = refused {
-            eprintln!("busbar: {refusal}");
-            crate::root::exit::exit(2);
-        }
-    }
-    let _ = DOOR_PLANES.set(bound);
-}
-
-static LOGS: std::sync::OnceLock<crate::root::loader::dispatch::PluginLogConfig> =
-    std::sync::OnceLock::new();
-
-pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
-    LOGS.get_or_init(|| {
-        let none = Default::default();
-        crate::root::loader::dispatch::PluginLogConfig::from_words(None, None, &none, None, None)
-            .expect("the plugins.logs defaults resolve")
-    })
-}
-
-pub(crate) fn door_planes() -> &'static [(String, DoorPlane)] {
-    DOOR_PLANES.get().map_or(&[], Vec::as_slice)
-}
-
-pub(crate) fn dropped_transports(
-    settings: &busbar_contract::transport::TransportSettings,
-) -> crate::root::registry::Dropped {
-    if let Some(opened) = WIRES.lock().unwrap_or_else(|p| p.into_inner()).clone() {
-        return opened;
-    }
-    let opened = open_dropped_transports(settings).unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    });
-    let retained = {
-        let mut wires = WIRES.lock().unwrap_or_else(|p| p.into_inner());
-        wires.get_or_insert_with(|| opened.clone()).clone()
-    };
-
-    drop(opened);
-    retained
-}
-
-static WIRES: std::sync::Mutex<Option<crate::root::registry::Dropped>> =
-    std::sync::Mutex::new(None);
-
-pub(crate) fn open_dropped_transports(
-    settings: &busbar_contract::transport::TransportSettings,
-) -> Result<crate::root::registry::Dropped, String> {
-    let doors = match REGISTRY.get() {
-        None => Vec::new(),
-        Some(registry) => registry
-            .open_transport_entries(&crate::root::doors::bind(), &transport_uses(), plugin_logs())
-            .and_then(|entries| {
-                entries
-                    .doors
-                    .into_iter()
-                    .map(|plugin| {
-                        let facts = plugin
-                            .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
-                            .cloned()
-                            .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
-                        #[cfg(test)]
-                        let key = facts.claims.first().copied().unwrap_or_default();
-                        let upgrades = facts.upgrades;
-                        let door = crate::root::doors::served(plugin, settings)?;
-                        Ok(crate::root::registry::DroppedDoor {
-                            #[cfg(test)]
-                            key,
-                            upgrades,
-                            door,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()
-            })?,
-    };
-    Ok(crate::root::registry::Dropped {
-        doors: std::borrow::Cow::Owned(doors),
-    })
-}
-
-pub(crate) fn publish_dropped_transports(dropped: crate::root::registry::Dropped) {
-    publish_transport_inventory(&WIRES, dropped);
-}
-
-fn publish_transport_inventory(
-    wires: &std::sync::Mutex<Option<crate::root::registry::Dropped>>,
-    dropped: crate::root::registry::Dropped,
-) {
-    let previous = wires
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .replace(dropped);
-    drop(previous);
-}
 
 #[cfg(test)]
 pub(crate) async fn compose_book(
