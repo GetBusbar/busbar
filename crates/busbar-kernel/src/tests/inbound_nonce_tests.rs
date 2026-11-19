@@ -172,7 +172,6 @@ fn host(mac: UnitMac) -> Arc<Inbound> {
         export_defs: Default::default(),
         admin: Default::default(),
         admin_chain: Default::default(),
-        auth_instances: Default::default(),
         admin_modules,
         public_url: Default::default(),
         oauth_as: Default::default(),

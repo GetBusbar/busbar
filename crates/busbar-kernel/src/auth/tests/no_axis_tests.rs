@@ -106,13 +106,7 @@ fn secrets() -> crate::config::secret::SecretResolver {
 }
 
 fn login(cfg: &AuthCfg) -> Result<LoginMethods, String> {
-    LoginMethods::build_on(
-        cfg,
-        registry().as_ref(),
-        &secrets(),
-        &mut crate::auth::instances::AuthInstances::default(),
-        &|| None,
-    )
+    LoginMethods::build_on(cfg, registry().as_ref(), &secrets())
 }
 
 #[test]
@@ -199,6 +193,21 @@ fn a_keys_admin_chain_opens_nothing_and_the_operator_carries_nothing() {
     let admin = AdminAuthChain::build(&cfg, &registry(), &secrets()).expect("keys admin builds");
     assert!(admin.modules.is_empty());
     assert!(admin.operator.carriers().is_empty());
+}
+
+/// D-OPERATOR (E6's finding (a)): an `admin_auth` module a native (MIN-3) auth image answers opens nothing here: the root
+/// builds that admin chain natively over the image's opened instance (`root::min3_admin_auth`).
+#[test]
+fn an_admin_module_a_native_image_answers_opens_no_door_instance() {
+    crate::preflight::publish_root_rows(crate::preflight::RootInstall {
+        native_auth: Some(|module| module == "native-op"),
+        ..Default::default()
+    });
+    let mut entry = AuthChainEntry::bare("native-op");
+    entry.name = "native-op".into();
+    if let Err(refusal) = AdminAuthChain::build(&admin_of(entry), &registry(), &secrets()) {
+        panic!("a natively answered admin module opens no door instance, yet the build refused: {refusal}");
+    }
 }
 
 #[test]

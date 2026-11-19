@@ -2244,68 +2244,15 @@ fn validate_providers_with(
             errors,
         );
         if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL != 0 {
-            let mut params = serde_json::Map::new();
-            if let Some(token_url) = provider_cfg.token_url.as_deref() {
-                params.insert(
-                    "token_url".into(),
-                    serde_json::Value::String(token_url.to_owned()),
-                );
-            }
-            if let Some(scope) = provider_cfg.scope.as_ref() {
-                params.insert("scope".into(), serde_json::Value::String(scope.clone()));
-            }
-            let params = serde_json::Value::Object(params);
             let settings_concrete = !provider_cfg
                 .token_url
                 .as_deref()
                 .is_some_and(is_env_placeholder);
-            let cred = crate::config::secret::resolve_linked_string_at_config(
-                &provider_cfg.api_key,
-                &busbar_contract::config_time::ConfigScope::config_time(),
-            )
-            .unwrap_or_default();
-            let cred = cred.expose(&crate::seal::lend());
             let plaintext = provider_cfg
                 .token_url
                 .as_deref()
                 .filter(|_| settings_concrete)
                 .and_then(token_url_plaintext_refusal);
-            let host_judged = |setting: &str| plaintext.is_some() && names_token_url(setting);
-            if settings_concrete && (!cred.trim().is_empty() || provider_cfg.api_key.is_none()) {
-                for e in outbound_credential_refusals(style, cred, &params) {
-                    if let Some(settings) = e.strip_prefix("settings: ") {
-                        let error: String = coded::config_provider_credential_invalid(
-                            format_args!("provider '{provider_name}' {settings}"),
-                        )
-                        .into();
-                        if !host_judged(settings) && !errors.contains(&error) {
-                            errors.push(error);
-                        }
-                    } else {
-                        errors.push(coded::config_provider_credential_invalid(format!(
-                            "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                            describe_reference(cfg, &provider_cfg.api_key)
-                        )).into());
-                    }
-                }
-            } else if settings_concrete {
-                if let Some(axis) = crate::preflight::linked_auth_axis() {
-                    for error in axis
-                        .check_outbound_settings(style, &params)
-                        .unwrap_or_else(|e| vec![e])
-                    {
-                        let setting = error.strip_prefix("settings: ").unwrap_or(&error);
-                        if !host_judged(setting) {
-                            errors.push(
-                                coded::config_provider_credential_invalid(format!(
-                                    "provider '{provider_name}' {setting}"
-                                ))
-                                .into(),
-                            );
-                        }
-                    }
-                }
-            }
             if let Some(refusal) = plaintext {
                 errors.push(format!("provider '{provider_name}' {refusal}"));
             }
@@ -2340,21 +2287,7 @@ fn validate_providers_with(
                         },
                     )
                 });
-                let refusals = match vetted {
-                    Err(e) => vec![e],
-                    Ok(()) => {
-                        let mut params = serde_json::Map::new();
-                        if let Some(scope) = &provider_cfg.scope {
-                            params.insert("scope".into(), serde_json::Value::String(scope.clone()));
-                        }
-                        outbound_credential_refusals(
-                            style,
-                            cred,
-                            &serde_json::Value::Object(params),
-                        )
-                    }
-                };
-                for e in refusals {
+                if let Err(e) = vetted {
                     errors.push(
                         coded::config_provider_credential_invalid(format!(
                         "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
@@ -2398,77 +2331,6 @@ fn metadata_blocked(url: &str, blocked: &[String]) -> Option<String> {
     ssrf_blocked_host(url, &[], false, blocked)
 }
 
-fn outbound_credential_refusals(
-    style: &str,
-    credential: &str,
-    params: &serde_json::Value,
-) -> Vec<String> {
-    let Some(axis) = crate::preflight::linked_auth_axis() else {
-        return Vec::new();
-    };
-    credential_refusals_from(axis.as_ref(), style, credential, params)
-}
-
-fn credential_refusals_from(
-    axis: &dyn busbar_contract::auth_calls::AuthAxis,
-    style: &str,
-    credential: &str,
-    params: &serde_json::Value,
-) -> Vec<String> {
-    let refusals = axis
-        .check_outbound(style, credential.as_bytes(), params)
-        .unwrap_or_else(|error| vec![error]);
-    let needles = credential_needles(credential);
-    refusals
-        .into_iter()
-        .map(|text| redact_credential(text, &needles))
-        .collect()
-}
-
-const REDACTED_CREDENTIAL: &str = "[redacted]";
-
-const MIN_NEEDLE: usize = 4;
-
-fn credential_needles(credential: &str) -> Vec<String> {
-    use base64::Engine as _;
-    use busbar_contract::json::{self, JsonValueTrait as _};
-    let mut needles = vec![credential.to_string(), credential.trim().to_string()];
-    if let Some((_, secret)) = credential.trim().split_once(':') {
-        needles.push(secret.to_string());
-    }
-    if let Ok(account) = json::parse_value(credential.as_bytes()) {
-        if let Some(key) = account.get("private_key").and_then(|key| key.as_str()) {
-            needles.push(key.to_owned());
-            if let Ok(quoted) = json::to_string(key) {
-                needles.push(quoted.trim_matches('"').to_string());
-            }
-        }
-    }
-    for raw in [credential, credential.trim()] {
-        for engine in [
-            &base64::engine::general_purpose::STANDARD,
-            &base64::engine::general_purpose::STANDARD_NO_PAD,
-            &base64::engine::general_purpose::URL_SAFE,
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        ] {
-            needles.push(engine.encode(raw.as_bytes()));
-        }
-    }
-    needles.retain(|n| n.len() >= MIN_NEEDLE);
-    needles.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-    needles.dedup();
-    needles
-}
-
-fn redact_credential(mut text: String, needles: &[String]) -> String {
-    for needle in needles {
-        if text.contains(needle.as_str()) {
-            text = text.replace(needle.as_str(), REDACTED_CREDENTIAL);
-        }
-    }
-    text
-}
-
 pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
     #[derive(serde::Deserialize)]
     struct TokenUri {
@@ -2496,12 +2358,6 @@ fn token_url_plaintext_refusal(token_url: &str) -> Option<String> {
             "token_url must use https (got '{token_url}'); it carries the client secret, and no private or loopback host is exempt"
         )
     })
-}
-
-/// Whether an auth owner's settings refusal is about `token_url`: once the host has refused that
-/// setting, the owner's refusal of the same setting is not a second fault.
-fn names_token_url(refusal: &str) -> bool {
-    refusal.starts_with("token_url ") || refusal.contains("`token_url`")
 }
 
 /// A credential reference as the operator wrote it: the admitted shorthand (`env:VAR`,
@@ -2569,10 +2425,6 @@ mod store_required_tests;
 #[cfg(test)]
 #[path = "tests/secret_shorthand_declared_tests.rs"]
 mod secret_shorthand_declared_tests;
-
-#[cfg(test)]
-#[path = "tests/credential_echo_tests.rs"]
-mod credential_echo_tests;
 
 #[cfg(test)]
 #[path = "tests/boot_advice_tests.rs"]

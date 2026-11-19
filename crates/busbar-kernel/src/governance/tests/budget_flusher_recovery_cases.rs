@@ -193,7 +193,6 @@ async fn flusher_resumes_not_landed_with_current_cost(drain: bool) {
         admin: Default::default(),
         admin_chain: Default::default(),
         admin_modules,
-        auth_instances: Default::default(),
         public_url: Default::default(),
         oauth_as: Default::default(),
         demotion_record: Default::default(),

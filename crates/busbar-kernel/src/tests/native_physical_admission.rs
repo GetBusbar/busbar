@@ -138,7 +138,6 @@ pub(crate) fn app() -> Arc<App> {
         export_defs: Default::default(),
         admin: Default::default(),
         admin_chain: Default::default(),
-        auth_instances: Default::default(),
         admin_modules: Arc::new(
             crate::auth::AdminAuthChain::build(&cfg, &registry, &resolver).unwrap(),
         ),

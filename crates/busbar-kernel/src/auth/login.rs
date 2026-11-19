@@ -14,7 +14,6 @@ use super::self_keys::{
     HandleProvisioner, SelfMint,
 };
 use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
-pub(crate) use crate::off_path::auth::login::lend_browser_login_secret;
 use crate::state::{App, AppHandle};
 
 /// One resolved hosted-login method (`identity-providers.<name>`): the login-capable plugin instance
@@ -372,23 +371,6 @@ pub async fn issue_self_key(
         Err(ExchangeError::Unbound) => SelfKeyIssue::Unbound,
         Err(ExchangeError::Held(reason)) => SelfKeyIssue::Held(reason),
         Err(_) => SelfKeyIssue::Failed,
-    }
-}
-
-pub(crate) fn validate_browser_login_secret(
-    login_kind: busbar_contract::auth::LoginKind,
-    has_secret: bool,
-) -> Result<(), &'static str> {
-    match (login_kind, has_secret) {
-        (busbar_contract::auth::LoginKind::Redirect, false) => Err(
-            "a redirect (OAuth) login method requires browser_login.client_secret (it is a \
-             confidential client)",
-        ),
-        (busbar_contract::auth::LoginKind::Credential, true) => Err(
-            "a credential login method must not set browser_login.client_secret (it has no \
-             confidential-client secret to hold)",
-        ),
-        _ => Ok(()),
     }
 }
 

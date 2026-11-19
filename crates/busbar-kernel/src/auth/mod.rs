@@ -29,11 +29,9 @@ pub mod native_chain;
 pub mod native_data;
 pub mod native_policy;
 pub mod native_upgrade;
-pub mod relend;
 pub mod verdicts;
 #[cfg(test)]
 use crate::off_path::auth::chain::admin_head;
-pub(crate) use crate::off_path::auth::chain::auth_refusal;
 use crate::off_path::auth::chain::{
     admin_door_of_key, admin_head_with, admin_keys_arm, admin_verbs_named, module_scope_cap,
 };
@@ -109,8 +107,6 @@ pub(crate) struct CredentialReader {
     pub(crate) name: std::sync::Arc<str>,
     pub(crate) calls: std::sync::Arc<dyn AuthCalls>,
     pub(crate) kinds: std::sync::Arc<[String]>,
-
-    pub(crate) issued: Option<busbar_contract::auth_calls::IssuedShape>,
 }
 
 pub(crate) struct ChainEntry {
@@ -3283,9 +3279,6 @@ mod plugin_chain_tests;
 mod chain_walk_tests;
 
 #[cfg(test)]
-#[path = "tests/instances_tests.rs"]
-mod instances_tests;
-#[cfg(test)]
 #[path = "tests/no_axis_tests.rs"]
 mod no_axis_tests;
 
@@ -3324,7 +3317,6 @@ impl AuthMiddleware {
                 name: "reader".into(),
                 calls,
                 kinds: std::sync::Arc::from([]),
-                issued: None,
             }],
             reader_by_carrier: std::iter::once((carrier.clone(), 0)).collect(),
             carriers: vec![carrier],
