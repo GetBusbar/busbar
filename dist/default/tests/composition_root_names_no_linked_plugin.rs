@@ -126,7 +126,10 @@ fn a_carrier_may_name_its_row_by_package_and_the_two_spellings_are_one_row() {
     );
     let (by_key, _) = linked_source(CARRIER_MANIFEST, &|_| true);
     let (by_name, _) = linked_source(&by_package, &|_| true);
-    assert_eq!(by_name, by_key, "the generated source does not depend on the spelling");
+    assert_eq!(
+        by_name, by_key,
+        "the generated source does not depend on the spelling"
+    );
     let twice = CARRIER_MANIFEST.replace("rtc = \"wire-b\"", "rtc = \"busbar-wire-a\"");
     assert!(
         std::panic::catch_unwind(|| generator::carrier_rows(&twice)).is_err(),
