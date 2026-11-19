@@ -270,7 +270,9 @@ impl Pending {
             return Err(unresolved("a selected declaration names no original route"));
         }
         if declaration.selected() && matches!(&commit, Commit::Ordinary(_)) {
-            return Err(unresolved("a selected declaration on an ordinary admission"));
+            return Err(unresolved(
+                "a selected declaration on an ordinary admission",
+            ));
         }
         let allocation = self
             .allocation

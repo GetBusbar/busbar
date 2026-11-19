@@ -695,8 +695,7 @@ async fn a_native_record_write_waits_for_the_money_and_is_never_made_without_it(
         books: &request.pending,
         carrier: None,
     };
-    let result =
-        crate::plane_driver::port_serve::run_session(&plane, &req(), b"{}", drive).await;
+    let result = crate::plane_driver::port_serve::run_session(&plane, &req(), b"{}", drive).await;
     assert!(
         matches!(&result, Err(SessionError::AdmissionRefused(refusal)) if refusal.status == 402),
         "{result:?}"

@@ -714,11 +714,7 @@ async fn a_refresh_failure_emits_8026_once_per_streak_window_and_audits_degraded
     settle().await;
     assert_eq!(report.coded(8026).len(), 2, "again after a minute");
     assert_eq!(
-        report
-            .audits()
-            .iter()
-            .filter(|a| a.2 == "degraded")
-            .count(),
+        report.audits().iter().filter(|a| a.2 == "degraded").count(),
         2,
         "each report audited degraded: {:?}",
         report.audits()
@@ -843,7 +839,10 @@ async fn a_definitive_answer_drops_after_one_confirming_reread_and_an_outage_kee
             "kept until a re-read confirms it"
         );
         settle().await;
-        assert!(report.coded(8027).is_empty(), "a re-read inside one second confirms nothing");
+        assert!(
+            report.coded(8027).is_empty(),
+            "a re-read inside one second confirms nothing"
+        );
         tokio::time::advance(Duration::from_secs(1)).await;
         presented(&binding).await;
         settle().await;
@@ -930,7 +929,11 @@ async fn a_definitive_answer_drops_after_one_confirming_reread_and_an_outage_kee
         settle().await;
         tokio::time::advance(Duration::from_secs(2)).await;
     }
-    assert!(outage.calls() >= 3, "the outage was read: {}", outage.calls());
+    assert!(
+        outage.calls() >= 3,
+        "the outage was read: {}",
+        outage.calls()
+    );
     assert_eq!(
         presented(&binding).await,
         header("authorization", "v1"),

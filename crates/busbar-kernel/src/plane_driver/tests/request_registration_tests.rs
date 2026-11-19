@@ -1004,7 +1004,11 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 );
                 receipt.member_grants().get("p").cloned()
             });
-        assert_eq!(walked, expected.map(|members| Some(lanes(members))), "{grant:?}");
+        assert_eq!(
+            walked,
+            expected.map(|members| Some(lanes(members))),
+            "{grant:?}"
+        );
 
         let (ctx, _lease) = context_with_key(unit + 1, pool_scoped("reach", grant));
         let local = allocation(ctx).local(&routes).unwrap();
@@ -1014,7 +1018,11 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
             local.member_grants().is_empty(),
             "{grant:?}: a local unit is granted no member"
         );
-        assert_eq!(local.walk_key(), None, "{grant:?}: a local unit routes nowhere");
+        assert_eq!(
+            local.walk_key(),
+            None,
+            "{grant:?}: a local unit routes nowhere"
+        );
     }
 }
 

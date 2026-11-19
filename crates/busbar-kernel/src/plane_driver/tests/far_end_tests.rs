@@ -2704,7 +2704,11 @@ async fn a_member_bound_over_an_upgrade_need_dials_its_spelled_base() {
         .expect("the seat composes");
     let mut composed = composed.routes.into_values().next().expect("its route");
     let destination = DestinationId::new(1);
-    let held = r.egress.routes.remove(&destination).expect("the rig's route");
+    let held = r
+        .egress
+        .routes
+        .remove(&destination)
+        .expect("the rig's route");
     composed.auth = held.auth;
     let own = composed.need;
     r.egress.routes.insert(destination, composed);
@@ -2738,7 +2742,10 @@ async fn a_member_bound_over_an_upgrade_need_dials_its_spelled_base() {
     }
     let needs = r.table.needs.lock().unwrap().clone();
     assert_eq!(needs.len(), 2);
-    assert_ne!(needs[0], own.0, "the WebSocket request opens on the ride's own need");
+    assert_ne!(
+        needs[0], own.0,
+        "the WebSocket request opens on the ride's own need"
+    );
     assert_eq!(needs[1], own.0, "the HTTP request on the member's need");
 }
 

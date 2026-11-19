@@ -1521,8 +1521,14 @@ fn a_third_party_metrics_sink_never_serves_metrics() {
     );
 
     for defs in [
-        [("theirs", THIRD_PARTY_METRICS), ("ours", FIRST_PARTY_METRICS)],
-        [("ours", FIRST_PARTY_METRICS), ("theirs", THIRD_PARTY_METRICS)],
+        [
+            ("theirs", THIRD_PARTY_METRICS),
+            ("ours", FIRST_PARTY_METRICS),
+        ],
+        [
+            ("ours", FIRST_PARTY_METRICS),
+            ("theirs", THIRD_PARTY_METRICS),
+        ],
     ] {
         let (mut scraping, recorder) = admit(&defs);
         scraping.sort();

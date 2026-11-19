@@ -234,7 +234,10 @@ fn a_need_over_an_upgrade_framer_spells_the_base_url_in_its_scheme() {
     };
     let secure = route("secure");
     let (need, base) = websocket_base(secure).expect("an https member has a WebSocket ride");
-    assert_ne!(need, secure.need, "the WebSocket spelling rides its own need");
+    assert_ne!(
+        need, secure.need,
+        "the WebSocket spelling rides its own need"
+    );
     assert_eq!(base, "wss://secure.test/v1", "https is spelled wss");
     assert_eq!(
         secure.ride(0).map(|r| (r.need, r.base_url)),
@@ -265,7 +268,11 @@ fn a_registration_member_rides_every_member_target_need() {
     let mut needs = std::collections::BTreeSet::new();
     for member in &pool.members {
         let route = pool.routes.get(&member.destination).expect("a route");
-        assert!(needs.insert(route.need), "{}: its own need is its own", member.upstream);
+        assert!(
+            needs.insert(route.need),
+            "{}: its own need is its own",
+            member.upstream
+        );
         assert_eq!(
             route.rides.len(),
             1,
@@ -278,7 +285,10 @@ fn a_registration_member_rides_every_member_target_need() {
             "{}: no two needs of a seat are the same, own or ridden",
             member.upstream
         );
-        assert_eq!(keep, &route.keep, "the ride keeps the member's response-head rule");
+        assert_eq!(
+            keep, &route.keep,
+            "the ride keeps the member's response-head rule"
+        );
         let named = ride.0 + 1;
         assert_eq!(route.ride(named).map(|r| r.need), Some(*ride));
         assert_eq!(websocket_base(route).map(|(need, _)| need), Some(*ride));
@@ -292,7 +302,10 @@ fn a_registration_member_rides_every_member_target_need() {
     }
     let unbound = needs.iter().map(|n| n.0).max().expect("needs") + 2;
     for route in pool.routes.values() {
-        assert!(route.ride(unbound).is_none(), "a need no member binds is no ride");
+        assert!(
+            route.ride(unbound).is_none(),
+            "a need no member binds is no ride"
+        );
     }
 }
 
@@ -308,8 +321,15 @@ fn connection_route_binds_nested_declared_exchange_without_shared_auth_or_peer_i
     )
     .expect("the seat composes");
     let route = pool.routes.values().next().expect("the member's route");
-    assert!(route.auth.is_none(), "a registration route carries no shared configured auth");
-    assert_eq!(route.rides.len(), 1, "the registration rides its WebSocket spelling");
+    assert!(
+        route.auth.is_none(),
+        "a registration route carries no shared configured auth"
+    );
+    assert_eq!(
+        route.rides.len(),
+        1,
+        "the registration rides its WebSocket spelling"
+    );
     for (need, _) in &route.rides {
         let base = route.ride(need.0 + 1).expect("the ride").base_url;
         assert_eq!(
@@ -317,9 +337,18 @@ fn connection_route_binds_nested_declared_exchange_without_shared_auth_or_peer_i
             "a ride is the member's own origin, never another (an exchange endpoint is its auth's, not a ride)"
         );
         let anchors = route.anchors_for(*need);
-        assert!(anchors.client_identity.is_none(), "no client identity rides");
-        assert_eq!(anchors.key_pin, route.anchors.key_pin, "the member's own pin, at its own origin");
-        assert!(anchors.private_reach, "the member's own reach, at its own origin");
+        assert!(
+            anchors.client_identity.is_none(),
+            "no client identity rides"
+        );
+        assert_eq!(
+            anchors.key_pin, route.anchors.key_pin,
+            "the member's own pin, at its own origin"
+        );
+        assert!(
+            anchors.private_reach,
+            "the member's own reach, at its own origin"
+        );
     }
     assert!(
         route

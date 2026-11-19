@@ -31,7 +31,8 @@ fn install_inert() {
 
 /// Both root listeners state their plaintext acceptance (BUSBAR-3172 stays in force: a listener with
 /// neither TLS nor an acceptance is refused before the claimant rule is reached).
-const LISTENER_ACCEPTANCES: &str = "listen_insecure_transport: { accept: [plaintext], reason: \"fixture\" }\n\
+const LISTENER_ACCEPTANCES: &str =
+    "listen_insecure_transport: { accept: [plaintext], reason: \"fixture\" }\n\
      admin_listen_insecure_transport: { accept: [plaintext], reason: \"fixture\" }\n";
 
 fn errors_of(yaml: &str) -> Vec<String> {

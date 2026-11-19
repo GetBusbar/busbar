@@ -431,7 +431,11 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
     // failed (`port::drive_session`), and this line says where.
     let at = |step: &'static str| {
         move |error: SessionError| {
-            tracing::warn!(step, ?error, "a pending admission ended before its unit opened");
+            tracing::warn!(
+                step,
+                ?error,
+                "a pending admission ended before its unit opened"
+            );
             error
         }
     };
