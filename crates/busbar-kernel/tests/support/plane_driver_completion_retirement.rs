@@ -369,52 +369,6 @@ impl MoneySeam for Money {
     }
 }
 
-fn calls() -> (Arc<Calls>, Arc<Control>, usize) {
-    let d = Arc::new(Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_contract::services::test_caller_binding(),
-    ));
-    let p = dispatch::load_linked::<Plane>(
-        &LinkedRow::of(door).unwrap(),
-        Bind {
-            accept: Default::default(),
-            instance: "completion-retirement".into(),
-            max_inflight_cap: 8,
-            sink: Arc::new(NoSink),
-            dispatcher: d.adopter(),
-            conns: ConnTable::Probe,
-        },
-    )
-    .unwrap();
-    // SAFETY: OPEN frames have zero-valid pointer, integer and span fields.
-    let (mut input, mut out): (plane::PlaneOpenIn, plane::PlaneOpenOut) =
-        unsafe { std::mem::zeroed() };
-    input.open.head = dispatch::in_head();
-    input.open.generation = 1;
-    out.open.head = dispatch::out_head();
-    let mut open = Frame::new(input, out);
-    assert_eq!(
-        p.call(
-            busbar_contract::abi::mechanism::lifecycle::slot::OPEN,
-            &mut open
-        )
-        .outcome,
-        Outcome::Ready
-    );
-    let instance = open.out.open.instance as usize;
-    let control = Arc::new(Control::default());
-    controls().lock().unwrap().insert(instance, control.clone());
-    (
-        Arc::new(Calls {
-            metadata: Double::default(),
-            actual: PlaneInstance::new(p, d, 0),
-            control: control.clone(),
-        }),
-        control,
-        instance,
-    )
-}
-
 fn release(c: &Control, primary: bool) {
     if primary {
         c.allow_primary.store(true, Ordering::SeqCst);

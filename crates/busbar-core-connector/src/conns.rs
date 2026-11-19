@@ -15,7 +15,6 @@ pub mod child_job;
 pub mod compose;
 pub mod datagram;
 pub(crate) mod dialled;
-pub mod doors;
 pub mod dtls;
 pub mod egress_audit;
 pub mod endpoint;
