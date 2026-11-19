@@ -93,10 +93,12 @@ fn a_1_4_and_a_1_5_0_config_are_unsupported() {
     }
 }
 
-/// Round 12 C-RETIRE: no 1.5.5 config held a transport instance.
+/// Round 12 C-RETIRE: no 1.5.5 config held a transport instance. (A section that names only the retired
+/// carrier modules is decision 16's case and is accepted: `retired_carriers_tests`.)
 #[test]
 fn an_unstamped_transport_section_is_refused() {
-    let refused = refuse(&tree("transport:\n  tcp: {module: tcp}\n")).unwrap_err();
+    assert!(refuse(&tree("transport:\n  tcp: {module: tcp}\n")).is_ok());
+    let refused = refuse(&tree("transport:\n  web: {module: http}\n")).unwrap_err();
     assert_eq!(refused.word(), "CONFIG");
     assert!(refused.to_string().contains("`transport:`"), "{refused}");
     assert!(refused.to_string().ends_with(UPGRADE_FIRST), "{refused}");

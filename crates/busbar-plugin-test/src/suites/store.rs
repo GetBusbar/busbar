@@ -68,7 +68,10 @@ mod cases {
             &*self.0.backend
         }
         fn slot_rows(&self, _writer: [u8; 16]) -> usize {
-            unreachable!("the suite runs no case that counts slot rows")
+            unreachable!("a subject that does not count slot rows is never asked to")
+        }
+        fn counts_slot_rows(&self) -> bool {
+            false
         }
         fn jump_clock(&self, _seconds: u64) -> bool {
             false

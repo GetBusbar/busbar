@@ -396,7 +396,21 @@ fn admit_dropped_images(
 ) -> Result<(), String> {
     let policy = super::boot::trust_policy(plugins, env!("CARGO_PKG_VERSION"))
         .map_err(|error| format!("plugins.trust is invalid: {error}"))?;
+    // Decision 16: an image of a retired carrier plugin (tcp, stdio) left in the plugins directory is accepted
+    // and ignored, with one notice per carrier. It is never admitted, and never a refusal of the boot.
+    let mut told = Vec::new();
     for row in scanned.loadable() {
+        if let Some(carrier) = super::retired_carriers::retired(&row.manifest.name) {
+            if !told.contains(&carrier) {
+                told.push(carrier);
+                tracing::warn!(
+                    plugin = %row.manifest.name,
+                    "{}",
+                    carrier.notice("an image in the plugins directory")
+                );
+            }
+            continue;
+        }
         match busbar_plugin_loader::admit::admit_bytes(&row.lib_bytes, &row.manifest, &policy) {
             Ok(image) => admitted.push((image, row.manifest.alias.clone())),
             Err(refusal) => tracing::debug!(

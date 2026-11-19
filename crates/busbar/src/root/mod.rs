@@ -199,6 +199,9 @@ pub mod registry;
 )]
 pub(crate) mod native_secrets;
 /// The launch variables 1.6.0 retired: the BUSBAR-3029 "set but ignored" notice.
+// Only the Linux boot loads plugin images, so only it (and the tests) names a retired carrier.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) mod retired_carriers;
 pub(crate) mod retired_env;
 pub(crate) mod secret_custody;
 pub(crate) mod secret_grammar;
@@ -257,7 +260,6 @@ pub(crate) mod store_double;
 #[cfg(test)]
 #[path = "tests/real_store.rs"]
 pub(crate) mod real_store;
-
 pub(crate) mod selected_report;
 #[cfg(test)]
 mod selected_report_tests;

@@ -31,6 +31,7 @@ pub(crate) fn run(
     // The carve-out check is first, after the overlay fold (`steps::v0`): its warning leads the
     // 1d lines and sees the document as the operator wrote it.
     retire_metadata_carve_outs(root, report);
+    crate::retired_carriers::drop_retired(root, resolved, report);
     migrate_plugin_trust(root, resolved, report)?;
     drop_overlay_selector(root, report);
     retire_route_policy_header(root, resolved, report)?;
