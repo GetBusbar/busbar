@@ -139,6 +139,31 @@ pub(super) async fn prepare_unverified(
     .await
 }
 
+/// A signed route's request whose signature verified over its exact bytes and whose replay claim
+/// was won (`NativeSignedRoute::admit`). The request the plane is handed is the owner's own
+/// verified request: the body is taken from the value verification returned and from nowhere
+/// else, so nothing is parsed that was not verified. The sender is no principal (it earned no
+/// key): the plane is told the request is signed, and is given no identity and no credential.
+pub(super) async fn serve_signed(
+    owner: PhysicalUnbilledExecution,
+    route: &busbar_kernel::auth::native_signed_route::NativeSignedRoute,
+) -> Result<UnbilledResponse, InputError> {
+    let owner = Arc::new(owner);
+    let binding = owner.binding().clone();
+    let (seat, route_id) = seat_of(&binding)?;
+    let verified = Arc::clone(owner.signed_request().ok_or(InputError::Invalid)?);
+    serve(
+        owner,
+        seat,
+        route_id,
+        verified,
+        Arc::clone(route.withheld()),
+        Principal::Anonymous,
+        Vec::new(),
+    )
+    .await
+}
+
 fn refused(
     request: CompletingPhysicalRequest,
     failed: busbar_kernel::auth::native_data::DataPreparationFailed,
@@ -190,7 +215,9 @@ async fn serve(
                         bearer: None,
                         principal,
                         operator: false,
-                        signed: None,
+                        // Signed exactly when the owner holds the request a signature
+                        // verified (`complete_signed`); no other owner can say so.
+                        signed: executing.signed_request().map(|_| true),
                     },
                     audience: seat.audience.as_deref().unwrap_or_default(),
                     now_s,

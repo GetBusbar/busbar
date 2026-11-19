@@ -10,17 +10,25 @@
 //! A refusal decided after verification on such a route (the key may not see what it named, the
 //! route keeps state per caller and the caller is shared) is answered under the same authority:
 //! it is an answer to a verified caller that moved no money.
+//!
+//! A third producer is the signed class: a route whose record admits a signed sender is
+//! completed by the value its signature verifier returned for this exact request
+//! (`complete_signed`), which is also the only way to the request's body; a request that
+//! verifier did not admit is answered by core under `refuse_signed` and serves nothing.
 
 use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
-use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_PUBLIC};
+use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_PUBLIC, AUTH_SIGNED_INGRESS};
 
 use super::refusal::PreparationState;
+use super::request_snapshot::ChargedRequestSnapshot;
 use super::{
     ArrivalRefusal, BindError, CompletingPhysicalRequest, Phase, RequestBinding, RouteTarget,
 };
 use crate::auth::native_data::DataAuthorization;
+use crate::auth::native_signed::SignedIngressVerified;
+use crate::auth::native_signed_route::SignedUnserved;
 use crate::state::AdmissionLease;
 
 /// What admitted the request.
@@ -30,6 +38,17 @@ enum UnbilledProof {
     Verified { _authorization: DataAuthorization },
     /// The route's record admits a caller that presents nothing.
     Unverified { _lease: AdmissionLease },
+    /// The route's signature verifier admitted the sender and its replay claim was won. A signed
+    /// sender earns no key: there is no authorization, only the request that was verified. Its
+    /// snapshot is kept here because it is the one way to the body
+    /// ([`PhysicalUnbilledExecution::signed_request`]).
+    Signed {
+        _lease: AdmissionLease,
+        subject: Box<str>,
+        request: Arc<ChargedRequestSnapshot>,
+    },
+    /// A signed route's request that was not admitted: core answers it and nothing is served.
+    SignedUnserved { _why: SignedUnserved },
 }
 
 /// One plane request admitted with no unit. Dropping it cancels the request.
@@ -52,7 +71,33 @@ impl PhysicalUnbilledExecution {
     pub fn authorization(&self) -> Option<&DataAuthorization> {
         match &self.proof {
             UnbilledProof::Verified { _authorization } => Some(_authorization),
-            UnbilledProof::Unverified { .. } => None,
+            UnbilledProof::Unverified { .. }
+            | UnbilledProof::Signed { .. }
+            | UnbilledProof::SignedUnserved { .. } => None,
+        }
+    }
+
+    /// The request a signature verified, whole: its head and the body that was verified, byte for
+    /// byte as received. `None` unless the route's signature verifier admitted this request: a
+    /// signed route's body is parsed from here and from nowhere else, so nothing parses a body
+    /// that was not verified.
+    pub fn signed_request(&self) -> Option<&Arc<ChargedRequestSnapshot>> {
+        match &self.proof {
+            UnbilledProof::Signed { request, .. } => Some(request),
+            UnbilledProof::Verified { .. }
+            | UnbilledProof::Unverified { .. }
+            | UnbilledProof::SignedUnserved { .. } => None,
+        }
+    }
+
+    /// Who a verified signed sender is recorded as; `None` unless a signature admitted this
+    /// request.
+    pub fn signed_subject(&self) -> Option<&str> {
+        match &self.proof {
+            UnbilledProof::Signed { subject, .. } => Some(&**subject),
+            UnbilledProof::Verified { .. }
+            | UnbilledProof::Unverified { .. }
+            | UnbilledProof::SignedUnserved { .. } => None,
         }
     }
 
@@ -169,6 +214,103 @@ impl CompletingPhysicalRequest {
         Ok(PhysicalUnbilledExecution {
             binding: self.binding.clone(),
             proof: UnbilledProof::Unverified { _lease: lease },
+        })
+    }
+}
+
+// ---- signed ingress ----
+
+impl CompletingPhysicalRequest {
+    /// Whether this request's route is a plane route mounted as the signed class, by the route's
+    /// own declaration and with the operator's choice the same.
+    fn check_signed_route(&self) -> Result<(), ArrivalRefusal> {
+        let RouteTarget::Plane(target) = self.binding.route.target() else {
+            return Err(ArrivalRefusal::Class);
+        };
+        let mounted = target.mounted();
+        if mounted.auth != AUTH_SIGNED_INGRESS || mounted.effective != AUTH_SIGNED_INGRESS {
+            return Err(ArrivalRefusal::Class);
+        }
+        Ok(())
+    }
+
+    /// Complete a signed route's request for the sender its signature verifier admitted. The
+    /// proof is the verified value itself, and it must be this request's: the body it leads to
+    /// is this request's own snapshot's body, where it lies (the same bytes, not equal ones). No
+    /// key and no unit: a signed sender is "verified, not billed".
+    ///
+    /// Only [`crate::auth::native_signed_route::NativeSignedRoute::admit`] calls this, with the
+    /// value it has just been handed for this same request.
+    pub(crate) fn complete_signed(
+        mut self,
+        verified: &SignedIngressVerified<'_>,
+    ) -> Result<PhysicalUnbilledExecution, ArrivalRefusal> {
+        self.check_signed_route()?;
+        let request = self
+            .binding
+            .snapshot()
+            .map_err(|_| ArrivalRefusal::ForeignInput)?;
+        if !std::ptr::eq(verified.body(), request.body()) || verified.subject().is_empty() {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
+        self.binding.check_live()?;
+        let lease = self
+            .binding
+            .handle
+            .admit_current(self.binding.app(), self.binding.invocation(), |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .map_err(|_| ArrivalRefusal::Binding(BindError::Generation))?;
+        self.enter_unbilled(PreparationState::Unused)?;
+        self.cancel_on_drop = false;
+        Ok(PhysicalUnbilledExecution {
+            binding: self.binding.clone(),
+            proof: UnbilledProof::Signed {
+                _lease: lease,
+                subject: verified.subject().into(),
+                request,
+            },
+        })
+    }
+
+    /// Answer a signed route's request that was not admitted: core's refusal by the table (the
+    /// one 401, 413 for a body over the bound, 400 for trailers, 503 when the verifier or the
+    /// replay store could not answer). The request is consumed into `Refusing`: nothing can be
+    /// served from it, and its owner leads to no body.
+    pub(crate) fn refuse_signed(
+        mut self,
+        why: SignedUnserved,
+    ) -> Result<PhysicalUnbilledExecution, ArrivalRefusal> {
+        self.check_signed_route()?;
+        {
+            let mut phase = self
+                .binding
+                .state
+                .phase
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *phase != Phase::Completing {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if *self
+                .binding
+                .state
+                .preparation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                != PreparationState::Unused
+            {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
+                return Err(ArrivalRefusal::Deadline);
+            }
+            *phase = Phase::Refusing;
+        }
+        self.cancel_on_drop = false;
+        Ok(PhysicalUnbilledExecution {
+            binding: self.binding.clone(),
+            proof: UnbilledProof::SignedUnserved { _why: why },
         })
     }
 }

@@ -129,11 +129,16 @@ pub(crate) fn guest_lines(
                 .chain(&routes.upgrade)
                 .filter_map(move |route| {
                     // A route that is not served is not mounted (§12.11 as ruled).
-                    let chain = match own.and_then(|own| own.get(&route.route)) {
+                    let (chain, own_chain) = match own.and_then(|own| own.get(&route.route)) {
                         Some(None) => return None,
-                        Some(Some(own)) => own.as_slice(),
-                        None => chain,
+                        Some(Some(own)) => (own.as_slice(), true),
+                        None => (chain, false),
                     };
+                    // A signed route's line names its own chain (the readers of its signature
+                    // header): that chain is its signature verifier, bound by the listener plan
+                    // as a `NativeSignedRoute`. It never names the data chain: a signed route
+                    // with no chain of its own is not mounted at all.
+                    let signed = own_chain && route.effective == AUTH_SIGNED_INGRESS;
                     let methods = methods_of(route.methods)
                         .into_iter()
                         .fold(0, |mask, method| mask | method_bit(method.as_str()));
@@ -151,7 +156,7 @@ pub(crate) fn guest_lines(
                         },
                         claimant: Claimant::Plane(seat.instance.clone()),
                         dialect: 0,
-                        auth: if auth_of(route.effective) == RouteAuth::Key {
+                        auth: if auth_of(route.effective) == RouteAuth::Key || signed {
                             super::serve::chain_auth(chain)
                         } else {
                             LineAuth::None

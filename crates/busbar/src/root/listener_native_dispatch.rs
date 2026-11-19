@@ -13,6 +13,7 @@
 //! |---|---|---|
 //! | walk, selected, principal-only with a unit | `listener_native_data.rs` | `Data` (after money) |
 //! | catalog, principal-only free, public, optional | `listener_native_unbilled.rs` | `Unbilled` |
+//! | signed ingress | `signed`, below; served by `listener_native_unbilled.rs` | `Unbilled` (after its signature) |
 //! | upgrade | `listener_native_upgrade.rs`, `listener_native_handover.rs` | `Upgrade` |
 //! | operator | the admin router, below | `Admin` |
 //! | no route | `listener_native_unrouted.rs` | (a refusal) |
@@ -24,7 +25,11 @@ use std::sync::Arc;
 use axum::body::Body;
 use busbar_contract::route::RouteAuth;
 use busbar_core_connector::framed_stream::session::{Feed, RegisterResponse};
-use busbar_kernel::auth::admission_table::{plan, Admission, Authority, VerifyBy};
+use busbar_kernel::auth::admission_table::{
+    decide, plan, Admission, Authority, Decision, Target, VerifyBy,
+};
+use busbar_kernel::auth::native_signed::SignedRefused;
+use busbar_kernel::auth::native_signed_route::{NativeSignedRoute, SignedAnswered, SignedUnserved};
 use busbar_kernel::auth::route_record::Money;
 use busbar_kernel::inbound::http_projection::HttpProjection;
 use busbar_kernel::inbound::native::{PhysicalAdminExecution, PhysicalRefusalCarrier, RouteTarget};
@@ -104,6 +109,10 @@ fn admission_of(
         return Ok(Admission::Upgrade);
     }
     let slot = (native.select)(binding.app(), &native.slot).ok_or(InputError::Invalid)?;
+    // A signed route has its own completion and no data completion.
+    if slot.signed_for(binding).is_ok() {
+        return Ok(Admission::SignedIngress);
+    }
     if let Ok(route) = slot.data_for(binding) {
         return Ok(route.route_admission());
     }
@@ -137,6 +146,76 @@ fn unbilled(served: UnbilledResponse) -> Answered {
     )
 }
 
+/// Core's answer to a signed route's request that is not served, by the admission table: the one
+/// 401 for any denial (a missing or wrong signature, a stale timestamp, a changed body, a replay,
+/// a signature bound to no replay claim: the same bytes, the reason only in the log), 413 for a
+/// body over the route's bound, 400 for trailers, 503 when the verifier or the replay store could
+/// not answer. No plugin code writes it: nobody was verified.
+fn signed_refusal(
+    binding: &busbar_kernel::inbound::native::RequestBinding,
+    route: &NativeSignedRoute,
+    why: SignedUnserved,
+) -> Result<axum::response::Response, InputError> {
+    let Decision::Refuse { refusal, verified } =
+        decide(Target::Route(route.record()), &why.facts())
+    else {
+        // The table serves no request these facts describe; nothing else is ever answered here.
+        return Err(InputError::Invalid);
+    };
+    answer::core(binding, refusal, verified, "", route.challenge())
+}
+
+/// The signed arm (`VerifyBy::Signature`). The route's completion judges this exact request
+/// (`NativeSignedRoute::admit`): the body bound first, before any verifier is called; then the
+/// signature over the request's own bytes as received; then the replay claim, which must be
+/// stated and won. Only then is the request completed, and the plane is handed the body through
+/// the owner that verification made. Every other outcome is answered by core and serves nothing.
+async fn signed(
+    request: busbar_kernel::inbound::native::CompletingPhysicalRequest,
+    slot: &crate::root::min3_physical::NativeSlot,
+) -> Result<Answered, InputError> {
+    let binding = request.binding().clone();
+    let route = slot.signed_for(&binding).map_err(|_| InputError::Invalid)?;
+    let cx = busbar_ports::CallCx {
+        deadline: binding.deadline().ok_or(InputError::Invalid)?,
+        request_id: binding.invocation().request_id().get(),
+        stack: Default::default(),
+        mono_ns: 0,
+    };
+    match route.admit(request, cx).await? {
+        SignedAnswered::Admitted(owner) => Ok(unbilled(
+            super::unbilled::serve_signed(owner, &route).await?,
+        )),
+        SignedAnswered::Refused { owner, refused } => {
+            let response = signed_refusal(&binding, &route, SignedUnserved::Refused(refused))?;
+            Ok((response, ResponseAuthority::Unbilled(Arc::new(owner)), None))
+        }
+    }
+}
+
+/// A signed route's request its own input refused before any verifier could run: a body over the
+/// listener's cap (never buffered) or request trailers. Core answers the row; no verifier is
+/// called on a body that was not taken whole, and nothing is served.
+fn signed_unread(
+    request: busbar_kernel::inbound::native::CompletingPhysicalRequest,
+    slot: &crate::root::min3_physical::NativeSlot,
+    refusal: busbar_kernel::auth::admission_table::Refusal,
+) -> Result<Answered, InputError> {
+    use busbar_kernel::auth::admission_table::Refusal;
+    let binding = request.binding().clone();
+    let route = slot.signed_for(&binding).map_err(|_| InputError::Invalid)?;
+    let why = match refusal {
+        Refusal::BodyTooLarge => SignedUnserved::Refused(SignedRefused::TooLarge),
+        Refusal::Trailers => SignedUnserved::Trailers,
+        // No other row is an input refusal of a signed route (the gate's rows are answered
+        // before this, and the head screen judges data routes only).
+        _ => return Err(InputError::Invalid),
+    };
+    let response = signed_refusal(&binding, &route, why)?;
+    let owner = route.refuse_unread(request, why)?;
+    Ok((response, ResponseAuthority::Unbilled(Arc::new(owner)), None))
+}
+
 /// The answer to a plane request its own input refused. A route that verifies runs its chain on
 /// the head first: a denial is the one 401 (or 503, 409) exactly as on a served request, and only
 /// a verified caller is told the row, rendered by the route's plane. A route that verifies
@@ -147,6 +226,10 @@ async fn input_refused(
     admission: Admission,
     refusal: busbar_kernel::auth::admission_table::Refusal,
 ) -> Result<Answered, InputError> {
+    // A signed route's input refusal is decided before any verifier: core answers it.
+    if admission == Admission::SignedIngress {
+        return signed_unread(request, slot, refusal);
+    }
     let binding = request.binding().clone();
     let verified_route = match admission {
         Admission::Walk | Admission::Selected | Admission::PrincipalOnly | Admission::Catalog => {
@@ -218,6 +301,8 @@ pub(super) async fn prepare(
                 | Admission::Optional
                 | Admission::Public
                 | Admission::Upgrade
+                // A verified signed request runs a plane session of its own.
+                | Admission::SignedIngress
         )
     );
     let work = async {
@@ -345,12 +430,14 @@ pub(super) async fn prepare(
                         (VerifyBy::Nobody, _) => {
                             unbilled(super::unbilled::prepare_unverified(ready.request).await?)
                         }
-                        // A ticket and a sender's signature have no native verifier yet, so the
+                        // A ticket has no native verifier yet, so the
                         // plan mounts no such route; one that arrives here is the engine's
                         // fault and is never served.
-                        (VerifyBy::TicketOrChain | VerifyBy::Signature, _) => {
-                            return Err(InputError::Invalid.into())
-                        }
+                        (VerifyBy::TicketOrChain, _) => return Err(InputError::Invalid.into()),
+                        // A sender's signature: the bounded body was read, the route's own
+                        // verifier judges it over the bytes as received and its replay claim is
+                        // won before anything is served or parsed. No key, no unit.
+                        (VerifyBy::Signature, _) => signed(ready.request, &slot).await?,
                         // A plane's admin routes are mounted on the admin door.
                         (VerifyBy::AdminChain, _) => return Err(InputError::Invalid.into()),
                         // The chain verified a caller for an authority the chain does not

@@ -129,6 +129,10 @@ pub enum Planned {
     Data,
     /// Bind a `NativeUpgradeRoute` with the route's chain.
     Upgrade,
+    /// Bind a `NativeSignedRoute` (`auth::native_signed_route`) with the route's own chain as its
+    /// signature verifier: the listener reads the bounded body, verifies it, then serves with no
+    /// unit. Only where a signature verifier is configured for the route (`Offered`).
+    Signed,
     /// The admin plan's: not a data listener's route.
     Admin,
     /// Not mounted, for a reason that is the operator's configuration.
@@ -215,7 +219,10 @@ impl NativeDataRoute {
             // No native verifier exists for a ticket or a sender's signature: such a route is
             // left unmounted and says so, until its verifier is linked.
             Ok(Admission::Ticket) => Planned::NotMounted(NotMounted::NoVerifierReadsItsHeader),
-            Ok(Admission::SignedIngress) => Planned::NotMounted(NotMounted::NoSignatureVerifier),
+            // The table mounted it, so a signature verifier that covers and bounds its body is
+            // configured (`offered.signature_verifier`, the answer of
+            // `NativeSignedRoute::offered`): its whole path exists, and it is the signed class's.
+            Ok(Admission::SignedIngress) => Planned::Signed,
             Ok(Admission::Internal) => Planned::NotMounted(NotMounted::Internal),
         }
     }

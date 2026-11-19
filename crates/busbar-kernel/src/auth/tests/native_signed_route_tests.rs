@@ -640,7 +640,10 @@ async fn request_trailers_are_refused_by_core_before_any_verifier() {
     };
     assert_eq!(refusal, Refusal::Trailers);
     assert!(!verified);
-    let owner = f.route.refuse_unread(request, SignedUnserved::Trailers).unwrap();
+    let owner = f
+        .route
+        .refuse_unread(request, SignedUnserved::Trailers)
+        .unwrap();
     assert!(owner.signed_request().is_none());
     assert!(binding.check_executing().is_err());
     assert_eq!(f.hook.calls.load(Ordering::SeqCst), 0);
@@ -798,8 +801,7 @@ fn a_signed_route_with_a_hook_or_another_class_is_not_mounted() {
     );
     // A challenge that names a public URL the operator did not configure cannot be written.
     let mut challenged = mounted_as(AUTH_SIGNED_INGRESS);
-    challenged.record.challenge =
-        Some("Signature realm=\"{public_url}/hooks\"".into());
+    challenged.record.challenge = Some("Signature realm=\"{public_url}/hooks\"".into());
     assert_eq!(
         NativeSignedRoute::offered(&challenged, offer(Some(&[COVERS]))),
         Err(SignedUnmounted::Table(
