@@ -309,15 +309,15 @@ fn anchor_pin() -> Option<String> {
     git(&["rev-parse", "--git-dir"])
         .unwrap_or_else(|e| panic!("this guard reads core's git history: {e}"));
     let refspec = format!("+refs/heads/dev:{ANCHOR_REF}");
-    let fetch = [
-        "fetch",
-        "-q",
-        "--no-tags",
-        "--no-write-fetch-head",
-        "--depth=1",
-        "origin",
-        &refspec,
-    ];
+    // `--depth=1` only in a clone that is already shallow (CI's). In a full clone it would make the
+    // dev tip a shallow boundary, cutting the history every other test reads from it (the
+    // architecture tests' merge base with origin/dev).
+    let shallow = git(&["rev-parse", "--is-shallow-repository"]).is_ok_and(|s| s == "true");
+    let mut fetch = vec!["fetch", "-q", "--no-tags", "--no-write-fetch-head"];
+    if shallow {
+        fetch.push("--depth=1");
+    }
+    fetch.extend(["origin", refspec.as_str()]);
     // Another test target may be fetching into the same shallow clone at once (its shallow lock).
     let mut fetched = git(&fetch);
     for _ in 0..4 {

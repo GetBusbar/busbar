@@ -80,6 +80,13 @@ fn consumer_graph(host: bool, all_features: bool) {
     );
     let manifest_path = scratch.0.join("Cargo.toml");
     std::fs::write(&manifest_path, manifest).unwrap();
+    // The root's lock seeds the witness's resolve. Without one, cargo loads busbar-crypto-backend's
+    // git source (core's URL at the pinned rev) before it applies the [patch] above, and offline that
+    // revision is in no cargo home a fresh checkout has: the resolve failed before any topology was
+    // judged. With the lock, the patched backend resolves to its path entry as it does in the root.
+    // Locked versions are only a starting point: packages and features are resolved for this graph.
+    std::fs::copy(root.join("Cargo.lock"), scratch.0.join("Cargo.lock"))
+        .expect("seed the witness's resolve with the root's lock");
     let mut cargo = std::process::Command::new(env!("CARGO"));
     cargo
         .args([
