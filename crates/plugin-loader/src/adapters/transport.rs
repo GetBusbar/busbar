@@ -126,28 +126,7 @@ impl TransportAdapter {
         if !a.is_ok() {
             return Err(self.refusal(a));
         }
-        decode(a.records(), call, sink).map_err(|bad| {
-            let kind = match call {
-                Call::Begin => "begin".to_string(),
-                Call::Ingest => "ingest".to_string(),
-                Call::Emit { piece, .. } => format!("emit {piece}"),
-                Call::Other => "other".to_string(),
-            };
-            let recs: Vec<String> = a
-                .records()
-                .map(|r| match r {
-                    Ok(r) => format!(
-                        "{:#06x}/{}/{:02x?}",
-                        r.tag,
-                        r.body.len(),
-                        &r.body[..r.body.len().min(16)]
-                    ),
-                    Err(e) => format!("err {e:?}"),
-                })
-                .collect();
-            tracing::error!(call = %kind, ?bad, records = ?recs, "DIAG adapter grammar");
-            self.fault(bad)
-        })
+        decode(a.records(), call, sink).map_err(|bad| self.fault(bad))
     }
 
     /// A REFUSED or FAILED answer as the port's error. Until W1-L2 lands the one shared builder (§11.3, no

@@ -374,26 +374,8 @@ impl Answers {
 
     /// One record of the answer, in order. After a breach the rest is ignored.
     pub(crate) fn take(&mut self, out: &TransportOut<'_>) {
-        let was = self.broke.is_some() || self.capacity_failed;
         if self.capture(out).is_err() {
             self.capacity_failed = true;
-        }
-        if !was && (self.broke.is_some() || self.capacity_failed) {
-            let what = match out {
-                TransportOut::Write(_) => "Write",
-                TransportOut::WirePart { stream, .. } => { tracing::error!(stream, "DIAG part"); "WirePart" }
-                TransportOut::WireEnd { stream, .. } => { tracing::error!(stream, "DIAG end"); "WireEnd" }
-                TransportOut::ResponseAbort { .. } => "Abort",
-                TransportOut::ResponseQuiescent(_) => "Quiescent",
-                TransportOut::Close { .. } => "Close",
-                TransportOut::WakeAt(_) => "WakeAt",
-                TransportOut::StreamHead { .. } => "Head",
-                TransportOut::StreamFull(_) => "Full",
-                TransportOut::StreamWritable(_) => "Writable",
-                TransportOut::StreamOpened(_) => "Opened",
-                _ => "other",
-            };
-            tracing::error!(called = ?self.called, what, capacity = self.capacity_failed, "DIAG transport grammar breach");
         }
     }
 
@@ -556,7 +538,6 @@ impl Answers {
         }
         if let Called::Emit { stream, piece } = self.called {
             if stream == 0 && piece == wire::E_HEAD && self.opened.is_none() {
-                tracing::error!("DIAG no opened");
                 self.acts.clear();
                 self.full.clear();
                 return Err(GRAMMAR);
@@ -567,7 +548,6 @@ impl Answers {
                 Some(stream)
             };
             if self.full.any_but(mine) {
-                tracing::error!(called = ?self.called, "DIAG full for another stream");
                 self.acts.clear();
                 self.full.clear();
                 return Err(GRAMMAR);
