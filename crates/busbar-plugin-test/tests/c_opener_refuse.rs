@@ -619,6 +619,44 @@ mod fixed_piece {
         }
     }
 
+    /// `select_resources` is pure (no host service authority): a selector that asks a host service is
+    /// faulted even though it ignores the denial and answers OK; one that asks nothing answers OK.
+    #[test]
+    fn real_select_resources_callback_is_pure() {
+        use busbar_plugin_abi::fail::{CallError, FaultReason};
+        use busbar_plugin_abi::records::RecErr;
+        for mode in [plane::RESOURCE_INVENTORY, plane::RESOURCE_SELECT] {
+            for (route, ok) in [(fixture::ACCEPT_BARE, true), (fixture::ASK_HOST, false)] {
+                let inst = fixture::hosted::<plane::Marker>(&fixture::plane_fx::PLUGIN, plane::ALL);
+                let proxy = Proxy::bind(Arc::clone(&inst)).unwrap();
+                let mut buf = Pool::global().acquire(fixture::MAX_OUT);
+                fixture::selects();
+                let answer = proxy.select_resources(
+                    &mut buf,
+                    Mono::NONE,
+                    mode,
+                    &fixture::plane_req(route),
+                    b"",
+                );
+                assert_eq!(fixture::selects(), 1, "mode {mode} route {route}: one entry");
+                if ok {
+                    let answer = answer.expect("a selector that asks nothing answers");
+                    assert!(answer.is_ok(), "mode {mode} route {route}");
+                    assert!(inst.is_live(), "a pure answer is not a fault");
+                } else {
+                    assert!(
+                        matches!(
+                            answer,
+                            Err(CallError::Fault(FaultReason::BadRecords(RecErr::Reserved)))
+                        ),
+                        "mode {mode}: a host service asked during pure select_resources must fault, \
+                         never succeed"
+                    );
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn actual_native_reply_crosses_the_real_saturated_channel_writer() {
         use busbar_contract::secure::SecureVec;
