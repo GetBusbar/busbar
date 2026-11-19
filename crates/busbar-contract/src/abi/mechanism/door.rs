@@ -592,16 +592,6 @@ pub const MARKS_KNOWN: u64 = MARK_ONE_INSTANCE | MARK_EPHEMERAL | MARK_CATALOG |
 
 /// [`MarkWord::class`]: a hook word (a strategy word such as a ranking order). EXCLUSIVE: two
 pub const MARK_WORD_HOOK: u32 = 1;
-/// [`MarkWord::class`]: a carrier class the plugin consumes (an inbound credential carrier an auth
-pub const MARK_WORD_CARRIER: u32 = 2;
-/// [`MarkWord::class`]: the literal prefix of the public id the host issues for the row's
-pub const MARK_WORD_ISSUED_ID_PREFIX: u32 = 3;
-/// [`MarkWord::class`]: the issued public id's total length in characters, prefix included, as a
-pub const MARK_WORD_ISSUED_ID_LENGTH: u32 = 4;
-/// [`MarkWord::class`]: the issued public id's alphabet after its prefix: distinct ASCII graphic
-pub const MARK_WORD_ISSUED_ID_ALPHABET: u32 = 5;
-/// [`MarkWord::class`]: the issued secret's length in characters, as a decimal word. SHARED.
-pub const MARK_WORD_ISSUED_SECRET_LENGTH: u32 = 6;
 /// [`MarkWord::class`]: the issued secret's alphabet: distinct ASCII graphic characters, each drawn
 pub const MARK_WORD_ISSUED_SECRET_ALPHABET: u32 = 7;
 
@@ -630,8 +620,6 @@ impl MarkWord {
 pub const REWRITE_ALIAS: u32 = 1;
 /// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`, a secret
 pub const REWRITE_SUGAR: u32 = 2;
-/// [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's
-pub const REWRITE_KEY: u32 = 3;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the placeholder
 pub const REWRITE_SUGAR_SHOWN: u32 = 4;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is what its value
@@ -715,14 +703,4 @@ impl KindTailHead {
         size: 0,
         _reserved: 0,
     };
-}
-
-/// THE KIND TAIL GROWTH RULE: a kind tail grows only by APPENDING fields, and its head's `size`
-#[must_use]
-pub const fn tail_read_len(size: u32, frozen: usize, host: usize) -> Option<usize> {
-    let size = size as usize;
-    if size < frozen {
-        return None;
-    }
-    Some(if size < host { size } else { host })
 }

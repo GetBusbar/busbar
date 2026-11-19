@@ -10,9 +10,6 @@ use crate::abi::mechanism::call::AbiStr;
 pub const LANE_CLEAR: u32 = 1;
 /// [`DatagramLane::lane`] / [`DatagramRoute::lane`]: plaintext of the host's secure layer.
 pub const LANE_SECURED: u32 = 2;
-/// [`DatagramLane::lane`]: the far end's session description, from the signalling unit. Never a
-/// route lane.
-pub const LANE_RENDEZVOUS: u32 = 3;
 
 /// [`DatagramYield::request`]: no path request.
 pub const PATH_REQUEST_NONE: u32 = 0;
@@ -23,8 +20,6 @@ pub const PATH_REQUEST_REBIND: u32 = 2;
 
 /// [`RendezvousTerms::role`]: this answer carries no terms.
 pub const HANDSHAKE_NONE: u32 = 0;
-/// [`RendezvousTerms::role`]: the host's secure layer opens the handshake.
-pub const HANDSHAKE_INITIATES: u32 = 1;
 /// [`RendezvousTerms::role`]: the host's secure layer answers the far end's handshake.
 pub const HANDSHAKE_ANSWERS: u32 = 2;
 

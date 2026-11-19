@@ -40,12 +40,6 @@ pub mod kind {
 /// The number is [`super::versions::MECHANISM`]: the v1.5.5 value plus one.
 pub const MECHANISM_VERSION: u32 = super::versions::MECHANISM.raw();
 
-/// ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired
-pub const DOOR_MAGIC: u64 = u64::from_le_bytes(*b"BUSBARPL");
-
-/// The ONE symbol a plugin exports, NUL-terminated for `dlsym`.
-pub const DOOR_SYMBOL: &[u8] = b"busbar_plugin_door\0";
-
 /// The seven kinds, as the number a [`door::Door`] carries in `kind`. Read off the wire with
 /// [`KindCode::from_raw`]: an unknown number is a refused load, never a guess.
 #[repr(u32)]

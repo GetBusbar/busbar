@@ -289,17 +289,6 @@ pub mod signal {
     pub const RESPONSE_TOKENS_OUT: u32 = 9;
 }
 
-/// [`SignalEntry::tag`]: the payload is [`SignalValue::u64_`].
-pub const SIGNAL_TAG_U64: u32 = 0;
-/// [`SignalEntry::tag`]: the payload is [`SignalValue::i64_`].
-pub const SIGNAL_TAG_I64: u32 = 1;
-/// [`SignalEntry::tag`]: the payload is [`SignalValue::f64_`].
-pub const SIGNAL_TAG_F64: u32 = 2;
-/// [`SignalEntry::tag`]: the payload is [`SignalValue::str_`].
-pub const SIGNAL_TAG_STR: u32 = 3;
-/// [`SignalEntry::tag`]: the payload is [`SignalValue::boolean`] (`0`/`1`).
-pub const SIGNAL_TAG_BOOL: u32 = 4;
-
 /// One signal's value, tagged by [`SignalEntry::tag`] (not every signal is a number: the routing
 /// policy and the requested model are strings, so the ABI carries a real tag rather than coercing
 /// every signal to `f64`). 16 bytes, the same
@@ -383,13 +372,6 @@ pub struct RequestView {
     pub session: Blob,
 }
 
-/// [`CandidateStatic::present`]: `context_max` is present.
-pub const CANDIDATE_HAS_CONTEXT_MAX: u32 = 1 << 0;
-/// [`CandidateStatic::present`]: `tier` is present.
-pub const CANDIDATE_HAS_TIER: u32 = 1 << 1;
-/// [`CandidateStatic::present`]: `cost_per_mtok` is present.
-pub const CANDIDATE_HAS_COST_PER_MTOK: u32 = 1 << 2;
-
 /// The STATIC half of one candidate (its pool-config fields): built once at
 /// generation and unchanged across requests (memory class ii, valid to the next `refresh`).
 #[repr(C)]
@@ -423,13 +405,6 @@ pub struct CandidateStatic {
     /// Alignment padding.
     pub _reserved2: u32,
 }
-
-/// [`CandidateDynamic::present`]: `latency_ms` is present.
-pub const CANDIDATE_HAS_LATENCY_MS: u32 = 1 << 0;
-/// [`CandidateDynamic::present`]: `budget_remaining` is present.
-pub const CANDIDATE_HAS_BUDGET_REMAINING: u32 = 1 << 1;
-/// [`CandidateDynamic::present`]: `rate_headroom` is present.
-pub const CANDIDATE_HAS_RATE_HEADROOM: u32 = 1 << 2;
 
 /// The DYNAMIC half of one candidate (its live fields): filled per request, parallel
 /// to a [`CandidateStatic`] array of the same length and order.
@@ -508,9 +483,6 @@ pub struct UserView {
     pub user: AbiStr,
 }
 
-/// [`BudgetBucketState::present`]: `remaining_micros` is present.
-pub const BUDGET_HAS_REMAINING_MICROS: u32 = 1 << 0;
-
 /// One bucket of the request's budget chain (the caller key's own bucket, or an
 /// ancestor budget group's), innermost first, derived at the current rate card.
 #[repr(C)]
@@ -536,15 +508,6 @@ pub struct BudgetBucketState {
     /// Alignment padding.
     pub _reserved: u32,
 }
-
-/// [`DecideIn`]'s `present`: the prompt view/body are populated.
-pub const VIEW_HAS_PROMPT: u32 = 1 << 0;
-/// [`DecideIn`]'s `present`: the user view is populated.
-pub const VIEW_HAS_USER: u32 = 1 << 1;
-/// [`DecideIn`]'s `present`: `budget_remaining` (the pool's remaining request budget) is
-pub const VIEW_HAS_BUDGET_REMAINING: u32 = 1 << 2;
-/// [`DecideIn::present`]: the host supports [`VERB_PRIORITIZE`]. Older hosts leave this unset.
-pub const VIEW_SUPPORTS_PRIORITIZE: u32 = 1 << 3;
 
 /// `decide`'s and `transform`'s shared `in` (both ops see identical views; only their `out` and
 /// grant differ — B.4: "identical for both"). Carries every HOST-owned result buffer the two ops
@@ -607,8 +570,6 @@ pub const VERB_ABSTAIN: u32 = 1 << 1;
 pub const VERB_REJECT: u32 = 1 << 2;
 /// [`DecideOut::verbs`]: narrow to `restrict_tags`.
 pub const VERB_RESTRICT: u32 = 1 << 3;
-/// [`DecideOut::verbs`]/[`TransformOut::verbs`]: `reject_status` is populated; unset means the
-pub const VERB_HAS_REJECT_STATUS: u32 = 1 << 4;
 /// [`DecideOut::verbs`]: prioritize an unordered set in `order_buf`, retaining ordinary ranking
 /// or weighted selection within that set and the remaining eligible fallback candidates.
 pub const VERB_PRIORITIZE: u32 = 1 << 5;
@@ -677,28 +638,6 @@ pub struct TransformOut {
     /// `0` unless `rewrite_written == 0` because `rewrite_buf` was too small.
     pub rewrite_needed: usize,
 }
-
-/// [`StageView::stage_present`]: the stage fields are present at all (a REQUEST-stage tap sets
-pub const STAGE_HAS_PROJECTION: u32 = 1 << 0;
-/// [`StageView::stage_present`]: `model` is present.
-pub const STAGE_HAS_MODEL: u32 = 1 << 1;
-/// [`StageView::stage_present`]: `attempt_number` is present.
-pub const STAGE_HAS_ATTEMPT_NUMBER: u32 = 1 << 2;
-/// [`StageView::stage_present`]: `remaining_candidates` is present.
-pub const STAGE_HAS_REMAINING_CANDIDATES: u32 = 1 << 3;
-/// [`StageView::stage_present`]: `previous_failure` is present.
-pub const STAGE_HAS_PREVIOUS_FAILURE: u32 = 1 << 4;
-/// [`StageView::stage_present`]: `outcome` is present.
-pub const STAGE_HAS_OUTCOME: u32 = 1 << 5;
-/// [`StageView::stage_present`]: `status` is present.
-pub const STAGE_HAS_STATUS: u32 = 1 << 6;
-
-/// [`StageView::at`]: the candidate stage.
-pub const STAGE_AT_CANDIDATE: u32 = 0;
-/// [`StageView::at`]: the routing stage.
-pub const STAGE_AT_ROUTING: u32 = 1;
-/// [`StageView::at`]: the response stage.
-pub const STAGE_AT_RESPONSE: u32 = 2;
 
 /// The stage view a tap receives: [`RequestView`] with NO prompt and NO
 /// signals (B.4's explicit exclusion), plus the stage fields (`at`, `model`,
@@ -890,23 +829,6 @@ pub struct Route {
     /// Alignment padding.
     pub _reserved: u32,
 }
-
-/// [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain).
-pub const CLASS_GATE: u32 = 0;
-/// [`Tail::kind_class`]: a TAP (fire-and-forget; `notify` only).
-pub const CLASS_TAP: u32 = 1;
-
-/// [`Tail::prompt_access`]: no prompt view/body (the default).
-pub const PROMPT_NO: u32 = 0;
-/// [`Tail::prompt_access`]: read-only prompt view/body.
-pub const PROMPT_RO: u32 = 1;
-/// [`Tail::prompt_access`]: read-write — the same view/body as `ro`, PLUS the `transform` rewrite
-pub const PROMPT_RW: u32 = 2;
-
-/// [`Tail::user_access`]: no user view (the default).
-pub const USER_NO: u32 = 0;
-/// [`Tail::user_access`]: read-only user view.
-pub const USER_RO: u32 = 1;
 
 /// The hook kind's Statement tail (B.4's "Tail"): the hook's class, its prompt and user grants,
 /// its `infallible` fact, the signals this instance wants, the routes it serves and the

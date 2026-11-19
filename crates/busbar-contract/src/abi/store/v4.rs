@@ -32,8 +32,6 @@ pub const ABI_VERSION: u32 = crate::abi::versions::STORE.raw();
 pub const CODEC_VERSION: u32 = 1;
 /// Mandatory primitive slots after the existing lifecycle.
 pub const KIND_SLOTS: u32 = 5;
-/// Lifecycle and primitive slots together.
-pub const TABLE_SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
 /// Mandatory slot indices, in table order.
 pub mod slot {
@@ -417,20 +415,12 @@ pub const MUTATION_PUT: u32 = 1;
 pub const MUTATION_DELETE: u32 = 2;
 /// Atomically delete prefix matches of exactly exact_length bytes.
 pub const MUTATION_DELETE_RANGE: u32 = 3;
-/// No value exists at this requested address.
-pub const VALUE_ABSENT: u32 = 0;
-/// A value exists, including an explicitly empty value.
-pub const VALUE_FOUND: u32 = 1;
 /// Coherent values were observed.
 pub const READ_VALUES: u32 = 1;
 /// Read serialization fell outside its allowed interval.
 pub const READ_TIME_GUARD_FAILED: u32 = 2;
 /// An exclusive cursor is present, including an empty key cursor.
 pub const SCAN_AFTER: u32 = 1;
-/// Compare the supplied namespace generation.
-pub const SCAN_GENERATION: u32 = 2;
-/// Display scan explicitly permits generation change between pages.
-pub const SCAN_ALLOW_CHANGE: u32 = 4;
 /// A coherent ordered page was returned.
 pub const SCAN_PAGE: u32 = 1;
 /// Generation changed; no page was returned.

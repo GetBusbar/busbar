@@ -188,9 +188,8 @@ pub use route::LineEntry;
 
 pub use datagram::{
     DatagramLane, DatagramPath, DatagramRoute, DatagramYield, KeyingMaterial, RendezvousTerms,
-    FINGERPRINT_BYTES, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE, LANE_CLEAR,
-    LANE_RENDEZVOUS, LANE_SECURED, MAX_KEYING_BYTES, MAX_ROUTES, PATH_REQUEST_BIND,
-    PATH_REQUEST_NONE, PATH_REQUEST_REBIND,
+    FINGERPRINT_BYTES, HANDSHAKE_ANSWERS, HANDSHAKE_NONE, LANE_CLEAR, LANE_SECURED,
+    MAX_KEYING_BYTES, MAX_ROUTES, PATH_REQUEST_BIND, PATH_REQUEST_NONE, PATH_REQUEST_REBIND,
 };
 
 /// THE AUTH POINTS a transport offers and calls its bound auth at (THE DESIGN, "Auth points
@@ -443,8 +442,6 @@ pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
 
 /// [`crate::abi::mechanism::lifecycle::CancelOut::disposition`]: the cancelled carrier op had not
 pub const CANCEL_NOTHING_MOVED: u32 = 1;
-/// The cancelled carrier op moved some bytes; the connection is no longer usable and the host shuts
-pub const CANCEL_PARTIAL: u32 = 2;
 /// The cancelled op had completed before the cancel landed; its result stands.
 pub const CANCEL_COMPLETED: u32 = 3;
 
@@ -472,35 +469,9 @@ pub const FACT_ADOPTS: u32 = 32;
 /// THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states
 pub const EXT_OFFERED_POINTS: &str = "offered-points";
 
-/// THE SEALED-VALUES RECORD (TSEAL): the key under which a FRAMER's Statement `extensions` states
-pub const EXT_SEALED_VALUES: &str = "sealed-values";
-
-/// `side`: the accepting end.
-pub const SIDE_ACCEPT: u32 = 0;
 /// `side`: the dialing end.
 pub const SIDE_DIAL: u32 = 1;
-/// `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries
-pub const SIDE_ACCEPT_STREAM: u32 = 2;
 
-/// Close reason: normal.
-pub const CLOSE_NORMAL: u32 = 0;
-/// Close reason: the far end closed.
-pub const CLOSE_PEER_CLOSED: u32 = 1;
-/// Close reason: drain.
-pub const CLOSE_DRAIN: u32 = 2;
-/// Close reason: poisoned.
-pub const CLOSE_POISONED: u32 = 3;
-/// Close reason: revoked.
-pub const CLOSE_REVOKED: u32 = 4;
-/// Close reason: timeout.
-pub const CLOSE_TIMEOUT: u32 = 5;
-/// Close reason: the carrier failed.
-pub const CLOSE_TRANSPORT_FAILED: u32 = 6;
-/// Close reason: capacity exhausted.
-pub const CLOSE_CAPACITY_EXHAUSTED: u32 = 7;
-
-/// Status class: none stated.
-pub const STATUS_NONE: u8 = 0;
 /// Status class: success.
 pub const STATUS_SUCCESS: u8 = 1;
 /// Status class: the caller's fault.
@@ -523,37 +494,16 @@ pub const FAULT_HEALTHY: u8 = 4;
 /// The destination throttled the request: transient health, rate-limit retry policy.
 pub const FAULT_RATE_LIMIT: u8 = 5;
 
-/// [`Claim::status_at`]: the first frame carries the status.
-pub const STATUS_AT_FIRST_FRAME: u8 = 1;
 /// [`Claim::status_at`]: the terminal frame carries the status.
 pub const STATUS_AT_TERMINAL: u8 = 2;
 
-/// [`Claim::unit0_trigger`]: the first bytes.
-pub const UNIT0_FIRST_BYTES: u8 = 1;
-/// [`Claim::unit0_trigger`]: the first line.
-pub const UNIT0_FIRST_LINE: u8 = 2;
-/// [`Claim::unit0_trigger`]: the first message.
-pub const UNIT0_FIRST_MESSAGE: u8 = 3;
-/// [`Claim::unit0_trigger`]: the first datagram.
-pub const UNIT0_FIRST_DATAGRAM: u8 = 4;
-/// [`Claim::unit0_trigger`]: an upgrade.
-pub const UNIT0_UPGRADE: u8 = 5;
 /// [`Claim::unit0_trigger`]: a handshake.
 pub const UNIT0_HANDSHAKE: u8 = 6;
 
 /// [`SettingDecl::kind`]: `0`/`1`.
 pub const SETTING_FLAG: u32 = 1;
-/// [`SettingDecl::kind`]: an unsigned integer.
-pub const SETTING_COUNT: u32 = 2;
 /// [`SettingDecl::kind`]: text.
 pub const SETTING_TEXT: u32 = 3;
-
-/// [`Destination::kind`]: an authority.
-pub const DEST_AUTHORITY: u32 = 0;
-/// [`Destination::kind`]: a program the carrier runs.
-pub const DEST_PROGRAM: u32 = 1;
-/// [`Destination::kind`]: NOTHING TO OPEN, the KEY-RETIRED SIGNAL (T5). The member whose
-pub const DEST_RETIRED: u32 = 2;
 
 /// [`FramePiece::flags`]: the piece completes its frame.
 pub const PIECE_END_OF_FRAME: u16 = 1;
@@ -590,15 +540,6 @@ pub const PIECE_CODE_HANDOFF: u16 = 2048;
 
 /// The size of one [`FramePiece`], in bytes: the stride of [`FramerSink::pieces`].
 pub const FRAME_PIECE_SIZE: u32 = 48;
-
-/// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
-pub const EMIT_TEXT: u32 = 1;
-
-/// [`EmitIn::flags`]: the bytes are the accepted answer's final field block, after its head and
-pub const EMIT_TRAILERS: u32 = 2;
-
-/// [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that
-pub const WRITE_END_OF_FRAME: u32 = 1;
 
 /// [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier
 pub const READ_END_OF_FRAME: u32 = 1;

@@ -148,23 +148,6 @@ pub fn check_alpn(offer: &[u8]) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The protocol the handshake agreed, against the framer's offer: none agreed, or one of the
-pub fn check_agreed(offer: &[u8], agreed: &[u8]) -> Result<(), Fault> {
-    check_alpn(offer)?;
-    if agreed.is_empty() {
-        return Ok(());
-    }
-    let mut at = 0usize;
-    while at < offer.len() {
-        let n = usize::from(offer[at]);
-        if &offer[at + 1..at + 1 + n] == agreed {
-            return Ok(());
-        }
-        at += 1 + n;
-    }
-    Err(fault(Rule::Contradiction, "facts.agreed_protocol"))
-}
-
 abi_op! {
     /// Every framer answer: what it wrote fits its sink (no short path: a full sink is
     /// [`YIELD_MORE`]); the flags are known; a deadline is stated exactly when flagged; FAILED wrote
@@ -400,11 +383,6 @@ pub fn check_framer_fields(pieces: &[FramePiece], frame: &[u8]) -> Result<(), Fa
     Ok(())
 }
 
-/// A framer answer's head slots (`heads`, the host's buffer of `heads_cap`): at most the
-pub fn check_head_slots(out: &FramerOut, heads: &[HeadSlots], heads_cap: u64) -> Result<(), Fault> {
-    head_slots(out, heads, heads_cap, &[])
-}
-
 /// Head slots checked with the actual field pieces after [`check_framer`] passed. A reason-only
 pub fn check_head_slots_with_pieces(
     out: &FramerOut,
@@ -471,14 +449,6 @@ fn head_slots(
     Ok(())
 }
 
-/// Connection facts: the size is the struct's own.
-pub const fn check_facts(facts: &ConnFacts) -> Result<(), Fault> {
-    if facts.size as usize != core::mem::size_of::<ConnFacts>() {
-        return Err(fault(Rule::Foreign, "facts.size"));
-    }
-    Ok(())
-}
-
 abi_op! {
     /// The Statement tail, at load: the role is exactly one of carrier or framer, and a carrier composes
     /// over nothing (a framer with an empty `composes_over` frames directly over the host's socket);
@@ -538,35 +508,6 @@ abi_op! {
     }
 }
 
-/// THE ONE SOURCE OF CLAIM NAMES, at admit: a transport's tail has exactly one row per scheme its
-pub const fn check_claim_rows(statement_claims_len: usize, t: &TransportTail) -> Result<(), Fault> {
-    if t.claim_rows_len != statement_claims_len {
-        return Err(fault(Rule::Contradiction, "tail.claim_rows"));
-    }
-    Ok(())
-}
-
-/// The claims a framer composes over: no name counted with a NULL pointer.
-pub fn check_composes_over(names: &[AbiStr]) -> Result<(), Fault> {
-    texts(names, "composes_over.name")
-}
-
-/// The claims a connection may upgrade to: no name counted with a NULL pointer.
-pub fn check_upgrades_to(names: &[AbiStr]) -> Result<(), Fault> {
-    texts(names, "upgrades_to.name")
-}
-
-/// One claim's transport fact keys: no key counted with a NULL pointer.
-pub fn check_claim_facts(keys: &[AbiStr]) -> Result<(), Fault> {
-    texts(keys, "claim.fact")
-}
-
-/// Every status row: names a claim, `lo <= hi`, and a class that is stated.
-pub fn check_status_rows(rows: &[StatusRow], claims_len: u64) -> Result<(), Fault> {
-    rows.iter()
-        .try_for_each(|r| check_status_row(r, claims_len))
-}
-
 abi_op! {
     /// One status row, as [`check_status_rows`] states.
     fn check_status_row(r: &StatusRow, claims_len: u64) as "status_row", STATUS_ROW_RULES for r: StatusRow {
@@ -576,83 +517,6 @@ abi_op! {
     }
 }
 
-/// A stream's final status on close ([`FinishIn`]): `final_status` is a number the
-pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Result<(), Fault> {
-    let mut numbered = rows.iter().filter(|r| r.claim == claim).peekable();
-    let covered = if numbered.peek().is_none() {
-        i.final_status == 0
-    } else {
-        numbered.any(|r| (r.lo..=r.hi).contains(&i.final_status))
-    };
-    if !covered {
-        return Err(fault(Rule::UnknownCode, "finish.final_status"));
-    }
-    if i.final_bytes.is_null() && i.final_bytes_len != 0 {
-        return Err(fault(Rule::NullWithCount, "finish.final_bytes"));
-    }
-    let bound = i.final_bytes_len as u64;
-    for (s, field) in [
-        (i.final_message, "finish.final_message"),
-        (i.final_details, "finish.final_details"),
-    ] {
-        if s.len == 0 {
-            continue;
-        }
-        range(u64::from(s.offset), u64::from(s.len), bound, field)?;
-    }
-    Ok(())
-}
-
-/// An `emit`'s OPENING BODY LENGTH ([`EmitIn::body_len`]): `body_len_known` is `0` or `1`, its
-pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
-    if i._body_len_reserved != 0 {
-        return Err(fault(Rule::UnknownCode, "emit._body_len_reserved"));
-    }
-    match (i.body_len_known, i.body_len) {
-        (0, 0) | (1, _) => Ok(()),
-        (0, _) => Err(fault(Rule::Contradiction, "emit.body_len")),
-        _ => Err(fault(Rule::UnknownCode, "emit.body_len_known")),
-    }
-}
-
-/// Validate an emit's neutral kind before consuming its fresh bytes. `side` is the framing's
-pub fn check_emit_flags(i: &EmitIn, side: u32, answers_head: bool) -> Result<(), Fault> {
-    bits(
-        u64::from(i.flags),
-        u64::from(super::EMIT_TEXT | super::EMIT_TRAILERS),
-        "emit.flags",
-    )?;
-    if i.flags & super::EMIT_TRAILERS != 0
-        && (i.flags & super::EMIT_TEXT != 0
-            || side != super::SIDE_ACCEPT
-            || answers_head
-            || i.end_of_frame != 1
-            || i.status != 0
-            || i.body_len_known != 0
-            || i.body_len != 0)
-    {
-        return Err(fault(Rule::Contradiction, "emit.flags"));
-    }
-    Ok(())
-}
-
-/// An `emit`'s STATUS ([`EmitIn::status`], INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): stated on
-pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
-    if i._status_reserved != 0 {
-        return Err(fault(Rule::UnknownCode, "emit._status_reserved"));
-    }
-    match (answers_head, i.status) {
-        (true, 0) => Err(fault(Rule::Missing, "emit.status")),
-        (false, s) if s != 0 => Err(fault(Rule::Contradiction, "emit.status")),
-        _ => Ok(()),
-    }
-}
-
-/// Every fault row: names a claim, `lo <= hi`, and a fault reading that is stated (never
-pub fn check_fault_rows(rows: &[FaultRow], claims_len: u64) -> Result<(), Fault> {
-    rows.iter().try_for_each(|r| check_fault_row(r, claims_len))
-}
-
 abi_op! {
     /// One fault row, as [`check_fault_rows`] states.
     fn check_fault_row(r: &FaultRow, claims_len: u64) as "fault_row", FAULT_ROW_RULES for r: FaultRow {
@@ -660,21 +524,6 @@ abi_op! {
         deny(r.lo > r.hi, Contradiction, "fault_row.lo_hi");
         code(fault, FAULT_CALLER, FAULT_RATE_LIMIT);
     }
-}
-
-/// A claim that classes its answers classes them for the breaker too: every claim named by a status
-pub fn check_fault_cover(status: &[StatusRow], faults: &[FaultRow]) -> Result<(), Fault> {
-    for r in status {
-        if !faults.iter().any(|f| f.claim == r.claim) {
-            return Err(fault(Rule::Missing, "tail.fault_rows"));
-        }
-    }
-    Ok(())
-}
-
-/// Every setting: a path and a known kind.
-pub fn check_settings(settings: &[SettingDecl]) -> Result<(), Fault> {
-    settings.iter().try_for_each(check_setting)
 }
 
 abi_op! {
@@ -702,15 +551,6 @@ pub fn check_offered_points(extensions: &[u8]) -> Result<AuthPoints, Fault> {
     Ok(AuthPoints(bits))
 }
 
-/// Whether a transport renders sealed values, read from its Statement's `extensions`
-pub fn check_sealed_values(extensions: &[u8]) -> Result<bool, Fault> {
-    match crate::abi::mechanism::extensions::get(extensions, super::EXT_SEALED_VALUES) {
-        None => Ok(false),
-        Some([]) => Ok(true),
-        Some(_) => Err(fault(Rule::Foreign, "sealed_values.len")),
-    }
-}
-
 /// The most field predicates one route may carry.
 pub const MAX_ROUTE_FIELDS: u64 = 32;
 
@@ -731,63 +571,8 @@ abi_op! {
     }
 }
 
-/// A framer's stated agreed protocol ([`super::FramerYield::agreed`]) against the offer it was
-pub const fn check_agreed_position(agreed: u32, offer_len: u64) -> Result<(), Fault> {
-    if agreed as u64 > offer_len {
-        return Err(fault(Rule::IndexOutOfRange, "framer.agreed"));
-    }
-    Ok(())
-}
-
 /// The most lines one guest list may lend.
 pub const MAX_LINES: u64 = 1024;
-
-/// A `begin`'s guest list: a line table only on an accepting side, never a count behind NULL, at
-/// most [`MAX_LINES`], and every line well-formed: an id that is not `LINE_NONE` and not repeated,
-/// a valid point set (empty exactly for a `none` line, whose handle is still the kernel's), a
-/// handle, a `body_limit` exactly with the body point, and a well-formed route.
-///
-/// # Errors
-///
-/// [`Rule::Contradiction`] for lines on the dial side, a `body_limit` that disagrees with the
-/// points, or a repeated line; [`Rule::NullWithCount`]; [`Rule::OverMax`]; [`Rule::Missing`] for
-/// no handle or a `LINE_NONE` id; the point set's and the route's own rules.
-///
-/// # Safety
-///
-/// A non-NULL `i.lines` is the host's own table of `i.lines_len` live entries.
-pub unsafe fn check_lines(i: &super::BeginIn) -> Result<(), Fault> {
-    use crate::abi::host::service::LINE_NONE;
-    listed(i.lines, i.lines_len, "begin.lines")?;
-    if i.side == super::SIDE_DIAL && i.lines_len != 0 {
-        return Err(fault(Rule::Contradiction, "begin.lines"));
-    }
-    if i.lines_len as u64 > MAX_LINES {
-        return Err(fault(Rule::OverMax, "begin.lines"));
-    }
-    if i.lines_len == 0 {
-        return Ok(());
-    }
-    // SAFETY: the caller's contract; the count is bounded and the pointer non-NULL (checked).
-    let lines = unsafe { core::slice::from_raw_parts(i.lines, i.lines_len) };
-    for (n, l) in lines.iter().enumerate() {
-        if l.line == LINE_NONE {
-            return Err(fault(Rule::Missing, "line.line"));
-        }
-        if lines[..n].iter().any(|e| e.line == l.line) {
-            return Err(fault(Rule::Contradiction, "line.line"));
-        }
-        if l.auth.is_none() {
-            return Err(fault(Rule::Missing, "line.auth"));
-        }
-        check_line_points(l.points)?;
-        if (l.points & POINT_HEAD_BODY != 0) != (l.body_limit != 0) {
-            return Err(fault(Rule::Contradiction, "line.body_limit"));
-        }
-        check_route(&l.route)?;
-    }
-    Ok(())
-}
 
 /// A guest line schedules the union of its providers' points. Distinct providers may
 /// need HEAD and HEAD_BODY on the same line; an individual auth style still cannot.
@@ -811,18 +596,6 @@ pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
     }
     if (i.points == 0) != i.auth.is_none() {
         return Err(fault(Rule::Contradiction, "begin.auth"));
-    }
-    Ok(())
-}
-
-/// A `begin`'s scheme ([`super::BeginIn::scheme`]), on every side: a declared code,
-pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
-    use crate::abi::host::service::{SCHEME_SECURE, SCHEME_UNDECLARED};
-    if i.scheme == SCHEME_UNDECLARED {
-        return Err(fault(Rule::Missing, "begin.scheme"));
-    }
-    if i.scheme > SCHEME_SECURE {
-        return Err(fault(Rule::UnknownCode, "begin.scheme"));
     }
     Ok(())
 }

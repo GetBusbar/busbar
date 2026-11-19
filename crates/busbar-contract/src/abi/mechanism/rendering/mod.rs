@@ -66,10 +66,6 @@ use super::MECHANISM_VERSION;
 use crate::abi::host::conn::connector::Need;
 
 mod tail;
-pub use tail::{
-    read_auth_tail, read_plane_cli_help, read_plane_records, ReadAuthTail, ReadPlaneRecords,
-    ReadStyle,
-};
 
 pub use busbar_artifact_metadata::rendering::{
     RENDERING_MAGIC, RENDERING_MAGIC_TAIL_SIZE_ONLY, RENDERING_MAGIC_WITHOUT_MEASUREMENTS,

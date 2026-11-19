@@ -7,5 +7,5 @@
 //! this module is their one path for every caller, and their definitions move here when `abi/` goes
 //! (`K0-HOMES.md`). Nothing here is part of the plugin interface.
 
-pub use crate::abi::mechanism::extensions::{encode, span_records, whole_batches};
+pub use crate::abi::mechanism::extensions::{encode, span_records};
 pub use busbar_artifact_metadata::extensions::*;

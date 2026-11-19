@@ -8,6 +8,6 @@
 //! (`K0-HOMES.md`). Nothing here is part of the plugin interface.
 
 pub use crate::abi::mechanism::rendering::{
-    read, read_plane_cli_help, Read, ReadBlob, ReadFamily, ReadNeed, RenderError, Unreadable,
+    read, Read, ReadBlob, ReadFamily, ReadNeed, RenderError, Unreadable,
 };
 pub use busbar_artifact_metadata::rendering::*;

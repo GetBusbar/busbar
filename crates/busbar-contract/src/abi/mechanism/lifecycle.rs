@@ -63,31 +63,6 @@ pub struct OpsHead {
     pub close: Option<Op>,
 }
 
-/// `validate`'s `in`.
-///
-/// THE VALIDATE REFUSAL, every kind: the settings blob is exactly the
-/// operator's section, so the plugin cannot name its instance; the HOST composes the refusal words.
-/// A FAILED `validate`'s error text may hold several lines separated by `\n` (none empty, no
-/// leading or trailing `\n`: [`check_validate_refusal`]). The host splits them; a line whose first
-/// path segment is `settings` is instance-relative and reads `<kind-section>.<instance>.<line>`;
-/// any other line is the plugin's own sentence, verbatim ([`refusal_lines`]).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ValidateIn {
-    /// The head.
-    pub head: InHead,
-    /// The settings blob.
-    pub settings: Blob,
-    /// THE REASON BUFFER, the host's, lent for the call, as [`OpenIn::err_buf`] is to `open`: a
-    /// `validate` that does not answer READY writes why into it (UTF-8, at most
-    /// [`ValidateIn::err_cap`] bytes, cut on a char boundary) and names those bytes in
-    /// `head.error`. No instance exists to hold the reason past the call. NULL (with `err_cap` `0`)
-    /// = no buffer is lent.
-    pub err_buf: *mut u8,
-    /// How many bytes `err_buf` holds.
-    pub err_cap: usize,
-}
-
 /// `open`'s `in`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -150,32 +125,6 @@ pub struct GenIn {
     pub generation: u64,
 }
 
-/// `refresh`'s `in`: a reload carries the new config.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct RefreshIn {
-    /// The head.
-    pub head: InHead,
-    /// The generation this refresh opens.
-    pub generation: u64,
-    /// The new settings blob.
-    pub settings: Blob,
-    /// The re-resolved secrets, one per [`super::door::Statement::secret_refs`] key, in that order.
-    pub secrets: *const Blob,
-    /// How many.
-    pub secrets_len: usize,
-}
-
-/// `tick`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct TickIn {
-    /// The head.
-    pub head: InHead,
-    /// Now, on the kernel's coarse clock (nanoseconds).
-    pub now_ns: u64,
-}
-
 /// `tick`'s `out`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -217,62 +166,4 @@ pub struct CancelOut {
     pub disposition: u32,
     /// Alignment padding.
     pub _reserved: u32,
-}
-
-/// `release`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ReleaseIn {
-    /// The head.
-    pub head: InHead,
-    /// The lease an `out` handed the host.
-    pub lease: u64,
-}
-
-/// The first path segment of a refusal line: its text up to the first `.`, `:`, `[` or space.
-fn first_segment(line: &str) -> &str {
-    line.split(['.', ':', '[', ' ']).next().unwrap_or("")
-}
-
-/// A FAILED `validate`'s error text, as the rule on [`ValidateIn`] states it: not empty, no empty
-pub fn check_validate_refusal(text: &[u8]) -> Result<(), super::check::Fault> {
-    use super::check::{fault, Rule};
-    if text.is_empty() {
-        return Err(fault(Rule::Missing, "validate.error.empty"));
-    }
-    if text.first() == Some(&b'\n') {
-        return Err(fault(Rule::Missing, "validate.error.leading_newline"));
-    }
-    if text.last() == Some(&b'\n') {
-        return Err(fault(Rule::Missing, "validate.error.trailing_newline"));
-    }
-    if text.windows(2).any(|w| w == b"\n\n") {
-        return Err(fault(Rule::Missing, "validate.error.empty_line"));
-    }
-    Ok(())
-}
-
-/// THE HOST'S RENDERING of a validate refusal for `instance` of `section` (the kind's configuration
-/// section: `export`, `secrets`, …), one configuration error per line, in order.
-///
-/// # Examples
-/// ```
-/// use busbar_contract::abi::mechanism::lifecycle::refusal_lines;
-/// assert_eq!(
-///     refusal_lines("export", "metrics", "settings: missing field `buffer_seconds`"),
-///     vec!["export.metrics.settings: missing field `buffer_seconds`"],
-/// );
-/// assert_eq!(
-///     refusal_lines("export", "metrics", "a whole sentence\nsettings.x: bad"),
-///     vec!["a whole sentence", "export.metrics.settings.x: bad"],
-/// );
-/// ```
-#[must_use]
-pub fn refusal_lines(section: &str, instance: &str, text: &str) -> Vec<String> {
-    text.split('\n')
-        .map(|line| match first_segment(line) == "settings" {
-            true => format!("{section}.{instance}.{line}"),
-            false => line.to_string(),
-        })
-        .collect()
 }

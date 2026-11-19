@@ -16,7 +16,5 @@ abi_struct! {
         pub cap: usize,
     }
 }
-/// Cancellation cannot prove that a submitted commit did not apply.
-pub const CANCEL_UNKNOWN: u32 = 0;
 /// Diagnostic for reuse of a logical operation identity with a different body.
 pub const DIAG_OPID_CONFLICT: &str = "STORE_OPID_CONFLICT";

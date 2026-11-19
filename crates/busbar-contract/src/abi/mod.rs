@@ -190,46 +190,6 @@ pub mod versions;
 
 pub use crate::read_sized_field;
 
-/// The magic value every plugin-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the
-pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
-
-/// The MAJOR airlock version. Bumping this is a no-turning-back linker event: a reorder/resize/
-pub const ABI_MAJOR: u32 = 1;
-
-/// The MINOR airlock version. Bumped for every APPEND-ONLY addition (a new trailing struct field, a
-pub const ABI_MINOR: u32 = 0;
-
-/// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
-/// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or
-/// removed, because it is the one struct read BEFORE version negotiation, so it cannot itself be
-/// versioned. Every subsequent struct carries its own `size`/`version`; this one cannot, so it is
-/// frozen. The layout golden pins these three offsets and a change here is a deliberate MAJOR event.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AbiPreamble {
-    /// Must equal [`ABI_MAGIC`]. A mismatch is fail-closed (not a plugin-ABI peer).
-    pub magic: u64,
-    /// The peer's [`ABI_MAJOR`]. A mismatch is fail-closed (incompatible airlock).
-    pub abi_major: u32,
-    /// The peer's [`ABI_MINOR`]. Never a refusal reason on its own (append-only compatibility).
-    pub abi_minor: u32,
-}
-
-impl AbiPreamble {
-    /// This build's preamble — what a local peer stamps for the other side to check.
-    pub const CURRENT: AbiPreamble = AbiPreamble {
-        magic: ABI_MAGIC,
-        abi_major: ABI_MAJOR,
-        abi_minor: ABI_MINOR,
-    };
-}
-
-impl Default for AbiPreamble {
-    fn default() -> Self {
-        AbiPreamble::CURRENT
-    }
-}
-
 /// True iff a sender who advertised `advertised_size` bytes definitely WROTE the field that ends at
 #[inline]
 #[must_use]

@@ -91,9 +91,6 @@ pub type Op = unsafe extern "C" fn(
     out: *mut c_void,
 ) -> RawOutcome;
 
-/// [`InHead::flags`]: this call RESUMES a call that answered [`Outcome::Pending`], with the same
-pub const FLAG_RESUME: u32 = 1;
-
 /// The deadline class of an op (the ABI brief's mechanics), carried in
 /// [`InHead::deadline_class`].
 #[repr(u8)]
@@ -314,8 +311,6 @@ pub struct Field {
 pub const BLOB_ABSENT: u32 = 0;
 /// [`Blob::fmt`]: one JSON document.
 pub use busbar_artifact_metadata::BLOB_JSON;
-/// [`Blob::fmt`]: JSON lines.
-pub const BLOB_JSONL: u32 = 2;
 /// [`Blob::fmt`]: opaque octets.
 pub const BLOB_OCTETS: u32 = 3;
 /// [`Blob::flags`]: the bytes are secret material; the owner zeroises them on release.
@@ -504,13 +499,6 @@ pub struct MetricEntry {
     pub label_vals_len: usize,
 }
 
-/// [`MetricEntry::kind`]: add to a counter.
-pub const METRIC_ADD: u8 = 0;
-/// [`MetricEntry::kind`]: set a gauge.
-pub const METRIC_SET: u8 = 1;
-/// [`MetricEntry::kind`]: observe into a histogram.
-pub const METRIC_OBSERVE: u8 = 2;
-
 /// One diagnostic: an INDEX into the diagnostic ids the Statement declared, the same scheme as a
 /// metric — or one of the two reserved ids below, which carry what the plugin LOGGED.
 ///
@@ -542,22 +530,6 @@ impl Diag {
     };
 }
 
-/// [`Diag::id_idx`]: a log record the plugin emitted during the call. Its text is
-pub const DIAG_LOG: u32 = u32::MAX;
-/// [`Diag::id_idx`]: how many log records the plugin's capture dropped over its bound, as decimal
-pub const DIAG_LOG_DROPPED: u32 = u32::MAX - 1;
-/// [`Diag::severity`]: info.
-pub const SEVERITY_INFO: u8 = 0;
-/// [`Diag::severity`]: warn.
-pub const SEVERITY_WARN: u8 = 1;
-/// [`Diag::severity`]: error.
-pub const SEVERITY_ERROR: u8 = 2;
-/// [`Diag::severity`]: debug ([`DIAG_LOG`] only).
-pub const SEVERITY_DEBUG: u8 = 3;
-/// [`Diag::severity`]: trace ([`DIAG_LOG`] only).
-pub const SEVERITY_TRACE: u8 = 4;
-/// The most entries one envelope array may carry; the host drops a longer array whole.
-pub const MAX_ENVELOPE_ENTRIES: usize = 256;
 /// The most bytes of error or diagnostic text an entry may carry; longer is a malformed entry.
 pub const MAX_TEXT: usize = 4096;
 

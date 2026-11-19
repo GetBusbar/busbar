@@ -320,14 +320,6 @@ pub fn lease(
     Ok(())
 }
 
-/// A FAILED answer's error text by [`text`]; other outcomes state nothing here.
-pub fn failed_error(head: &OutHead, field: &'static str) -> Result<(), Fault> {
-    if head.outcome.0 == (Outcome::Failed as u8) {
-        return text(head.error, field);
-    }
-    Ok(())
-}
-
 /// The `serve` answer of the hook and export kinds: the `headers_out` list (at most `max_headers`
 pub fn served(
     head: &OutHead,

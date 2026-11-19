@@ -29,11 +29,6 @@ pub use outbound::{
 pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 pub use serve::{ServeIn, ServeOut};
 
-/// Pure outbound settings validation support: Statement value `b"\x01"`; on lifecycle
-/// VALIDATE the value is the UTF-8 outbound style. It validates settings without opening an
-/// instance, resolving credentials, reading secrets, or performing network work.
-pub const EXT_OUTBOUND_SETTINGS_CHECK: &str = "auth.outbound-settings-check";
-
 /// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = super::versions::AUTH.raw();
 
@@ -224,32 +219,6 @@ pub const CAP_INBOUND: u32 = 1;
 pub const CAP_LOGIN: u32 = 2;
 /// [`AuthTail::caps`]: the plugin serves `open_outbound`/`outbound_ready`/`fields`.
 pub const CAP_OUTBOUND: u32 = 4;
-/// [`AuthTail::caps`]: the plugin serves [`Ops::serve`] under `/provision/<instance>/*` and may call
-/// the `directory.*` host services (auth v4). A caps bit only: no layout change.
-pub const CAP_PROVISION: u32 = 8;
-
-/// [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators):
-pub const FACT_CACHEABLE: u32 = 1;
-/// [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as
-pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
-/// [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's
-pub const FACT_INBOUND_ALL_HEADERS: u32 = 4;
-/// [`AuthTail::facts`]: this plugin's `verify` judges THE OPERATOR CREDENTIAL, the one admin
-pub const FACT_OPERATOR: u32 = 8;
-/// [`AuthTail::facts`]: this plugin's `verify` reads host-held credentials of the kinds
-pub const FACT_READS_CREDENTIALS: u32 = 16;
-/// [`AuthTail::facts`]: this plugin's carrier marks are the host's default inbound style: where a
-pub const FACT_DEFAULT_INBOUND_STYLE: u32 = 32;
-
-/// THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a
-pub const METRIC_CACHE_FLUSHED: &str = "busbar_auth_cache_flushed_total";
-
-/// [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared).
-pub const LOGIN_KIND_NONE: u32 = 0;
-/// [`AuthTail::login_kind`]: a redirect to an IdP.
-pub const LOGIN_KIND_REDIRECT: u32 = 1;
-/// [`AuthTail::login_kind`]: a credential form the core renders.
-pub const LOGIN_KIND_CREDENTIAL: u32 = 2;
 
 /// [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style.
 pub const STYLE_NEEDS_HEADERS: u32 = 2;
@@ -378,14 +347,6 @@ impl AuthTail {
     }
 }
 
-/// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the
-pub const TAIL_FROZEN: usize = 40;
-
-/// [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned,
-pub const CANCEL_ABANDONED: u32 = 1;
-/// [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: the call is
-pub const CANCEL_CONTINUES: u32 = 2;
-
 /// [`IdentifyOut::verdict`] for `verify`: identified; [`IdentifyOut::identity`] holds who.
 pub const VERDICT_IDENTITY: u32 = 1;
 /// [`IdentifyOut::verdict`] for `verify`: a credential was presented and is invalid. Fail-closed;
@@ -405,66 +366,16 @@ pub const STRIP_QUERY: u32 = 2;
 
 /// [`IdentifyOut::verdict`] for `complete_login`: identified.
 pub const LOGIN_IDENTITY: u32 = 1;
-/// [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP answered, and the credential
-pub const LOGIN_BAD_CREDENTIAL: u32 = 2;
 /// [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP could not answer (connect,
 pub const LOGIN_OUTAGE: u32 = 3;
 /// [`IdentifyOut::verdict`] for `complete_login`: the IdP answered, and its answer failed the
 pub const LOGIN_SECURITY_CHECK_FAILED: u32 = 4;
-
-/// The identity buffer the host hands `verify`/`complete_login` to start: bytes.
-pub const IDENTITY_BUF_BYTES: usize = 16 * 1024;
-/// The identity buffer the host hands `verify`/`complete_login` to start: group spans.
-pub const IDENTITY_GROUPS: u32 = 256;
-/// The field buffer the host hands `fields` to start: bytes.
-pub const FIELDS_BUF_BYTES: usize = 16 * 1024;
-/// The field buffer the host hands `fields` to start: fields. Also the strip array the host
-pub const FIELDS_MAX: u32 = 16;
-
-/// [`FieldsIn::mode`]: the plugin's own bound credential.
-pub const MODE_OWN: u32 = 1;
-/// [`FieldsIn::mode`]: pass the caller's verified credential ([`FieldsIn::caller_credential`]).
-pub const MODE_PASSTHROUGH: u32 = 2;
 
 /// `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in
 pub const EXT_SCOPE: &str = "scope";
 
 /// `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`.
 pub const EXT_RETRY_AFTER: &str = "retry_after";
-
-/// `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_BAD_CREDENTIAL`], why the credential was
-/// declined — [`REJECT_HINT_ACCOUNT_LOCKED`] or [`REJECT_HINT_THROTTLED`], as ASCII. Additive (no
-/// mechanism bump): a host that does not read it sees a plain decline. The host stops forwarding
-/// attempts for the account for its failure window and never shows the hint to the client.
-pub const EXT_REJECT_HINT: &str = "reject_hint";
-/// [`EXT_REJECT_HINT`]: the directory reports the account locked.
-pub const REJECT_HINT_ACCOUNT_LOCKED: &str = "account_locked";
-/// [`EXT_REJECT_HINT`]: the plugin's own attempt limiter refused the attempt.
-pub const REJECT_HINT_THROTTLED: &str = "throttled";
-
-/// The reply extensions that state `hint` under [`EXT_REJECT_HINT`].
-#[must_use]
-pub fn reject_hint_extensions(hint: crate::auth_calls::RejectHint) -> Vec<u8> {
-    let value = match hint {
-        crate::auth_calls::RejectHint::AccountLocked => REJECT_HINT_ACCOUNT_LOCKED,
-        crate::auth_calls::RejectHint::Throttled => REJECT_HINT_THROTTLED,
-    };
-    crate::abi::mechanism::extensions::encode(&[(EXT_REJECT_HINT, value.as_bytes())])
-}
-
-/// The hint reply `extensions` state under [`EXT_REJECT_HINT`]; an unknown value is no hint.
-#[must_use]
-pub fn reject_hint_of(extensions: &[u8]) -> Option<crate::auth_calls::RejectHint> {
-    match crate::abi::mechanism::extensions::get(extensions, EXT_REJECT_HINT)? {
-        v if v == REJECT_HINT_ACCOUNT_LOCKED.as_bytes() => {
-            Some(crate::auth_calls::RejectHint::AccountLocked)
-        }
-        v if v == REJECT_HINT_THROTTLED.as_bytes() => {
-            Some(crate::auth_calls::RejectHint::Throttled)
-        }
-        _ => None,
-    }
-}
 
 /// The delay an IdP's `Retry-After` header value asks for, in whole seconds from `now_unix` (Unix
 #[must_use]
@@ -608,12 +519,6 @@ pub fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
     )
 }
 
-/// The reply extensions that state `secs` under [`EXT_RETRY_AFTER`], as ASCII decimal.
-#[must_use]
-pub fn retry_after_extensions(secs: u64) -> Vec<u8> {
-    crate::abi::mechanism::extensions::encode(&[(EXT_RETRY_AFTER, secs.to_string().as_bytes())])
-}
-
 /// The delay reply `extensions` state under [`EXT_RETRY_AFTER`]: plain ASCII digits that fit a
 #[must_use]
 pub fn retry_after_of(extensions: &[u8]) -> Option<u64> {
@@ -653,16 +558,8 @@ pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
 /// [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. Every credential
 pub const FIELD_SENSITIVE: u32 = 1;
 
-/// An auth instance's carrier selection in successful OPEN and REFRESH reply extensions: a JSON
-pub const EXT_CARRIERS: &str = "auth.carriers";
-
 /// [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends
 pub const FIELD_QUERY: u32 = 2;
-
-/// [`LoginField::kind`]: plain text.
-pub const FORM_TEXT: u32 = 1;
-/// [`LoginField::kind`]: a password; its submitted value arrives as a secret
-pub const FORM_PASSWORD: u32 = 2;
 
 /// [`BeginLoginOut::shape`]: redirect to [`BeginLoginOut::authorize_url`].
 pub const BEGIN_AUTHORIZE: u32 = 1;

@@ -9,14 +9,7 @@ use crate::abi::auth::POINT_HEAD_BODY;
 use crate::abi::host::service::LINE_NONE;
 use std::collections::HashSet;
 
-/// A framer reply asks the host to open this stream before route matching or auth.
-pub const EXT_GUEST_OPEN: &str = "guest.open";
-/// The following call lends the selected generation's policy to the requesting operation.
-pub const EXT_GUEST_POLICY: &str = "guest.policy";
 const VERSION: u32 = 1;
-
-/// A reply confirming that the stream may use a previously decoded policy identity.
-pub const EXT_GUEST_CURRENT: &str = "guest.current";
 
 /// A stream opening, with the policy generation already cached by its framer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

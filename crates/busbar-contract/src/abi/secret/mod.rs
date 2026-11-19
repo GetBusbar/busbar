@@ -100,8 +100,6 @@ abi_struct! {
 pub const ERROR_KIND_UNSET: u32 = 0;
 /// [`ResolveOut::error_kind`]: the named secret does not exist.
 pub const ERROR_KIND_NOT_FOUND: u32 = 1;
-/// [`ResolveOut::error_kind`]: the source holding the secret could not be reached.
-pub const ERROR_KIND_UNAVAILABLE: u32 = 2;
 /// [`ResolveOut::error_kind`]: the caller is not entitled to it.
 pub const ERROR_KIND_DENIED: u32 = 3;
 /// [`ResolveOut::error_kind`]: the settings blob itself is malformed, or the value is not a
@@ -133,9 +131,6 @@ abi_struct! {
         pub needed: u64,
     }
 }
-
-/// The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM
-pub const FIRST_SECRET_CAP: usize = 4096;
 
 /// The largest secret a resolve may answer, using the shared host-buffer bound.
 pub const MAX_SECRET_BYTES: usize = crate::abi::mechanism::check::HARD_MAX_BYTES as usize;

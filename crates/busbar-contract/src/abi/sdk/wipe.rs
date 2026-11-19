@@ -29,59 +29,6 @@ fn wipe_spare(spare: &mut [core::mem::MaybeUninit<u8>]) {
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
 
-/// A byte buffer that wipes its whole allocation when it drops (or is zeroized), through
-/// [`wipe_bytes`], for per-call buffers. It derefs to the bytes as a slice only: a holder replaces
-/// the buffer whole and never grows it in place.
-#[derive(Default)]
-pub struct WipedBytes(Vec<u8>);
-
-impl core::fmt::Debug for WipedBytes {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "WipedBytes([REDACTED; {}])", self.0.len())
-    }
-}
-
-impl WipedBytes {
-    /// Take ownership of `bytes`; they are wiped when this drops.
-    #[must_use]
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
-    }
-
-    /// The allocation's capacity, every byte of which is wiped.
-    #[must_use]
-    pub fn capacity(&self) -> usize {
-        self.0.capacity()
-    }
-}
-
-impl core::ops::Deref for WipedBytes {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl core::ops::DerefMut for WipedBytes {
-    fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
-}
-
-impl zeroize::Zeroize for WipedBytes {
-    fn zeroize(&mut self) {
-        wipe_bytes(&mut self.0);
-    }
-}
-
-impl Drop for WipedBytes {
-    fn drop(&mut self) {
-        wipe_bytes(&mut self.0);
-    }
-}
-
-impl zeroize::ZeroizeOnDrop for WipedBytes {}
-
 /// A conditional plane request is secret in every instance: it wipes its candidate on drop.
 impl Drop for super::plane::conditional::Request {
     fn drop(&mut self) {

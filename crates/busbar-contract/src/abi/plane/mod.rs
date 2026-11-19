@@ -232,8 +232,8 @@ pub use super::mechanism::check::SPAN_ABSENT;
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{
-    slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn,
-    ReleaseIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
+    slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, TickOut,
+    LIFECYCLE_SLOTS,
 };
 use crate::caps::ReasonCode;
 
@@ -469,9 +469,6 @@ pub const CLAIM_ENTRY: u32 = 1 << 6;
 /// [`Claim::flags`]: the route's inbound credential may be a TICKET the host minted for the plane
 pub const CLAIM_TICKET: u32 = 1 << 7;
 
-/// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
-pub const CLAIM_PROBE: u32 = u32::MAX;
-
 /// [`PlaneTail::ingress`]: a request expecting one reply.
 pub const INGRESS_REQUEST_RESPONSE: u32 = 1;
 /// [`PlaneTail::ingress`]: a request expecting a streamed reply.
@@ -517,56 +514,6 @@ pub const TAP_FAULT_DECODE: u8 = 1;
 pub const TAP_FAULT_BAD_JSON: u8 = 2;
 /// [`OnPieceOut::tap_fault`]: the caller's dialect is not one the tap reads
 pub const TAP_FAULT_UNKNOWN_PROTOCOL: u8 = 3;
-
-/// [`ArriveOut::principal_need`]: no principal.
-pub const PRINCIPAL_NONE: u32 = 0;
-/// [`ArriveOut::principal_need`]: the kernel must verify a principal before the first piece.
-pub const PRINCIPAL_REQUIRED: u32 = 1;
-/// [`ArriveOut::principal_need`]: verify one if the caller presents it.
-pub const PRINCIPAL_OPTIONAL: u32 = 2;
-
-/// [`ArriveOut::route`]: the entry names a POOL of the plane's section; the walk keys its state by
-pub const ROUTE_POOL: u8 = 0;
-/// [`ArriveOut::route`]: the entry names one MODEL entry, routed directly; the walk keys its state by
-pub const ROUTE_DIRECT: u8 = 1;
-/// [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF and names no entry
-pub const ROUTE_LOCAL: u8 = 2;
-/// [`ArriveOut::route`]: the unit names no entry and is ROUTED BY THE PRINCIPAL'S SCOPE
-pub const ROUTE_SCOPE: u8 = 3;
-/// What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names.
-pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
-/// [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF at the ONE entry the principal's grant
-pub const ROUTE_SCOPE_LOCAL: u8 = 4;
-/// Defer only destination selection until authentication; requires [`TAIL_AUTHENTICATED_ROUTE`].
-/// The continuation must name a concrete pool or direct entry for ordinary verification.
-pub const ROUTE_AUTHENTICATED: u8 = 5;
-/// Maximum UTF-8 entry-name bytes returned by the authenticated route continuation.
-pub const MAX_ROUTE_ENTRY_BYTES: usize = 4096;
-
-/// [`ArriveOut::route_flags`]: the unit's operation is performed at most once.
-pub const ROUTE_ONCE: u8 = 1;
-
-/// [`ArriveOut::route_flags`]: the unit is served as a duplex session.
-pub const ROUTE_SESSION: u8 = 2;
-
-/// [`ArriveOut::route_flags`]: the caller requested a streamed answer.
-pub const ROUTE_STREAM: u8 = 4;
-
-/// [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`] or
-pub const ROUTE_COUNTED: u8 = 8;
-
-/// [`ArriveOut::refusal_flags`]: the arrival names an ACTION THE PLANE'S PROTOCOL HAS BUT THE PLANE
-pub const REFUSED_UNSUPPORTED_ACTION: u32 = 1;
-
-/// [`ArriveOut::refusal_flags`]: the refusal about an entry is rendered AFTER ADMISSION, not before
-pub const REFUSED_AFTER_ADMISSION: u32 = 2;
-
-/// [`OnPieceIn::from`]: the piece is the caller's.
-pub const FROM_CALLER: u32 = 0;
-/// [`OnPieceIn::from`]: the piece is the far end's.
-pub const FROM_FAR_END: u32 = 1;
-/// [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it
-pub const FROM_KERNEL: u32 = 2;
 
 /// [`OnPieceIn::flags`]: the piece completes its frame.
 pub const PIECE_END_OF_FRAME: u32 = 1;
@@ -635,44 +582,21 @@ const _: () = assert!(one_bit_each(&[
     EMIT_FINAL_STATUS,
 ]));
 
-/// [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides.
-pub const VERDICT_NONE: u32 = 0;
-/// [`OnPieceOut::verdict`]: the far end's answer is a success.
-pub const VERDICT_OK: u32 = 1;
-/// [`OnPieceOut::verdict`]: the far end's answer is a failure another member may not share. The
-pub const VERDICT_RETRY: u32 = 2;
-/// [`OnPieceOut::verdict`]: the far end's answer is a failure no other member would change.
-pub const VERDICT_HARD: u32 = 3;
 /// The provider reported a count that cannot be represented exactly. The host refuses
 /// this piece before accepting its usage or releasing its response bytes.
 pub const VERDICT_COUNT_REFUSED: u32 = 4;
 
-/// [`RefusalIn::cause`]: the kernel refused.
-pub const REFUSAL_KERNEL: u32 = 0;
-/// [`RefusalIn::cause`]: a gate refused.
-pub const REFUSAL_GATE: u32 = 1;
-/// [`RefusalIn::cause`]: the plane refused its own arrival; [`RefusalIn::text`] is that arrival's
-pub const REFUSAL_ARRIVE: u32 = 2;
 /// The most bytes of text a REFUSED `arrive` may carry in its `head.error`. More is a FAULT of
 pub const MAX_REFUSAL_TEXT: u64 = 512 * 1024;
 /// The largest field line a transport admits: a textual head is read into at most 8 KiB plus
 pub const LARGEST_ADMITTED_FIELD_LINE: u64 = 8192 + 4096 * 100;
 const _: () = assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE);
-/// The gate-rejected audit marker (the `GateRejected` marker the kernel keeps). The kernel sets it
-pub const MARK_GATE_REJECTED: u32 = 1;
 
 /// [`RecordWrite::op`]: put, the one write to a record kind of the plane's own. A put of an EMPTY
 pub const RECORD_PUT: u32 = 1;
 /// [`RecordWrite::op`]: THE UNIT'S AUDIT RECORD, a row on the kernel's own audit chain (the one
 pub const RECORD_AUDIT: u32 = 3;
 
-/// [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller;
-pub const ROUTE_PUBLIC: u32 = 1;
-/// [`AdminRoute::flags`], on a [`ROUTE_PUBLIC`] route only: the route is addressed by the plane's
-pub const ROUTE_CARRIES_OWN_TOKEN: u32 = 1 << 1;
-
-/// [`ServeOut::audit`]: no audit row.
-pub const AUDIT_NONE: u32 = 0;
 /// [`ServeOut::audit`]: the request applied; the row's outcome is `applied`.
 pub const AUDIT_APPLIED: u32 = 1;
 /// [`ServeOut::audit`]: the request was rejected after it was judged; the row's outcome is
@@ -686,9 +610,6 @@ pub const CHAIN_LENGTH_PREFIXED: u32 = 1;
 pub const CHAIN_PIPE_SEPARATED: u32 = 2;
 /// [`RecordChain::flags`]: the record's scope enters its digest.
 pub const CHAIN_DIGESTS_SCOPE: u32 = 1;
-
-/// [`RefusalStatus::dialect`]: the row holds for every dialect the plane has no row of its own for.
-pub const REFUSAL_ANY_DIALECT: u32 = u32::MAX;
 
 /// THE WIRE REFUSAL CODES: a refusal reason as it crosses the plane ABI ([`RefusalStatus::reason`],
 /// [`RefusalIn::reason`]). Every number is written out and the table is APPEND-ONLY: a code never
@@ -915,12 +836,6 @@ const _: () = {
     }
 };
 
-/// A kernel refusal reason's wire code.
-#[must_use]
-pub const fn reason_code(reason: ReasonCode) -> u32 {
-    wire_code(reason).code()
-}
-
 /// A kernel refusal reason's wire code, as the code.
 #[must_use]
 pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
@@ -936,16 +851,6 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
     match ReasonCode::of_wire(c) {
         Some(ReasonCode::OverdraftCeiling | ReasonCode::StaleSlice) => None,
         r => r,
-    }
-}
-
-/// WHETHER THE REFUSED PIECE'S REASON (`OnPieceIn::reason`) SAYS NOTHING LEFT for the unit: the
-#[must_use]
-pub const fn nothing_sent(reason: u32) -> bool {
-    match RefusalCode::of(reason) {
-        Some(RefusalCode::CredentialUnavailable) => true,
-        Some(code) => code.unsent(),
-        None => false,
     }
 }
 
@@ -1209,25 +1114,6 @@ impl RecordRetention {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
     pub const ZERO: Self = Self { kind: 0, rule: 0 };
 }
-
-/// [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?,
-pub const TRUST_PIN: u32 = 1;
-/// [`TrustKey::role`]: the key holds the longest a verification may be reused before the
-pub const TRUST_REVERIFY_TTL: u32 = 2;
-/// [`TrustKey::role`]: the key holds how long after a drift a clean answer is disbelieved, a
-pub const TRUST_RECOVERY_BACKOFF: u32 = 3;
-/// [`TrustKey::role`] RESERVED, RETIRED in 1.6.0: once a registration's PRIVATE REACH. A plane
-/// declaring it is refused at load (BUSBAR-6017): one core setting, `advanced.allow_destinations`,
-/// governs every private destination. The value is never reused.
-pub const TRUST_PRIVATE_REACH: u32 = 4;
-/// [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to
-pub const TRUST_ITEM_APPROVALS: u32 = 5;
-/// [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`.
-pub const PIN_FINGERPRINT: u32 = 1;
-/// [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key
-pub const MECHANISM_ROOT: u32 = 1;
-/// [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin
-pub const MECHANISM_PEER_KEY: u32 = 2;
 
 /// One pin mechanism a [`TRUST_PIN`] key accepts, as the operator spells it.
 #[repr(C)]
@@ -1628,9 +1514,6 @@ impl PlaneTail {
 /// The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]).
 pub const MAX_METRIC_LANES: usize = 16;
 
-/// A plane `refresh`'s EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in
-pub const EXT_OWNED: &str = "owned";
-
 /// One path the built plane answers on. One route — a verb, a target and whether the target is
 /// matched exactly or as a prefix — should be claimed once; a duplicate within one snapshot is not
 /// refused, and the registry's precedence decides between them.
@@ -1735,9 +1618,6 @@ pub struct PlaneSnapshot {
     pub arrival_spans_len: usize,
 }
 
-/// The longest arrival span name a snapshot may state ([`PlaneSnapshot::arrival_spans`]).
-pub const MAX_ARRIVAL_SPAN: usize = 64;
-
 /// ONE PROVIDER'S DIALECT FACTS, as a plane receives them at `open` (THE DESIGN section 4: a
 /// plane receives, at open, the dialect fields of the providers it references and resolves model
 /// to dialect itself; the kernel checks no dialect).
@@ -1793,69 +1673,6 @@ pub struct PlaneRefreshOut {
     pub head: OutHead,
     /// The snapshot.
     pub snapshot: *const PlaneSnapshot,
-}
-
-/// A HOST-OWNED LIST OF [`Field`]s a host lends a plane (`OnPieceIn::head_fields`): the names and
-/// values it owns and the field array pointing into them, built once and moved as one value. The
-/// pointers point only into this list's own heap bytes, which never move while it lives, so it
-/// may cross threads with the op that lends it.
-#[derive(Debug, Default)]
-pub struct FieldList {
-    /// The names and values, kept only to own the bytes `fields` points into.
-    _owned: Vec<(Vec<u8>, Vec<u8>)>,
-    fields: Vec<Field>,
-}
-
-// SAFETY: every pointer in `fields` points into `_owned`'s own heap allocations, owned here and
-// never mutated or moved (a Vec's heap does not move when the Vec does) while the list lives.
-unsafe impl Send for FieldList {}
-// SAFETY: as above; the list is read-only once built.
-unsafe impl Sync for FieldList {}
-
-impl FieldList {
-    /// The list of `pairs` (name, value), in order.
-    #[must_use]
-    pub fn new(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
-        let fields = pairs
-            .iter()
-            .map(|(n, v)| Field {
-                name: AbiStr {
-                    ptr: n.as_ptr(),
-                    len: n.len(),
-                },
-                value: AbiStr {
-                    ptr: v.as_ptr(),
-                    len: v.len(),
-                },
-            })
-            .collect();
-        FieldList {
-            _owned: pairs,
-            fields,
-        }
-    }
-
-    /// The field array, NULL when empty.
-    #[must_use]
-    pub fn as_ptr(&self) -> *const Field {
-        if self.fields.is_empty() {
-            core::ptr::null()
-        } else {
-            self.fields.as_ptr()
-        }
-    }
-
-    /// How many fields.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.fields.len()
-    }
-
-    /// Whether there are none.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.fields.is_empty()
-    }
 }
 
 /// One head field the plugin writes, its bytes in the call's `arena`.
@@ -2519,61 +2336,8 @@ pub struct PlaneCancelOut {
     pub arena_written: u64,
 }
 
-/// The status a FAULT `project` answers the caller with (1.5.5 `proxy/engine/mod.rs`: the rewrite
-pub const PROJECT_FAULT_STATUS: u16 = 500;
-
-/// The words a FAULT `project` answers the caller with, byte for byte 1.5.5's.
-pub const PROJECT_FAULT_MESSAGE: &str = "request rewrite could not be applied";
-
-/// `project`'s outcomes, and what the kernel makes of each where a rewrite hook is configured for
-/// the unit (v1.5.5 `proxy/engine/mod.rs:728`: the document is materialized, `:749`, before any
-/// hook runs, so the unit's first `project` is made before any rewrite hook is invoked) or the call
-/// carried a rewrite ([`ProjectIn::rewrite`] present):
-///
-/// * READY: the view, and the rewritten body ([`ProjectOut::rewritten`]) when the plane applied
-///   the rewrite. A READY answer to a call carrying a rewrite that names messages, with no
-///   rewritten body, is one of two things, told apart by
-///   [`PROJECT_REWRITE_NOT_APPLICABLE`] in `view.flags`:
-///   - the mark set: the rewrite does not apply to this unit (its operation has no conversation to
-///     frame one into). The kernel forwards the unit unmodified, records the hook a pass, and warns
-///     naming the hook and the entry;
-///   - the mark clear: the plane did not apply the rewrite. The kernel refuses the unit, as for
-///     REFUSED below.
-/// * REFUSED (or FAILED with nothing needed): the plane declines to apply the rewrite. The kernel
-///   REFUSES the unit and never forwards the body un-rewritten, whatever the hook's `on_error`
-///   says: a load-bearing hook (`on_error: reject`) with the shared 503 a failed call of it
-///   answers, any other with [`PROJECT_FAULT_STATUS`] and [`PROJECT_FAULT_MESSAGE`].
-/// * FAULT: the plane could not apply a rewrite it must not leave unapplied (a redaction whose
-///   document the body does not parse into). The kernel ALWAYS answers
-///   [`PROJECT_FAULT_STATUS`] with [`PROJECT_FAULT_MESSAGE`], whatever the hook's `on_error` says,
-///   and the body is never forwarded: the request fails closed, as 1.5.5's did.
-///
-/// A FAULT on a projection required by a configured gate or routing policy fails the unit
-/// closed, unreadable. A parse-failure mark ([`project_fault_unparseable`]) never permits
-/// screening fabricated empty facts. When no enforcement hook needs a projection, a plane's
-/// own marked parse failure may leave the unit to its ordinary protocol handling. An unmarked
-/// FAULT is a broken plane and fails closed.
-///
-/// This is the one home of the mapping; the kernel holds no status or words of its own for it.
-#[must_use]
-pub const fn project_faults(outcome: super::mechanism::call::Outcome, faultable: bool) -> bool {
-    faultable && matches!(outcome, super::mechanism::call::Outcome::Fault)
-}
-
 /// THE UNPARSEABLE-BODY MARK, in `ProjectOut::view.flags` of a FAULT `project`: the plane parsed
 pub const PROJECT_FAULT_UNPARSEABLE: u32 = 1 << 31;
-
-/// WHETHER A `project` IS THE PLANE'S OWN FAULT OVER AN UNPARSEABLE BODY: [`Outcome::Fault`], the
-#[must_use]
-pub const fn project_fault_unparseable(
-    outcome: super::mechanism::call::Outcome,
-    out: &ProjectOut,
-) -> bool {
-    use super::mechanism::call::{Outcome, RawOutcome};
-    matches!(outcome, Outcome::Fault)
-        && out.head.outcome.0 == RawOutcome::of(Outcome::Fault).0
-        && out.view.flags == PROJECT_FAULT_UNPARSEABLE
-}
 
 /// THE REWRITE-NOT-APPLICABLE MARK, in `ProjectOut::view.flags` of a READY `project` that carried
 pub const PROJECT_REWRITE_NOT_APPLICABLE: u32 = 1 << 30;
@@ -2586,11 +2350,6 @@ const _: () = assert!(one_bit_each(&[
     PROJECT_REWRITE_NOT_APPLICABLE,
     PROJECT_FAULT_UNPARSEABLE,
 ]));
-
-/// [`ProjectIn::flags`]: no hook core bound to this unit stops, changes or routes the request,
-/// so the plane forwards it unaltered. Clear (the zero a host that states nothing sends) means a
-/// bound hook may stop, change or route the request on what `project` publishes.
-pub const PROJECT_IN_OBSERVE_ONLY: u32 = 1 << 0;
 
 /// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
 #[repr(C)]
