@@ -355,6 +355,13 @@ pub struct OutboundAnswer {
 pub trait AuthPort: Send + Sync + 'static {
     fn facts(&self) -> u64;
     fn cred_headers(&self) -> &[Box<str>];
+    /// D_BODY_MAX, if declared: the most body bytes this image's credential covers (auth 4.0; only
+    /// an image that declares FB_NEEDS_BODY may state one). `None` = the image states no bound: it
+    /// verifies no route whose body must be read before its caller is judged, so a signed route
+    /// it would judge is left unmounted. A port that does not answer states none.
+    fn body_max(&self) -> Option<u64> {
+        None
+    }
     /// D_ISSUED_KIND, if declared.
     fn issued_kind(&self) -> Option<&str>;
     fn verify<'a>(&'a self, cx: CallCx, req: &AuthIn<'_>, issued: Option<&[u8]>) -> Verify<'a>;

@@ -44,13 +44,16 @@ pub struct AuthAdapter<N: Needs> {
     cred_headers: Box<[Box<str>]>,
     /// D_ISSUED_KIND, if declared.
     issued_kind: Option<Box<str>>,
+    /// D_BODY_MAX, if declared: the most body bytes the image's credential covers.
+    body_max: Option<u64>,
     errors: &'static ErrorBook,
     /// The undeclared-ERROR WARN latch (`ErrorBook::resolve`).
     undeclared: AtomicBool,
 }
 
 impl<N: Needs> AuthAdapter<N> {
-    /// `describe` = the image's describe records (D_CRED_HEADER*, D_ISSUED_KIND?, D_ISSUED_SHAPE?);
+    /// `describe` = the image's describe records (D_CRED_HEADER*, D_ISSUED_KIND?, D_ISSUED_SHAPE?,
+    /// D_BODY_MAX?);
     pub fn new(
         proxy: Proxy,
         needs: Arc<N>,
@@ -59,11 +62,13 @@ impl<N: Needs> AuthAdapter<N> {
     ) -> Result<Self, RecErr> {
         let cred_headers = decode_cred_headers(describe)?;
         let issued_kind = enc::decode_issued_shape(describe)?.map(|(kind, _)| kind);
+        let body_max = decode_body_max(describe, proxy.instance().facts)?;
         Ok(AuthAdapter {
             proxy,
             needs,
             cred_headers,
             issued_kind,
+            body_max,
             errors,
             undeclared: AtomicBool::new(false),
         })
@@ -131,6 +136,10 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
 
     fn cred_headers(&self) -> &[Box<str>] {
         &self.cred_headers
+    }
+
+    fn body_max(&self) -> Option<u64> {
+        self.body_max
     }
 
     fn issued_kind(&self) -> Option<&str> {
@@ -379,6 +388,26 @@ pub fn decode_cred_headers(describe: Records<'_>) -> Result<Box<[Box<str>]>, Rec
     Ok(names.into())
 }
 
+/// D_BODY_MAX (auth 4.0): the most body bytes the image's credential covers. At most one, a Pod
+/// `U64Rec`, and only from an image whose facts hold FB_NEEDS_BODY: a bound stated by an image that
+/// is never handed the body, or stated twice, is a describe the loader refuses (the instance does
+/// not open). `None` = the image states no bound.
+pub fn decode_body_max(describe: Records<'_>, facts: u64) -> Result<Option<u64>, RecErr> {
+    let mut stated: Option<u64> = None;
+    for rec in describe {
+        let rec = rec?;
+        if rec.tag != t::D_BODY_MAX {
+            continue;
+        }
+        let bound: busbar_plugin_abi::records::U64Rec = rec.pod()?;
+        if stated.is_some() || facts & abi::FB_NEEDS_BODY == 0 {
+            return Err(RecErr::Size);
+        }
+        stated = Some(bound.value);
+    }
+    Ok(stated)
+}
+
 /// A login OK answer for `step` (§8.3): BEGIN = REDIRECT then STATE; COMPLETE = GRANT for a caller connection
 /// (L_CONNECT), else ID_*; CREDENTIAL = ID_*.
 pub fn decode_login(step: u32, connect: bool, records: Records<'_>) -> Result<LoginAnswer, RecErr> {
@@ -600,6 +629,53 @@ mod tests {
 
     fn recs(w: &Reply) -> Records<'_> {
         Records::new(w.as_bytes())
+    }
+
+    fn body_max_rec(w: &mut Reply, value: u64) {
+        w.put_pod(t::D_BODY_MAX, &busbar_plugin_abi::records::U64Rec { value })
+            .unwrap();
+    }
+
+    // Signed ingress: the bound a signed route reads its body under is the image's own
+    // statement, read once at describe.
+    #[test]
+    fn the_stated_body_bound_is_read_from_the_describe() {
+        let mut w = Reply::new();
+        w.put_text(t::D_CRED_HEADER, "webhook-signature").unwrap();
+        body_max_rec(&mut w, 1_048_576);
+        assert_eq!(
+            decode_body_max(recs(&w), abi::FB_NEEDS_BODY),
+            Ok(Some(1_048_576))
+        );
+    }
+
+    // An image that states none verifies no signed route: nothing is assumed for it.
+    #[test]
+    fn an_image_that_states_no_body_bound_has_none() {
+        let mut w = Reply::new();
+        w.put_text(t::D_CRED_HEADER, "authorization").unwrap();
+        assert_eq!(decode_body_max(recs(&w), abi::FB_NEEDS_BODY), Ok(None));
+        assert_eq!(decode_body_max(recs(&w), 0), Ok(None));
+    }
+
+    // A bound from an image that is never handed the body would be a bound on nothing.
+    #[test]
+    fn a_body_bound_without_the_body_fact_is_refused() {
+        let mut w = Reply::new();
+        body_max_rec(&mut w, 4096);
+        assert!(decode_body_max(recs(&w), 0).is_err());
+        assert!(decode_body_max(recs(&w), abi::FB_NEEDS_BODY_HASH).is_err());
+    }
+
+    #[test]
+    fn a_body_bound_stated_twice_or_malformed_is_refused() {
+        let mut twice = Reply::new();
+        body_max_rec(&mut twice, 4096);
+        body_max_rec(&mut twice, 8192);
+        assert!(decode_body_max(recs(&twice), abi::FB_NEEDS_BODY).is_err());
+        let mut text = Reply::new();
+        text.put_text(t::D_BODY_MAX, "4096").unwrap();
+        assert!(decode_body_max(recs(&text), abi::FB_NEEDS_BODY).is_err());
     }
 
     fn put_fact(w: &mut Reply, key: u32, value: u64) {
