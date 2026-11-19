@@ -74,6 +74,10 @@ pub(crate) type MinRegistry = Registry;
 
 /// How long a core-internal secret may take to resolve at boot.
 pub(crate) const CORE_SECRET_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The budget of one native call (a hook call, a provisioning call) whose instance states no
+/// `timeout_ms` of its own: the one second the old dispatcher's default call budget gave.
+pub(crate) const DEFAULT_CALL_BUDGET: Duration = Duration::from_secs(1);
 /// Core's own secrets, resolved at boot through the secret kind into owned values (IF §11.2: the admin token,
 /// the signing key). `None` = the config states no such reference.
 #[derive(Default)]
@@ -2356,7 +2360,7 @@ pub(super) async fn finish_with_store(
         environment.app,
         generation,
         request_body_cap,
-        crate::root::dispatch::dispatcher().budgets().call,
+        DEFAULT_CALL_BUDGET,
         Arc::clone(&environment.app.request_id_counter),
     )?;
     let framers = match fixed_transports {

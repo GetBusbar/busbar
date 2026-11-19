@@ -31,31 +31,6 @@ fn configuration_declaration(
     declaration
 }
 
-pub(super) fn linked_configuration_from_statement(bytes: &[u8]) -> Result<Stated, String> {
-    use busbar_contract::abi::mechanism::{door::REWRITE_ALIAS, rendering, KindCode};
-    let statement =
-        rendering::read(bytes).map_err(|e| format!("invalid linked Statement: {e:?}"))?;
-    let kind = KindCode::from_raw(statement.kind).ok_or("unknown linked Statement kind")?;
-    let schema = super::loader::settings_schema::statement_schema(&statement.settings_schema)?;
-    Ok(Stated {
-        name: statement.name.clone(),
-        alias: statement
-            .rewrites
-            .iter()
-            .find(|(class, _, _)| *class == REWRITE_ALIAS)
-            .map_or_else(|| statement.name.clone(), |(_, from, _)| from.clone()),
-        kind: super::loader::boot::kind_of(kind).to_string(),
-        version: statement.version.clone(),
-        signature_present: false,
-        publisher: super::loader::sign::FIRST_PARTY_PUBLISHER.to_string(),
-        abi_version: statement.kind_abi,
-        settings_schema: schema,
-        configuration: Some(
-            busbar_kernel::admission::ConfigurationDeclaration::from_statement(&statement),
-        ),
-    })
-}
-
 fn stated(m: &Manifest) -> Result<Stated, String> {
     Ok(Stated {
         name: m.name.clone(),
@@ -115,8 +90,9 @@ fn unpack_checked(
 pub struct RootAdmission;
 
 impl PluginAdmission for RootAdmission {
+    /// No linked row states a door Statement: every linked plugin is a MIN-3 image.
     fn linked_configuration(&self) -> Vec<Stated> {
-        super::settings_public::linked_configuration()
+        Vec::new()
     }
 
     fn loaded_configuration(
@@ -676,14 +652,6 @@ fn document_replace(
         Native::Missing => Host::Missing,
         Native::Changed => Host::Changed,
     })
-}
-
-pub(crate) fn auth_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
-    crate::root::loader::dispatch::kinds::auth::declares_chain_module(door)
-}
-
-pub(crate) fn dispatch_latched() -> bool {
-    crate::root::loader::dispatch::handle::latched()
 }
 
 #[cfg(test)]

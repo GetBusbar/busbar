@@ -8,25 +8,6 @@
 
 use foldhash::HashMap;
 
-/// `observe`: a plugin's observation owner and its name, made and shared once, on its first
-/// observation.
-#[cold]
-pub(crate) fn first_observed(
-    owners: &mut crate::root::observe::Owners,
-    plugin: &str,
-) -> (
-    busbar_kernel::snapshot::observe::ObservationOwner,
-    std::sync::Arc<str>,
-) {
-    let name: std::sync::Arc<str> = std::sync::Arc::from(plugin);
-    let known = (
-        busbar_kernel::snapshot::observe::ObservationOwner::default(),
-        name.clone(),
-    );
-    owners.insert(name, known.clone());
-    known
-}
-
 /// `observe`: the audit code of a plugin bind the host's connection table refused.
 #[cold]
 pub(crate) fn need_refusal_code(need: u32, reason: &str) -> String {

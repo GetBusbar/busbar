@@ -327,8 +327,8 @@ fn register_root() {
     root::linked::seal(ROOT_UNITS);
 }
 
-fn register_diagnostics() -> busbar_kernel::diagnostics::Catalogue {
-    root::linked::register_diagnostics(&LINKED)
+fn register_diagnostics() {
+    root::linked::register_diagnostics(&LINKED);
 }
 
 static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
@@ -357,7 +357,7 @@ fn main() {
 
     register_root();
 
-    let catalogue = register_diagnostics();
+    register_diagnostics();
 
     match root::cli::handle_cli_flags() {
         root::cli::Parsed::Exit(code) => root::exit::exit(code),
@@ -403,7 +403,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(catalogue, control_work, trace_publisher));
+            .block_on(run(control_work, trace_publisher));
     }
     #[cfg(not(unix))]
     {
@@ -414,7 +414,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(catalogue, control_work, trace_publisher));
+            .block_on(run(control_work, trace_publisher));
     }
     // Every return from `run` (a one-shot command, a serve-and-shutdown) leaves here, so an
     // unpublished first start is handed over on a normal return too (FIRST-START-TAKEOVER §2.7).
@@ -566,7 +566,6 @@ mod bootstrap_destination_tests {
 }
 
 async fn run(
-    catalogue: busbar_kernel::diagnostics::Catalogue,
     control_work: ControlWork,
     trace_publisher: Option<busbar_kernel::export::traces::TracePublisher>,
 ) {
@@ -575,7 +574,6 @@ async fn run(
     let plugin_process = root::boot::images::process().unwrap_or_else(|error| die(error));
     root::admission::install_process(&plugin_process);
     let export_observers = root::export_observer::ExportObservers::new();
-    root::observe::install(catalogue);
     // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so
     // an armed first-start owner hands over (FIRST-START-TAKEOVER §2.7).
     let signal_handoff = root::exit::exit_on_signal();

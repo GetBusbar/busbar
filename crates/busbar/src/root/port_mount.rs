@@ -93,6 +93,12 @@ pub(crate) fn auth_of(effective: u32) -> RouteAuth {
     }
 }
 
+/// The auth points a native line offers: the head, and the head with its body (what a transport
+/// that states no offer of its own has always offered).
+pub(crate) const LINE_OFFERED: busbar_contract::route::AuthPoints = busbar_contract::route::AuthPoints(
+    busbar_contract::route::POINT_HEAD | busbar_contract::route::POINT_HEAD_BODY,
+);
+
 /// The same native route table admitted by the driver seals physical listener claims. The
 /// route id is the renderer's native selector; native render has no legacy dialect number.
 pub(crate) fn guest_lines(
@@ -135,7 +141,7 @@ pub(crate) fn guest_lines(
                             LineAuth::None
                         },
                         upgrade: None,
-                        offered: crate::root::doors::offers_unstated(),
+                        offered: LINE_OFFERED,
                     })
                 })
         })
