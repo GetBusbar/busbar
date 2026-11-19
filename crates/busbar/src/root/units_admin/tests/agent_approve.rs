@@ -134,10 +134,8 @@ async fn a_node(trust: Arc<busbar_kernel::host_services::KernelServices>) -> axu
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {
-                "chain": [],
-                "admin_auth": [busbar_kernel::config::operator_provider()],
-            },
+            // The admin door is this file's own; the app's default admin chain is `[keys]`.
+            "auth": {"chain": ["keys"]},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),

@@ -394,6 +394,12 @@ pub trait PlanePort: Send + Sync + 'static {
     fn session_ceiling_s(&self) -> Option<u64> {
         None
     }
+    /// D_CHECKED_KIND: the scope kinds the plane checks a caller's grant under that no route's
+    /// admission states. Core declares them with the route-stated kinds when the plane mounts.
+    /// Additive: a port that predates the item states none.
+    fn checked_kinds(&self) -> &[Box<str>] {
+        &[]
+    }
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the plane's ROUTE_ADMIN routes (round 8), for the admin document.
     fn admin_openapi(&self) -> Option<&str>;
     /// Charges this plane's image for a once rule core found one of its answers to break (IF §8.6: handled

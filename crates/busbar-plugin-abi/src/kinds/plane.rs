@@ -729,6 +729,16 @@ crate::kind! {
             /// enforces exactly this and borrows no number of its own; a plane that states none has
             /// no engine ceiling on its sessions. A describe written without it still loads.
             D_SESSION_CEILING_S = 0x019C;
+            /// Plane 2.0, additive, optional, one item per kind: a scope kind this plane checks a
+            /// caller's grant under (its ENTITLE asks) that no route's admission states, neither a
+            /// walk kind nor a D_ROUTE_RESOURCES kind. Tail = the kind text (the generic scope-kind
+            /// grammar, `resource_admission::valid_kind`); a kind stated twice is DescribeInvalid.
+            /// Core declares each such kind with the kinds its routes state, before it judges
+            /// `role_bindings.*.allowed_<kind>s` and a key's grants, so the grant the plane checks can
+            /// be written per name (least privilege). It names a kind, never a grant or a default: a
+            /// caller granted no name of the kind is still refused by the plane's ask. A describe
+            /// written without it still loads.
+            D_CHECKED_KIND = 0x019D;
             /// Plane 2.0: the plane-only describe items that left the core contract (the generic 0x004A,
             /// 0x004B and 0x004D are retired there). D_PUBLIC_URL_PATH: the config position where core writes
             /// its top-level `public_url` (a JSON string or `null`) before schema validation, `check` and
