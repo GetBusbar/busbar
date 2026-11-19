@@ -1331,7 +1331,10 @@ fn test_lease() -> &'static busbar_kernel::limits::process_admission::RequestLea
 fn a_native_unit_open_at_exit_is_reported_once_and_an_ended_one_is_not() {
     use busbar_kernel::plane_driver::{FeeRefund, PlaneMoney, UnitMoney};
     let book = native_node_book();
-    let (node, post) = door_node(&book);
+    // Built here, not by a shared helper: the helper is renamed by the old-interface deletion.
+    let node = Arc::new(Node::new());
+    node.bind_book(Arc::clone(&book.durability));
+    let post = NodeEndPost::new(Arc::clone(&node));
     let gov = Arc::new(
         native_ready(busbar_kernel::governance::GovState::new_with_core(
             native_ready(crate::root::real_store::core()),
