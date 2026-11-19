@@ -529,6 +529,11 @@ pub trait Effects: Sync {
     }
     fn response(&self, _status: u16) {}
     fn observed_usage(&self, _usage: &super::usage::SessionUsage) {}
+    /// The money answered `Cut` to a running checkpoint of this session's unit (its spend ceiling was
+    /// reached): the session ends at once ([`within_budget`]). Default: never.
+    fn budget_cut(&self) -> bool {
+        false
+    }
     /// A member's far end is about to be dialled for this session (the unit has run from here on).
     fn dialled(&self) {}
 
@@ -620,6 +625,22 @@ pub trait ClientSink: Send + Sync {
     fn messages(&self) -> Option<&dyn super::port_duplex::ClientMessages> {
         None
     }
+}
+
+/// A running session goes on only while its unit is within budget: once the money cut the unit at its spend
+/// ceiling ([`Effects::budget_cut`]) the session ends here, refused `R_BUDGET` (as a selected attempt's
+/// running checkpoint is), so nothing after the crossing report is served or billed. The usage accepted up
+/// to and including that report bills once, through the session's `Failed` end (P087B).
+///
+/// # Errors
+/// `CoreRefused(R_BUDGET)` once the unit was cut.
+pub fn within_budget(effects: &dyn Effects) -> Result<(), SessionError> {
+    if effects.budget_cut() {
+        return Err(SessionError::CoreRefused(
+            busbar_plugin_abi::fail::refused::R_BUDGET,
+        ));
+    }
+    Ok(())
 }
 
 /// Hands `items` to the effects' [`ClientSink`] when it has one (leaving `items` empty), else keeps them.

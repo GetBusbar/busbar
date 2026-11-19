@@ -824,6 +824,7 @@ async fn drive_answers<K: Calls + ?Sized, M: Members, S: UpSend>(
         inner: drive.effects,
         books: drive.books,
         taken: std::sync::Mutex::new(None),
+        cut: std::sync::atomic::AtomicBool::new(false),
     };
     let mut metering = Drive {
         resolver: drive.resolver,
