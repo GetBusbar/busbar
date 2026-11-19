@@ -176,13 +176,21 @@ impl<'o> Answer<'o> {
     /// The answer of a call that opens no session: a TOKEN anywhere, first included, is FAULT UnknownTag (a
     /// forged context, P079B). A session opener's answer is `parse_opener`'s.
     pub fn parse(status: Status, bytes: &'o [u8]) -> Result<Answer<'o>, FaultReason> {
-        Ok(Answer::at(status, bytes, layout(status, bytes, Caller::Other)?))
+        Ok(Answer::at(
+            status,
+            bytes,
+            layout(status, bytes, Caller::Other)?,
+        ))
     }
 
     /// Validates a session opener's terminal answer (§6.4 step 7): as `parse`, but its OK answer may lead with
     /// the session TOKEN (busbar-ffi's `open_sessionN` reads it; `records()` excludes it).
     pub fn parse_opener(status: Status, bytes: &'o [u8]) -> Result<Answer<'o>, FaultReason> {
-        Ok(Answer::at(status, bytes, layout(status, bytes, Caller::Opener)?))
+        Ok(Answer::at(
+            status,
+            bytes,
+            layout(status, bytes, Caller::Opener)?,
+        ))
     }
 
     fn at(status: Status, bytes: &'o [u8], layout: Layout) -> Answer<'o> {

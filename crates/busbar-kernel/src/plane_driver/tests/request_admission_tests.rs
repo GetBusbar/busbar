@@ -310,6 +310,45 @@ fn pool_grant_cannot_be_used_for_direct_model_or_another_pool() {
     }
 }
 
+/// 1.5.5 `llm_pool_member_scope_is_judged_at_the_pool_not_the_member` (LEDGER S-R10): on the
+/// catalog seat a pool is granted by its own name only. A key granted the pool walks exactly its
+/// member; a key granted only that member is granted no pool and is refused Scope (403), since
+/// no catalog pool is member-granted.
+#[test]
+fn a_member_scope_is_no_pool_grant_on_the_catalog_seat() {
+    let routes = catalog_routes();
+    let key = |scope: &str| {
+        Arc::new(VirtualKey {
+            id: format!("granted-{scope}").into(),
+            enabled: true,
+            allowed_scopes: Some(vec![busbar_contract::records::ScopeRef::pool(scope)]),
+            ..Default::default()
+        })
+    };
+    let (ctx, _lease) = context_with_key(16, key("p"));
+    let walk = RequestWalk::new(&ctx).unwrap();
+    let receipt = allocation(ctx).forward(&routes, &walk, Some("p")).unwrap();
+    assert_eq!(
+        **receipt
+            .member_grants()
+            .get(receipt.walk_key().unwrap())
+            .unwrap(),
+        ["seat\u{1f}m"],
+        "a key granted the pool reaches its member"
+    );
+    for pool in ["p", "q"] {
+        let (ctx, _lease) = context_with_key(17, key("m"));
+        let walk = RequestWalk::new(&ctx).unwrap();
+        assert_eq!(
+            allocation(ctx)
+                .forward(&routes, &walk, Some(pool))
+                .map(|_| ()),
+            Err(AdmissionError::Scope),
+            "a key granted only member m is not granted pool {pool}"
+        );
+    }
+}
+
 #[test]
 fn real_admission_view_keeps_selected_pool_and_rejects_retired_authority() {
     use crate::config::groups::{ExhaustionMode, GroupCfg};

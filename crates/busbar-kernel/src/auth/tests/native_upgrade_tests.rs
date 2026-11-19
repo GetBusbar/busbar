@@ -802,15 +802,17 @@ mod dpop_at_every_site {
         Err("the stand-in authorization server is never configured".into())
     }
 
-    #[allow(clippy::type_complexity)]
+    type Plane = Arc<dyn Any + Send + Sync>;
+    type Built = Pin<Box<dyn Future<Output = Result<Plane, String>> + Send>>;
+
     fn build(
         _: busbar_contract::yaml::Value,
         _: Vec<(String, String)>,
         _: Vec<String>,
-        _: Option<Arc<dyn Any + Send + Sync>>,
+        _: Option<Plane>,
         _: Arc<crate::persistence::facade::CoreStore>,
         _: String,
-    ) -> Pin<Box<dyn Future<Output = Result<Arc<dyn Any + Send + Sync>, String>> + Send>> {
+    ) -> Built {
         Box::pin(async { Err("the stand-in authorization server is never built".to_string()) })
     }
 
@@ -1080,7 +1082,7 @@ mod dpop_at_every_site {
         let (f, port) = deployment();
         let target = "/stats";
 
-        // Unproven: a proof for another request (another method is never this request).
+        // Unproven: a proof that names no URL.
         let head = presented("a.proof.jwt");
         let (request, cx, _owner) = arrival_at(&f, 1, target, &fields(&head));
         let binding = request.binding().clone();
