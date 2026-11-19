@@ -1419,26 +1419,62 @@ fn the_release_tooling_refuses_what_would_not_load_as_first_party() {
     .is_err());
 }
 
+/// Busbar artifacts carry a release seal; a bare signature over the manifest is refused before
+/// any key is tried, whoever made it. Where a key is still looked up (the root that signed the
+/// seal's keys document), an unlisted key is refused naming the ids this build trusts.
 #[test]
 fn verify_refuses_an_unlisted_key_naming_the_trusted_ids() {
     use busbar_plugin_loader::sign::Signer as _;
-    let stranger = SigningKey::from_bytes(&[13; 32]);
-    let roots = vec![P256::new().root("busbar-plugins-root")];
+    const NO_SEAL: &str =
+        "Busbar artifacts require a release seal; embedded roots sign keys documents, not artifacts";
     let unsigned = unsigned_first_party("busbar-store-x", b"cdylib");
     let up = busbar_plugin_loader::tarball::unpack(&unsigned).unwrap();
-    let manifest = Manifest {
-        signature: hex::encode(
-            stranger
-                .sign(&canonical_manifest_bytes(&up.manifest))
-                .to_bytes(),
-        ),
-        ..up.manifest
+    let bare = |key: &SigningKey| {
+        let manifest = Manifest {
+            signature: hex::encode(key.sign(&canonical_manifest_bytes(&up.manifest)).to_bytes()),
+            ..up.manifest.clone()
+        };
+        busbar_plugin_loader::tarball::package(&manifest, "lib.so", &up.lib_bytes).unwrap()
     };
-    let signed =
-        busbar_plugin_loader::tarball::package(&manifest, "lib.so", &up.lib_bytes).unwrap();
+
+    let stranger = SigningKey::from_bytes(&[13; 32]);
+    let roots = vec![P256::new().root("busbar-plugins-root")];
     assert_eq!(
-        verify_first_party(&signed, &roots, TARGET_A).unwrap_err(),
-        "signature verifies against none of this build's first-party keys [busbar-plugins-root]"
+        verify_first_party(&bare(&stranger), &roots, TARGET_A).unwrap_err(),
+        NO_SEAL,
+        "a bare signature by an unlisted key"
+    );
+
+    let root = SigningKey::from_bytes(&[14; 32]);
+    let roots = vec![FirstPartyKey {
+        id: "busbar-plugins-root".into(),
+        key: ReleaseKey::Ed25519(root.verifying_key()),
+    }];
+    assert_eq!(
+        verify_first_party(&bare(&root), &roots, TARGET_A).unwrap_err(),
+        NO_SEAL,
+        "a bare signature by a trusted root is refused too: roots sign keys documents only"
+    );
+
+    let (kms, signer, stranger) = (P256::new(), P256::new(), P256::new());
+    let far = wire::parse_time("2099-01-01T00:00:00Z").unwrap();
+    let signed =
+        release_manifest_bytes(1, far, vec![release_entry(&unsigned, TARGET_A).unwrap()]).unwrap();
+    let release = envelope(&signed, &signer.key(), &signer.sign(&signed)).unwrap();
+    let manifest = Manifest {
+        signature: wire::write_seal(&keys_envelope(&stranger, &signer), &release).unwrap(),
+        ..up.manifest.clone()
+    };
+    let sealed =
+        busbar_plugin_loader::tarball::package(&manifest, "lib.so", &up.lib_bytes).unwrap();
+    let roots = vec![
+        kms.root("busbar-plugins-root"),
+        P256::new().root("busbar-plugins-2026a"),
+    ];
+    let e = verify_first_party(&sealed, &roots, TARGET_A).unwrap_err();
+    assert!(
+        e.contains("keys-signature") && e.contains("[busbar-plugins-root, busbar-plugins-2026a]"),
+        "a seal whose keys document an unlisted root signed names the trusted ids: {e}"
     );
 }
 
