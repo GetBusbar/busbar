@@ -162,6 +162,8 @@ pub enum Planned {
 
 const OTHER_PATH_SIGNED: &str = "a signed route is served by the listener's signed-ingress class";
 const OTHER_PATH_OPERATOR: &str = "an admin route is served by the admin door";
+const NO_CONFIGURED_MODEL: &str =
+    "no configured model routes to this plane, so the route has nothing to reach";
 
 impl NativeDataRoute {
     /// The actual inventory this canonical route selects from after verification
@@ -308,6 +310,16 @@ impl NativeDataRoute {
         // mounted (design C6), it is never served with core's generic challenge in its place.
         if record.mounted_challenge(seat.public_url()).is_err() {
             return Err(NotMounted::NoPublicUrlForItsChallenge.reason());
+        }
+        // A plane that states dialects (model wire protocols) walks configured models: its walk
+        // route is served only while a configured model routes to it (docs/decisions.md: "No
+        // `decisions:` models means no active decision route"). With none, the walk has nothing
+        // to reach; the route is not mounted and a request to it is answered as one to no route.
+        if admission_of(record) == Admission::Walk
+            && !seat.driver.port().dialects().is_empty()
+            && !seat.request_routes.routes_models()
+        {
+            return Err(NO_CONFIGURED_MODEL);
         }
         Ok(())
     }

@@ -857,7 +857,8 @@ pub(crate) fn resolve_signing_key(
 }
 
 pub(crate) fn is_real_auth_plugin_ref(m: &str, in_process: fn(&str) -> bool) -> bool {
-    m != config::KEYS_MODULE && !in_process(m)
+    // `keys` and `anonymous` are the chain's built-in members: neither names a plugin.
+    !crate::auth::native_chain::BuiltIn::is(m) && !in_process(m)
 }
 
 pub(crate) fn is_real_identity_provider_plugin_ref(m: &str, in_process: fn(&str) -> bool) -> bool {

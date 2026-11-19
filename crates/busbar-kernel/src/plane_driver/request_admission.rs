@@ -198,6 +198,15 @@ impl RequestRoutes {
         })
     }
 
+    /// Whether a configured model (or a pool of them) routes to this seat: its provider catalog
+    /// holds at least one walk.
+    #[must_use]
+    pub fn routes_models(&self) -> bool {
+        self.catalog
+            .as_ref()
+            .is_some_and(|catalog| !catalog.pools().is_empty())
+    }
+
     /// Whether `key` may use the operator domain `name` (K2). A declared kind checks the
     /// key's grant of that kind. With no declared kind, a keyed unit is admitted only by an
     /// unrestricted key or by its own non-empty authorized selection, which then narrows

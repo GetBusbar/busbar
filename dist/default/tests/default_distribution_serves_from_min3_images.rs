@@ -615,15 +615,13 @@ fn the_documented_mcp_canonical_uri_is_the_planes_audience_and_binds_it() {
     );
     let (status, body) = post(&foreign);
     assert_eq!(
-        status,
-        401,
+        status, 401,
         "a key minted for another resource is refused at /mcp: {body}"
     );
     let unbound = node.mint("min3-mcp-unbound", None);
     let (status, body) = post(&unbound);
     assert_eq!(
-        status,
-        401,
+        status, 401,
         "a key bound to no audience is refused at /mcp: {body}"
     );
 }

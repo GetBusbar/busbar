@@ -581,8 +581,16 @@ fn plane_instances(
             ));
         }
         let config = match sections.get(name.as_str()) {
-            Some(section) => serde_json::to_vec(section)
-                .map_err(|error| format!("{name}: the plane's section is not JSON ({error})"))?,
+            Some(section) => {
+                // The audience is core's word ([`plane_audiences`]): it binds the plane's routes and
+                // is never part of the plane's bag, whose reader does not know it.
+                let mut bag = section.clone();
+                if let Some(map) = busbar_contract::yaml::ValueExt::as_mapping_mut(&mut bag) {
+                    let _lifted = busbar_contract::yaml::MappingExt::remove_key(map, AUDIENCE_KEY);
+                }
+                serde_json::to_vec(&bag)
+                    .map_err(|error| format!("{name}: the plane's section is not JSON ({error})"))?
+            }
             None => b"{}".to_vec(),
         };
         out.push(Configured {
@@ -990,6 +998,8 @@ struct Steps<'r> {
     seat: SeatShared,
     /// Dormant probes prepared while opening seats, consumed only at publication.
     probes: Mutex<Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>>,
+    /// Each plane instance's audience ([`plane_audiences`]): what its seat is bound to.
+    audiences: std::collections::BTreeMap<String, String>,
 }
 
 impl Steps<'_> {
@@ -1205,7 +1215,7 @@ impl Steps<'_> {
                     .map_err(OpenError::Unknown)?,
                 instance: spec.name.to_owned(),
                 driver: Arc::new(driver),
-                audience: audience_of(spec.config_json),
+                audience: self.audiences.get(spec.name).cloned(),
                 intents: Arc::new(intents),
                 who,
                 request_routes: wiring.request_routes,
@@ -1221,13 +1231,52 @@ impl Steps<'_> {
     }
 }
 
-/// The `canonical_uri` of a plane's config block: the audience its line session is bound to.
-fn audience_of(config_json: &[u8]) -> Option<String> {
-    serde_json::from_slice::<serde_json::Value>(config_json)
-        .ok()?
-        .get("canonical_uri")?
-        .as_str()
-        .map(str::to_owned)
+/// A plane section's core-owned audience word: the RFC 8707 resource indicator the plane's routes and
+/// line session are bound to (MCP's documented `mcp.canonical_uri`, docs/mcp.md). Core reads it
+/// ([`plane_audiences`]) and lifts it off the section before the bag reaches the plane
+/// ([`plane_instances`]), as the pre-pass lifts `insecure_transport`.
+const AUDIENCE_KEY: &str = "canonical_uri";
+
+/// Each plane section's audience, by instance name. A written audience that is not an absolute
+/// http(s) URI naming an authority, or that carries a fragment (RFC 8707 §2), refuses the boot: a
+/// plane is never served bound to an audience no token can name, nor silently unbound.
+fn plane_audiences(
+    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    use busbar_contract::yaml::ValueExt as _;
+    let mut audiences = std::collections::BTreeMap::new();
+    for (instance, section) in sections {
+        let Some(written) = section.get(AUDIENCE_KEY) else {
+            continue;
+        };
+        let audience = written
+            .as_str()
+            .filter(|uri| resource_indicator(uri))
+            .ok_or_else(|| {
+                format!(
+                    "`{instance}.{AUDIENCE_KEY}` must be an absolute http(s) URI naming a host, with \
+                     no fragment (RFC 8707 section 2): it is the audience every token presented to \
+                     `{instance}` must carry"
+                )
+            })?;
+        audiences.insert((*instance).to_owned(), audience.to_owned());
+    }
+    Ok(audiences)
+}
+
+/// RFC 8707 §2: a resource indicator is an absolute URI and does not include a fragment; an http(s)
+/// one names an authority.
+fn resource_indicator(uri: &str) -> bool {
+    let Some(rest) = uri
+        .strip_prefix("https://")
+        .or_else(|| uri.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?']).next().unwrap_or_default();
+    !authority.is_empty()
+        && !uri.contains('#')
+        && !uri.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 impl Steps<'_> {
@@ -1473,6 +1522,8 @@ pub(crate) struct ServingReady {
     normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
     /// Each plane section's `pools:`, walked natively (#108, route-classes K2 amendment).
     section_pools: super::plane_seats::SectionPoolsByInstance,
+    /// Each plane section's audience, by instance name ([`plane_audiences`]).
+    audiences: std::collections::BTreeMap<String, String>,
     _bootstrap_registry: Arc<MinRegistry>,
 }
 
@@ -1927,6 +1978,7 @@ fn prepare_serving_owned(
         converting,
         normalization_source,
         section_pools: super::plane_seats::section_pools(&cfg.instance_sections())?,
+        audiences: plane_audiences(&cfg.instance_sections())?,
         _bootstrap_registry: Arc::clone(&sources.registry),
     })
 }
@@ -2050,6 +2102,7 @@ pub(super) async fn finish_with_store(
         converting,
         normalization_source,
         section_pools,
+        audiences,
     } = ready;
     let selected_policy = match (selected_policy, environment.as_ref()) {
         (Some(policy), Some(environment)) => Some(
@@ -2111,6 +2164,7 @@ pub(super) async fn finish_with_store(
         built: &built,
         seat,
         probes: Mutex::default(),
+        audiences,
     };
     // LEGACY-KEYFILE-MARKER r2 §3: before any converting open, hand the registry the plan's side-table
     // marks; the loader checks each against the image's D_SECRET_PATH and writes `$migrated` into the

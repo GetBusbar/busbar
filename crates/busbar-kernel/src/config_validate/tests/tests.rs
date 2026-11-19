@@ -888,6 +888,116 @@ fn parse_auth(yaml: &str) -> config::AuthCfg {
     out
 }
 
+/// The resolution errors of an `auth:` + `identity-providers:` document (the load's own step).
+fn resolve_auth_errors(yaml: &str) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Doc {
+        #[serde(default)]
+        auth: config::AuthDeployCfg,
+        #[serde(default, rename = "identity-providers")]
+        identity_providers: config::IdentityProviders,
+    }
+    let doc: Doc = busbar_contract::yaml::from_str(yaml).expect("auth yaml parses");
+    let mut errors = Vec::new();
+    config::resolve_auth(&doc.auth, &doc.identity_providers, &mut errors);
+    errors
+}
+
+const ANONYMOUS_CONFIG: &str = "auth:\n  chain: [anonymous]\n  role_bindings:\n    anonymous:\n      \"*\": { allowed_pools: [conformance] }\n";
+
+/// INB-009: the operator names the built-in member `anonymous` in `auth.chain` and grants it under
+/// `role_bindings.anonymous`; that configuration loads, and the member resolves with no definition.
+#[test]
+fn anonymous_in_auth_chain_with_its_binding_loads() {
+    let auth = parse_auth(ANONYMOUS_CONFIG);
+    assert_eq!(auth.chain.len(), 1);
+    assert_eq!(auth.chain[0].name, crate::auth::native_chain::ANONYMOUS);
+    assert_eq!(auth.chain[0].module, crate::auth::native_chain::ANONYMOUS);
+    assert!(auth.chain[0].settings.is_empty());
+    assert!(auth.chain[0].max_admin_scope.is_none());
+    // No admin chain member is anonymous.
+    assert!(auth
+        .admin_auth
+        .iter()
+        .all(|e| e.module != crate::auth::native_chain::ANONYMOUS));
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.auth = Some(auth);
+    let res = validate(&cfg);
+    assert!(res.is_ok(), "the anonymous configuration must load: {res:?}");
+    // The member opens no plugin: preflight never looks for a `kind: auth` plugin named anonymous.
+    assert!(!crate::preflight::is_real_auth_plugin_ref(
+        crate::auth::native_chain::ANONYMOUS,
+        |_| false
+    ));
+}
+
+/// INB-009: anonymous reaches ONLY what its binding names. The binding above grants the pool
+/// `conformance` and nothing else: no other pool, no plane scope of any other kind, no admin.
+#[test]
+fn an_anonymous_binding_reaches_only_what_it_names() {
+    let auth = parse_auth(ANONYMOUS_CONFIG);
+    let binding = &auth.role_bindings[crate::auth::native_chain::ANONYMOUS]
+        [crate::config::auth::UNGOVERNED_ROLE];
+    let scopes = binding.scope_grant().expect("an explicit grant, never all");
+    assert_eq!(
+        scopes,
+        vec![busbar_contract::records::ScopeRef::pool("conformance".to_string())]
+    );
+    assert!(binding.admin_scope.is_none() && binding.verbs.is_none());
+}
+
+/// INB-009: no default grant and no admin surface for anonymous. A binding that names no scope
+/// (which would grant every pool and every plane) is refused, and so is any admin grant.
+#[test]
+fn an_anonymous_binding_with_no_scope_or_an_admin_grant_is_refused() {
+    for (binding, needle) in [
+        ("{}", "names no scope"),
+        ("{ group: g }", "names no scope"),
+        (
+            "{ allowed_pools: [conformance], admin_scope: read-only }",
+            "admin",
+        ),
+        ("{ allowed_pools: [conformance], verbs: \"*\" }", "admin"),
+        ("{ allowed_pools: [conformance], verbs: [get_keys] }", "admin"),
+    ] {
+        let yaml = format!(
+            "auth:\n  chain: [anonymous]\n  role_bindings:\n    anonymous:\n      \"*\": {binding}\n"
+        );
+        let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+        cfg.auth = Some(parse_auth(&yaml));
+        let errs = validate(&cfg).expect_err(&format!("{binding} must be refused"));
+        assert!(
+            errs.iter().any(|e| e.contains("role_bindings.anonymous")
+                && e.contains(needle)
+                && e.contains("BUSBAR-")),
+            "{binding}: {errs:?}"
+        );
+    }
+}
+
+/// INB-009: `anonymous` is accepted only in `auth.chain`, where the operator writes it. It is never
+/// an admin chain member, and no identity provider may be named (or be a module called) anonymous,
+/// or its principals would earn the open relay's binding.
+#[test]
+fn anonymous_is_no_admin_member_and_no_identity_provider() {
+    for yaml in [
+        "auth:\n  admin_auth: [anonymous]\n",
+        "identity-providers:\n  anonymous:\n    module: oidc-plugin\n",
+        "identity-providers:\n  anonymous:\n    module: oidc-plugin\nauth:\n  chain: [anonymous]\n",
+        "identity-providers:\n  open:\n    module: anonymous\nauth:\n  chain: [open]\n",
+    ] {
+        let errors = resolve_auth_errors(yaml);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("anonymous") && e.contains("BUSBAR-3115")),
+            "{yaml}: {errors:?}"
+        );
+    }
+    // Writing it in the data chain is the one way in.
+    assert!(resolve_auth_errors("auth:\n  chain: [anonymous]\n").is_empty());
+}
+
 #[test]
 fn test_browser_login_requires_public_url() {
     let auth = parse_auth(

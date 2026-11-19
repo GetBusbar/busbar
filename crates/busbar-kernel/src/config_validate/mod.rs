@@ -821,6 +821,32 @@ fn judge_with_plugins(
                 );
             }
             for (role, binding) in roles {
+                // INB-009: a caller with no credential reaches only what its binding names. A
+                // binding that names no scope grants every pool and plane, and an admin grant
+                // would open the admin surface: both are refused for `anonymous`.
+                if module == crate::auth::native_chain::ANONYMOUS {
+                    if binding.scope_grant().is_none() {
+                        errors.push(
+                            coded::config_role_binding_invalid(format!(
+                                "role_bindings.{module}.{role} names no scope, which would grant \
+                                 a caller with no credential every pool and every plane; name \
+                                 what it may reach (`allowed_pools: [...]`, or the plane's \
+                                 `allowed_<kind>s: [...]`; `[]` for none)"
+                            ))
+                            .into(),
+                        );
+                    }
+                    if binding.admin_scope.is_some() || binding.verbs.is_some() {
+                        errors.push(
+                            coded::config_role_binding_invalid(format!(
+                                "role_bindings.{module}.{role} grants admin access; a caller \
+                                 with no credential never reaches the admin API: remove \
+                                 `admin_scope` and `verbs`"
+                            ))
+                            .into(),
+                        );
+                    }
+                }
                 if reserved_operator_principal_id(role) {
                     errors.push(
                         coded::config_role_binding_invalid(format!(

@@ -577,7 +577,23 @@ pub fn resolve_auth(
     providers: &IdentityProviders,
     errors: &mut Vec<String>,
 ) -> AuthCfg {
-    let mut resolve_one = |plane: &str, name: &String| -> AuthChainEntry {
+    use crate::auth::native_chain::ANONYMOUS as ANONYMOUS_MEMBER;
+    // The word is the built-in member's: no definition may answer to it (by name or by module),
+    // or its principals would earn the open relay's binding.
+    for (name, def) in providers {
+        if name == ANONYMOUS_MEMBER || def.module.trim() == ANONYMOUS_MEMBER {
+            errors.push(
+                coded::config_auth_chain_invalid(format!(
+                    "identity-providers.{name}: `{ANONYMOUS_MEMBER}` is the built-in auth.chain \
+                     member for callers that present no credential; no identity provider may be \
+                     named or be a module called `{ANONYMOUS_MEMBER}`. Write `{ANONYMOUS_MEMBER}` \
+                     in auth.chain and grant it under role_bindings.{ANONYMOUS_MEMBER}."
+                ))
+                .into(),
+            );
+        }
+    }
+    let mut resolve_one =|plane: &str, name: &String| -> AuthChainEntry {
         match providers.get(name) {
             Some(def) => {
                 let module = def.module.trim().to_string();
@@ -611,6 +627,23 @@ pub fn resolve_auth(
                 AuthChainEntry::bare(name.clone())
             }
             None if builtin_identity_providers().contains(&name.as_str()) => {
+                AuthChainEntry::bare(name.clone())
+            }
+            // INB-009: the built-in member `anonymous` (a caller presenting no credential) is
+            // accepted only where the operator writes it in the data chain; what it reaches is
+            // what `role_bindings.anonymous` grants. The admin API never admits it.
+            None if name == ANONYMOUS_MEMBER && plane == "chain" => {
+                AuthChainEntry::bare(name.clone())
+            }
+            None if name == ANONYMOUS_MEMBER => {
+                errors.push(
+                    coded::config_auth_chain_invalid(format!(
+                        "auth.{plane} names `{ANONYMOUS_MEMBER}`: the admin API never admits a \
+                         caller that presents no credential. `{ANONYMOUS_MEMBER}` is a member of \
+                         `auth.chain` only."
+                    ))
+                    .into(),
+                );
                 AuthChainEntry::bare(name.clone())
             }
             None => {

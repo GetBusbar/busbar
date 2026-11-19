@@ -151,6 +151,36 @@ fn a_keys_chain_has_no_readers_carriers_or_issued_credential() {
     assert!(mw.issued.is_none());
 }
 
+/// INB-009: `anonymous` is the chain's built-in member; it opens no plugin, reads no credential and
+/// is not `keys` (the native chain admits it: `NativeChain::data_with`).
+#[test]
+fn an_anonymous_chain_builds_with_no_reader_and_no_keys() {
+    let mw = AuthMiddleware::new(
+        &chain_of(vec![AuthChainEntry::bare(
+            crate::auth::native_chain::ANONYMOUS,
+        )]),
+        &registry(),
+        &secrets(),
+    )
+    .expect("a chain naming the built-in member anonymous builds");
+    assert!(!mw.keys_in_chain);
+    assert!(mw.chain.is_empty());
+    assert!(mw.readers.is_empty());
+    assert!(mw.carriers.is_empty());
+    assert!(mw.issued.is_none());
+}
+
+/// INB-009: the admin API never admits a caller that presents no credential: `anonymous` is no
+/// admin chain member, so an admin chain naming it does not build.
+#[test]
+fn an_admin_chain_naming_anonymous_is_refused() {
+    let admin = admin_of(AuthChainEntry::bare(crate::auth::native_chain::ANONYMOUS));
+    assert!(
+        AdminAuthChain::build(&admin, &registry(), &secrets()).is_err(),
+        "an admin chain naming anonymous built"
+    );
+}
+
 #[test]
 fn an_empty_chain_has_no_carriers_or_issued_credential() {
     let mw = AuthMiddleware::new(&chain_of(Vec::new()), &registry(), &secrets())

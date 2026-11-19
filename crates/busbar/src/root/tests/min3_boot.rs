@@ -211,9 +211,16 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
         ("busbar-plane-mcp", "mcp")
     );
     assert_eq!(
-        audience_of(&planes[0].config).as_deref(),
+        planes[0].config, b"{}",
+        "the audience is core's word: lifted off the section, never handed to the plane's reader"
+    );
+    assert_eq!(
+        plane_audiences(&sections)
+            .unwrap()
+            .get("mcp")
+            .map(String::as_str),
         Some("https://tools.example"),
-        "the plane's section reaches it, so its line session binds the audience it states"
+        "the section's canonical_uri is the audience the plane's seat is bound to"
     );
     assert_eq!(
         (planes[1].identity.as_str(), planes[1].name.as_str()),
@@ -221,6 +228,30 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
         "an image with no alias is named by its identity"
     );
     assert_eq!(planes[1].config, b"{}");
+}
+
+/// RFC 8707 §2: a written audience that no token could name refuses the boot; the plane is never
+/// served silently unbound.
+#[test]
+fn an_audience_that_is_not_an_absolute_http_uri_without_fragment_is_refused() {
+    for written in [
+        "\"\"",
+        "tools.example/mcp",
+        "https:///mcp",
+        "https://tools.example/mcp#frag",
+        "[a, b]",
+    ] {
+        let mut sections = std::collections::BTreeMap::new();
+        sections.insert(
+            "mcp",
+            busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&format!(
+                "canonical_uri: {written}\n"
+            ))
+            .unwrap(),
+        );
+        let refused = plane_audiences(&sections).expect_err(written);
+        assert!(refused.contains("mcp.canonical_uri"), "{refused}");
+    }
 }
 
 #[test]
