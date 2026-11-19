@@ -365,6 +365,15 @@ row = "auth-admin-tokens"
 http = "busbar-transport-http"
 rtc = "busbar-transport-webrtc"
 
+# A carrier supplied by a SEPARATELY INSTALLED transport image: `[package.metadata.busbar.installed-carriers]`,
+# one key per carrier, each naming the image's identity (its package name), never a linked row. The carrier has a
+# supplier exactly when the deployment installs an admitted image of that identity (a ws:// provider with none
+# installed is refused at configuration); validation holds an installed image to the carrier's role as it holds a
+# linked one. websocket: the transport-ws plugin (owner ruling: former built-ins are separate plugins), which also
+# takes the upgraded connection of a WebSocket route.
+[package.metadata.busbar.installed-carriers]
+websocket = "busbar-transport-ws"
+
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
 # a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
