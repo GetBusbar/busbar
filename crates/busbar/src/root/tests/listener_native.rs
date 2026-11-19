@@ -91,6 +91,7 @@ pub(super) async fn ingress_fixture() -> (NativeIngress, busbar_contract::storag
             budget,
             AdmissionClass::Operator,
             1024 * 1024,
+            None,
         ),
         source,
     )
@@ -352,4 +353,156 @@ async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_beg
     assert!((before..=after).contains(&seen.2));
     // The deliberate begin refusal leaves neither connection backing nor request count retained.
     assert_eq!(budget.used(), (0, 0));
+}
+
+fn payload(
+    source: &busbar_contract::storage::StorageSource,
+    bytes: &[u8],
+) -> busbar_core_connector::framed_stream::session::Payload {
+    busbar_core_connector::framed_stream::session::Payload::copy(source, bytes).unwrap()
+}
+
+/// A head that declares a body, with one extra field.
+fn head_with(
+    source: &busbar_contract::storage::StorageSource,
+    stream: u64,
+    name: &str,
+    value: &[u8],
+) -> Inbound {
+    let mut wire = Reply::new();
+    wire.put_text(tag::H_METHOD, "POST").unwrap();
+    wire.put_text(tag::H_PATH, busbar_kernel::auth::HEALTHZ_PATH)
+        .unwrap();
+    wire.put_pair(tag::PAIR, name, value).unwrap();
+    Inbound::Head {
+        stream,
+        end_stream: false,
+        head: payload(source, wire.as_bytes()),
+    }
+}
+
+/// REFUSAL ROW 8: request trailers no longer end the connection. The request is completed at its
+/// end and carries the row it is answered by; every other stream of the connection goes on.
+#[tokio::test]
+async fn request_trailers_are_answered_and_the_connection_is_kept() {
+    use busbar_kernel::auth::admission_table::Refusal;
+    let (mut ingress, source) = ingress_fixture().await;
+    assert!(ingress
+        .accept(public_head(&source, 1, false), None)
+        .unwrap()
+        .is_none());
+    let trailers = Inbound::Trailers {
+        stream: 1,
+        pairs: payload(&source, &[]),
+    };
+    assert!(
+        ingress.accept(trailers, None).unwrap().is_none(),
+        "trailers are not a connection error"
+    );
+    let ready = ingress.accept(Inbound::End(1), None).unwrap().unwrap();
+    assert_eq!(ready.refused, Some(Refusal::Trailers));
+    // A second request on the same connection is taken as usual.
+    let next = ingress
+        .accept(public_head(&source, 2, true), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.refused, None);
+}
+
+/// The body cap a request on `stream` is read under: the app's configured one, else the
+/// listener's (what `NativeIngress::accept` computes for each body piece).
+fn effective_cap(ingress: &NativeIngress, stream: u64) -> usize {
+    let slot = ingress
+        .slots
+        .iter()
+        .find(|slot| slot.stream == stream)
+        .expect("the stream's slot");
+    slot.pending
+        .as_ref()
+        .expect("input not yet complete")
+        .binding()
+        .app()
+        .limits
+        .as_ref()
+        .map_or(ingress.body_limit, |limits| limits.request_body_max_bytes)
+}
+
+/// REFUSAL ROW 6: a body that runs past the cap is not a connection error. What was read is
+/// released, the rest is discarded as it arrives, and the request is completed at its end
+/// carrying the row it is answered by.
+#[tokio::test]
+async fn a_body_over_the_cap_is_answered_and_nothing_past_the_cap_is_kept() {
+    use busbar_kernel::auth::admission_table::Refusal;
+    let (mut ingress, source) = ingress_fixture().await;
+    ingress.body_limit = 8;
+    assert!(ingress
+        .accept(public_head(&source, 1, false), None)
+        .unwrap()
+        .is_none());
+    let cap = effective_cap(&ingress, 1);
+    assert!(
+        cap <= 4096,
+        "the fixture app configures a {cap}-byte body cap; this test sends cap + 1 bytes and \
+         needs a small one (`limits.request_body_max_bytes`) in `physical_app`"
+    );
+    let body = |bytes: &[u8]| Inbound::Body {
+        stream: 1,
+        flags: 0,
+        bytes: payload(&source, bytes),
+    };
+    assert!(ingress
+        .accept(body(&vec![b'1'; cap]), None)
+        .unwrap()
+        .is_none());
+    assert!(
+        ingress.accept(body(b"9"), None).unwrap().is_none(),
+        "over the cap is not a connection error"
+    );
+    assert!(ingress.accept(body(&[b'x'; 4096]), None).unwrap().is_none());
+    let slot = ingress.slots.iter().find(|slot| slot.stream == 1).unwrap();
+    assert_eq!(slot.refused, Some(Refusal::BodyTooLarge));
+    assert_eq!(
+        slot.body.as_ref().map(|body| body.bytes.len()),
+        Some(0),
+        "nothing of a refused body is held"
+    );
+    let ready = ingress.accept(Inbound::End(1), None).unwrap().unwrap();
+    assert_eq!(ready.refused, Some(Refusal::BodyTooLarge));
+}
+
+/// REFUSAL ROW 6, unread: a declared length over the cap completes the request on its head.
+/// Body bytes its client still sends are discarded and its end is not a second completion.
+#[tokio::test]
+async fn a_declared_length_over_the_cap_is_refused_on_the_head() {
+    use busbar_kernel::auth::admission_table::Refusal;
+    let (mut ingress, source) = ingress_fixture().await;
+    ingress.body_limit = 8;
+    // A first request tells the cap this connection's requests are read under.
+    assert!(ingress
+        .accept(public_head(&source, 1, false), None)
+        .unwrap()
+        .is_none());
+    let cap = effective_cap(&ingress, 1);
+    let over = (cap as u64 + 1).to_string();
+    let ready = ingress
+        .accept(
+            head_with(&source, 2, "content-length", over.as_bytes()),
+            None,
+        )
+        .unwrap()
+        .expect("completed on the head");
+    assert_eq!(ready.refused, Some(Refusal::BodyTooLarge));
+    let late = Inbound::Body {
+        stream: 2,
+        flags: 0,
+        bytes: payload(&source, b"123456789"),
+    };
+    assert!(ingress.accept(late, None).unwrap().is_none());
+    assert!(ingress.accept(Inbound::End(2), None).unwrap().is_none());
+    // At the cap exactly, the request is taken as usual.
+    let at = cap.to_string();
+    assert!(ingress
+        .accept(head_with(&source, 3, "content-length", at.as_bytes()), None)
+        .unwrap()
+        .is_none());
 }

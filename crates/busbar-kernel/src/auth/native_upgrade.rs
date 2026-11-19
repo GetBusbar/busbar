@@ -36,6 +36,8 @@ pub struct NativeUpgradeRoute {
     chain: Arc<NativeChain>,
     /// The carriers every request on this route withholds from the plane.
     withheld: Arc<[Box<str>]>,
+    /// The audience the route's plane is bound to: a bearer that states one must state this.
+    audience: Option<Arc<str>>,
 }
 
 impl NativeUpgradeRoute {
@@ -46,13 +48,7 @@ impl NativeUpgradeRoute {
     /// Whether this path can admit the upgrade route `mounted` on `seat` at all, before any owner
     /// exists: the route-shape half of [`Self::bind`]. Err names what it lacks. A route this path
     /// cannot admit is never served unadmitted: the listener leaves it unmounted.
-    pub fn admits(app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
-        if app.oauth_as.is_some() {
-            return Err("the native upgrade path does not serve under oauth_as");
-        }
-        if seat.audience.is_some() {
-            return Err("the native upgrade path does not serve an audience-bound plane");
-        }
+    pub fn admits(_app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
         if mounted.flags != ROUTE_UPGRADE || mounted.methods != METHOD_GET || mounted.catalog {
             return Err("the native upgrade path admits a GET upgrade route only");
         }
@@ -95,6 +91,7 @@ impl NativeUpgradeRoute {
             binding,
             chain,
             withheld,
+            audience: seat.audience.as_deref().map(Arc::from),
         }))
     }
 
@@ -128,7 +125,7 @@ impl NativeUpgradeRoute {
         let result = self.verify(&binding, cx).await;
         let (prepared, lease, key) = match result {
             Ok(parts) => parts,
-            Err(reason @ (DataRefused::Credential | DataRefused::Policy | DataRefused::Replay)) => {
+            Err(reason) if reason.refusal(false).is_some() => {
                 return Err(match preparation.deny() {
                     Ok(denied) => UpgradeRefused::Denied {
                         preparation: denied,
@@ -174,6 +171,9 @@ impl NativeUpgradeRoute {
             return Err(DataRefused::Binding);
         }
         refuse_bound_carriers(&snapshot, &self.chain, self.cred_header())?;
+        if let Some(audience) = self.audience.as_deref() {
+            super::native_data::refuse_foreign_audience(&snapshot, &self.chain, audience)?;
+        }
         let prepared = self
             .chain
             .prepare_snapshot(cx, snapshot)

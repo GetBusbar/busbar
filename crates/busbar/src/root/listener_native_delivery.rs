@@ -29,6 +29,17 @@ pub(super) enum ResponseAuthority {
     Data(Arc<NativeDataPending>),
     Admin(Arc<PhysicalAdminExecution>),
     Public(Arc<PhysicalPublicExecution>),
+    /// A plane route answered with no unit: verified and not billed, or admitted with nobody to
+    /// verify (`busbar_kernel::inbound::native::PhysicalUnbilledExecution`).
+    Unbilled(Arc<busbar_kernel::inbound::native::PhysicalUnbilledExecution>),
+    /// An upgrade request handed over: the 101, or the plane's own answer before one.
+    Upgrade(Arc<busbar_kernel::inbound::native::PhysicalUpgrade>),
+    /// A core route that requires a key, served to the caller the data chain verified.
+    CoreKey(Arc<busbar_kernel::inbound::native::PhysicalKeyExecution>),
+    /// A core keyed route refused: the one unverified answer, or the verifier's 503.
+    CoreKeyRefused(busbar_kernel::inbound::native::PhysicalKeyRefusal),
+    /// Refused at the gate (the gateway is full or draining): step 0, nothing judged.
+    Gate(busbar_kernel::inbound::native::PhysicalGateRefusal),
     Refused(PhysicalRefusal),
 }
 impl ResponseAuthority {
@@ -37,6 +48,11 @@ impl ResponseAuthority {
             Self::Data(owner) => owner.binding(),
             Self::Admin(owner) => owner.binding(),
             Self::Public(owner) => owner.binding(),
+            Self::Unbilled(owner) => owner.binding(),
+            Self::Upgrade(owner) => owner.binding(),
+            Self::CoreKey(owner) => owner.binding(),
+            Self::CoreKeyRefused(owner) => owner.binding(),
+            Self::Gate(owner) => owner.binding(),
             Self::Refused(owner) => owner.binding(),
         }
     }
@@ -75,7 +91,14 @@ impl ResponseAuthority {
                 .execution()
                 .map(|execution| Some(execution.money().clone()))
                 .ok_or(InputError::Delivery(ResponseStop::Integrity)),
-            Self::Admin(_) | Self::Public(_) | Self::Refused(_) => Ok(None),
+            Self::Admin(_)
+            | Self::Public(_)
+            | Self::Unbilled(_)
+            | Self::Upgrade(_)
+            | Self::CoreKey(_)
+            | Self::CoreKeyRefused(_)
+            | Self::Gate(_)
+            | Self::Refused(_) => Ok(None),
         }
     }
 }

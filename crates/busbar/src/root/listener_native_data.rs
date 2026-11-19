@@ -15,7 +15,7 @@ use busbar_contract::storage::{StorageCredit, StorageSource};
 use busbar_kernel::auth::native_data::{NativeDataAllocation, NativeDataPending};
 use busbar_kernel::inbound::native::{CompletingPhysicalRequest, RouteTarget, StreamOwner};
 use busbar_kernel::plane_driver::port::{
-    HttpHead, HttpIn, NativeServed, NativeTaskRetirement, ServeError, ServeIn, Served,
+    HttpHead, HttpIn, NativeServed, NativeTaskRetirement, PortSeat, ServeError, ServeIn, Served,
 };
 use busbar_kernel::plane_driver::port_admission::AdmittedUnit;
 use busbar_kernel::plane_driver::port_auth::{Credentials, Principal};
@@ -478,18 +478,132 @@ impl ClientSink for Sink {
 fn denied(
     request: CompletingPhysicalRequest,
     failed: busbar_kernel::auth::native_data::DataPreparationFailed,
-    carriers: &[Box<str>],
+    route: &busbar_kernel::auth::native_data::NativeDataRoute,
+    seat: &PortSeat,
 ) -> Result<DataResponse, DataPrepareError> {
-    let busbar_kernel::auth::native_data::DataPreparationFailed::Denied(denial) = failed else {
-        return Err(DataPrepareError::Input(InputError::Invalid));
-    };
-    let response = super::unauthenticated_response(request.binding(), carriers)?;
-    let refusal = request.refuse_data(denial).map_err(InputError::from)?;
+    let (response, refusal) = refuse_prepared(request, failed, route, seat)?;
     Ok(DataResponse {
         response,
         authority: DataAuthority::Refused(refusal),
         settlement: None,
     })
+}
+
+/// The answer to a preparation the route's chain or key policy refused, by the refusal table: the
+/// one 401 for a caller that is not verified (with the route's declared challenge), 503 when the
+/// verifier could not answer, 409 for a replay; and for a verified caller 403, rendered by the
+/// route's plane in its dialect. A failure that is no row of the table (the request ended, a
+/// foreign input) has no answer: the request is cancelled.
+pub(super) fn refuse_prepared(
+    request: CompletingPhysicalRequest,
+    failed: busbar_kernel::auth::native_data::DataPreparationFailed,
+    route: &busbar_kernel::auth::native_data::NativeDataRoute,
+    seat: &PortSeat,
+) -> Result<(Response, busbar_kernel::inbound::native::PhysicalRefusal), InputError> {
+    let busbar_kernel::auth::native_data::DataPreparationFailed::Denied(denial) = failed else {
+        return Err(InputError::Invalid);
+    };
+    let binding = request.binding().clone();
+    let reason = denial.decision();
+    let refusal = reason
+        .refusal(super::answer::presented(&binding, route.withheld()))
+        .ok_or(InputError::Invalid)?;
+    let response = if reason.after_verification() {
+        let RouteTarget::Plane(target) = binding.route().target() else {
+            return Err(InputError::Invalid);
+        };
+        let head = binding.snapshot().map_err(|_| InputError::Capacity)?;
+        super::answer::route(
+            &binding,
+            refusal,
+            true,
+            "",
+            route.challenge(),
+            Some(super::answer::Renderer {
+                seat,
+                route: target.mounted().route,
+                head: &head,
+                withheld: route.withheld(),
+                request_id: binding.invocation().request_id().get(),
+            }),
+        )?
+    } else {
+        super::answer::core(&binding, refusal, false, "", route.challenge())?
+    };
+    let physical = request.refuse_data(denial)?;
+    Ok((response, physical))
+}
+
+/// The client side of one plane session: the sink the session writes to and what the listener
+/// reads from it. The data path and the unbilled path both serve through it.
+pub(super) struct ClientPipe {
+    sink: Arc<Sink>,
+    pub(super) head: oneshot::Receiver<Head>,
+    body: mpsc::Receiver<BodyItem>,
+    ended: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The producer's end of a [`ClientPipe`], moved into the session's task.
+pub(super) struct ClientProducer(Arc<Sink>);
+
+impl ClientProducer {
+    pub(super) fn sink(&self) -> Arc<dyn ClientSink> {
+        self.0.clone()
+    }
+
+    /// Closing an unfinished producer reports a body error; it never manufactures END.
+    pub(super) fn close(self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.head.take();
+        state.body.take();
+    }
+}
+
+impl ClientPipe {
+    pub(super) fn open(source: StorageSource) -> (Self, ClientProducer) {
+        let (head_tx, head) = oneshot::channel();
+        let (body_tx, body) = mpsc::channel(1);
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink = Arc::new(Sink {
+            source,
+            state: Mutex::new(SinkState {
+                head: Some(head_tx),
+                body: Some(tokio_util::sync::PollSender::new(body_tx)),
+                trailers: false,
+            }),
+            ended: ended.clone(),
+        });
+        (
+            Self {
+                sink: sink.clone(),
+                head,
+                body,
+                ended,
+            },
+            ClientProducer(sink),
+        )
+    }
+
+    /// The response of a session that wrote its head: the body is read from the session as the
+    /// client takes it.
+    pub(super) fn response(self, head: Head) -> Response {
+        let (status, headers, credit) = head;
+        let mut response = Response::new(Body::new(DataBody {
+            receiver: self.body,
+            ended: self.ended,
+            trailer_credit: None,
+            failed: false,
+        }));
+        *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+        *response.headers_mut() = headers;
+        response.extensions_mut().insert(credit);
+        drop(self.sink);
+        response
+    }
 }
 
 pub(super) async fn prepare(
@@ -540,7 +654,7 @@ pub(super) async fn prepare(
         .await
     {
         Ok(pending) => pending,
-        Err(failed) => return denied(request, failed, data_route.withheld()),
+        Err(failed) => return denied(request, failed, &data_route, &seat),
     };
     // Only a verified request is lent to a selecting route's plane (a direct call on this
     // request's thread, its credential carriers withheld). A route that selects nothing is
@@ -551,14 +665,14 @@ pub(super) async fn prepare(
             busbar_kernel::resource_admission::select_resources(&*port, frozen, withheld)
         }) {
             Ok(pending) => pending,
-            Err(failed) => return denied(request, failed, data_route.withheld()),
+            Err(failed) => return denied(request, failed, &data_route, &seat),
         }
     } else {
         pending
     };
     let authorization = match pending.complete().await {
         Ok(authorization) => authorization,
-        Err(failed) => return denied(request, failed, data_route.withheld()),
+        Err(failed) => return denied(request, failed, &data_route, &seat),
     };
     let authorized = request
         .complete(authorization)

@@ -10,10 +10,11 @@ use std::time::Instant;
 
 use busbar_contract::records::VirtualKey;
 use busbar_contract::services::Caller;
-use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
 use busbar_ports::CallCx;
 
+use super::admission_table::{admission_of, Admission, NotMounted, Offered, Policy, Verified};
 use super::native_chain::{NativeChain, NativePreparedAnswer, PreparedNativeIdentity};
+use super::route_record::{CallerState, Money, RouteRecord};
 use crate::host_services::{InvocationContext, ServingGeneration};
 use crate::inbound::native::{
     AuthorizedPhysicalData, DataPreparation, DataPreparationDenied, DataPreparationSuccess,
@@ -37,9 +38,47 @@ pub enum DataRefused {
     Capacity,
     Credential,
     Policy,
+    /// The key is disabled (refusal row 3): a verified caller, refused 403.
+    Disabled,
+    /// The request's body ran past the cap (refusal row 6): 413, to a verified caller.
+    TooLarge,
+    /// The request carried trailers (refusal row 8): 400, to a verified caller.
+    Trailers,
+    /// The key does not hold what the request selected (refusal row 10): 403.
+    Scope,
     Replay,
     Unit,
     Unavailable,
+}
+
+impl DataRefused {
+    /// The row of the refusal table this reason is answered by; `None` for a reason that is the
+    /// engine's own fault or the request's end (no answer exists to write: the request is
+    /// cancelled). `presented`: a credential carrier of the route was on the head.
+    pub fn refusal(self, presented: bool) -> Option<super::admission_table::Refusal> {
+        use super::admission_table::Refusal;
+        match self {
+            Self::Credential | Self::Policy => Some(Refusal::Unverified { presented }),
+            Self::Disabled => Some(Refusal::KeyDisabled),
+            Self::Scope => Some(Refusal::ScopeDenied),
+            Self::TooLarge => Some(Refusal::BodyTooLarge),
+            Self::Trailers => Some(Refusal::Trailers),
+            Self::Replay => Some(Refusal::Replayed),
+            // A verifier that could not answer is not a denial: 503, never 401 (row 2a).
+            Self::Unavailable => Some(Refusal::VerifierUnavailable),
+            Self::Unsupported | Self::Binding | Self::Cancelled | Self::Capacity | Self::Unit => {
+                None
+            }
+        }
+    }
+
+    /// The caller was verified before this refusal, so its plane may render the answer.
+    pub fn after_verification(self) -> bool {
+        matches!(
+            self,
+            Self::Disabled | Self::Scope | Self::TooLarge | Self::Trailers
+        )
+    }
 }
 
 /// Actual immutable candidate owners. Root assembles these; none is a plugin proof.
@@ -61,7 +100,34 @@ pub struct NativeDataRoute {
     cost: Arc<crate::cost::CostModel>,
     /// The carriers every request on this route withholds from the plane ([`withheld_carriers`]).
     withheld: Arc<[Box<str>]>,
+    /// The audience the route's plane is bound to (its `canonical_uri`): a bearer that states an
+    /// audience must state this one.
+    audience: Option<Arc<str>>,
+    challenge: Option<Box<str>>,
+    record: RouteRecord,
+    admission: Admission,
 }
+
+/// How the listener plan mounts one declared route ([`NativeDataRoute::planned`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Planned {
+    /// Bind a [`NativeDataRoute`] with the route's chain: the listener verifies, then serves by
+    /// the route's admission (with a unit, or verified and not billed).
+    Data,
+    /// Bind a `NativeUpgradeRoute` with the route's chain.
+    Upgrade,
+    /// The admin plan's: not a data listener's route.
+    Admin,
+    /// Not mounted, for a reason that is the operator's configuration.
+    NotMounted(NotMounted),
+    /// The image's declaration is unusable (the loader refuses such an image).
+    Unusable(&'static str),
+}
+
+const OTHER_PATH_TICKET: &str = "a ticket route is served by the listener's ticket class";
+const OTHER_PATH_SIGNED: &str = "a signed route is served by the listener's signed-ingress class";
+const OTHER_PATH_UPGRADE: &str = "an upgrade route is served by the native upgrade path";
+const OTHER_PATH_OPERATOR: &str = "an admin route is served by the admin door";
 
 impl NativeDataRoute {
     /// The actual inventory this canonical route selects from after verification
@@ -79,25 +145,132 @@ impl NativeDataRoute {
         self.owners.inventory.is_some()
     }
 
+    /// The record of `mounted` on `seat`: the record its image declared, read once here.
+    ///
+    /// An image built before the route record states its four fields is read by what it does
+    /// declare ([`RouteRecord::from_declared`]): the walk kind is the seat's own stated scope
+    /// kind, and a plane bound to an audience (its `canonical_uri`) keeps a session per caller.
+    pub fn record_of(seat: &PortSeat, mounted: &Mounted) -> Option<RouteRecord> {
+        // A record the image stated wins, whole: nothing about that route is inferred. The
+        // loader decoded it with `RouteRecord::from_wire` and validated it before the route
+        // was mounted.
+        if let Some(stated) = &mounted.record {
+            return Some(stated.clone());
+        }
+        RouteRecord::from_declared(
+            mounted.flags,
+            mounted.auth,
+            mounted.cred_header.as_deref(),
+            &mounted.resource_kinds,
+            seat.request_routes.scope_kind(),
+            seat.audience.is_some(),
+        )
+    }
+
+    /// The admission of `mounted` on `seat` under this configuration, or why the route is not
+    /// mounted. Every reason is the operator's configuration (design C6); a route's class is never
+    /// one. `Err(None)`: the image's declaration names no class or no caller (the loader refuses
+    /// that image; reaching here with one is the engine's fault and the route is not served).
+    pub fn admission(
+        seat: &PortSeat,
+        mounted: &Mounted,
+        chain: &NativeChain,
+        offered: Offered,
+    ) -> Result<(RouteRecord, Admission), Option<NotMounted>> {
+        let record = Self::record_of(seat, mounted).ok_or(None)?;
+        let offered = Offered {
+            chain_yields_shared: chain.admits_anonymous(),
+            ..offered
+        };
+        let admission = super::admission_table::mounted(&record, offered).map_err(Some)?;
+        Ok((record, admission))
+    }
+
+    /// How the listener plan mounts `mounted` on `seat`: the one decision the plan makes about a
+    /// declared route. `chain_reads_its_credential`: some configured instance reads the route's
+    /// credential (its own header's readers, else the data chain). `chain_admits_anonymous`: that
+    /// chain names the built-in member `anonymous`. Every route is mounted by its admission or left unmounted for a
+    /// reason that is the operator's configuration, logged once and listed by the admin API.
+    pub fn planned(
+        seat: &PortSeat,
+        mounted: &Mounted,
+        chain_reads_its_credential: bool,
+        chain_admits_anonymous: bool,
+        upgrade_transport: bool,
+        signature_verifier: bool,
+    ) -> Planned {
+        let Some(record) = Self::record_of(seat, mounted) else {
+            return Planned::Unusable("the route's declaration names no class or no caller");
+        };
+        let offered = Offered {
+            verifier_reads_header: chain_reads_its_credential,
+            chain_yields_shared: chain_admits_anonymous,
+            upgrade_transport,
+            signature_verifier,
+            challenge_unresolved: record.mounted_challenge(seat.public_url()).is_err(),
+        };
+        match super::admission_table::mounted(&record, offered) {
+            Err(why) => Planned::NotMounted(why),
+            Ok(
+                Admission::Walk
+                | Admission::Selected
+                | Admission::PrincipalOnly
+                | Admission::Catalog
+                | Admission::Optional,
+            ) => Planned::Data,
+            Ok(Admission::Upgrade) => Planned::Upgrade,
+            // A public route is bound like a data route (its chain is never run: the listener
+            // serves it by its admission) so no second mounting path exists.
+            Ok(Admission::Public) => Planned::Data,
+            // A plane's admin routes are mounted on the admin door by the admin plan.
+            Ok(Admission::Operator) => Planned::Admin,
+            // No native verifier exists for a ticket or a sender's signature: such a route is
+            // left unmounted and says so, until its verifier is linked.
+            Ok(Admission::Ticket) => Planned::NotMounted(NotMounted::NoVerifierReadsItsHeader),
+            Ok(Admission::SignedIngress) => Planned::NotMounted(NotMounted::NoSignatureVerifier),
+            Ok(Admission::Internal) => Planned::NotMounted(NotMounted::Internal),
+        }
+    }
+
     /// Whether this path can admit `mounted` on `seat` at all, before any owner exists: the
     /// route-shape half of [`Self::bind`]. Err names what it lacks. A route this path cannot admit
     /// is never served unadmitted: the listener leaves it unmounted.
-    pub fn admits(app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
-        if app.oauth_as.is_some() {
-            return Err("the native data path does not serve under oauth_as");
+    ///
+    /// This path owns every admission whose caller the route's chain verifies: a walk, a
+    /// selection, a principal-only route, a catalog, and an optional route's request that presents
+    /// a credential. A plane bound to an audience is served: a bearer that states an audience is
+    /// judged on the head ([`refuse_foreign_audience`]). A deployment with `oauth_as` is served
+    /// for every credential its chain's instances verify; a token core itself minted is still
+    /// refused by [`refuse_bound_carriers`] until core's own token verifier is a chain member
+    /// (it must not be accepted unverified). A route with a hook bound is NOT admitted here yet:
+    /// the session refuses to run a hook without the admitted unit and its invocation
+    /// (`plane_driver::port::serve_session`: "native hooks need the admitted unit and
+    /// generation"), and the native path does not hand it either. Such a route stays unmounted
+    /// and says so; serving it unhooked would skip a policy the operator configured.
+    pub fn admits(_app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
+        let Some(record) = Self::record_of(seat, mounted) else {
+            return Err("the route's declaration names no class or no caller");
+        };
+        match admission_of(&record) {
+            Admission::Walk
+            | Admission::Selected
+            | Admission::PrincipalOnly
+            | Admission::Catalog
+            | Admission::Optional
+            | Admission::Public => {}
+
+            Admission::Ticket => return Err(OTHER_PATH_TICKET),
+            Admission::SignedIngress => return Err(OTHER_PATH_SIGNED),
+            Admission::Upgrade => return Err(OTHER_PATH_UPGRADE),
+            Admission::Operator => return Err(OTHER_PATH_OPERATOR),
+            Admission::Internal => return Err("an internal route is not on a listener"),
         }
-        if seat.audience.is_some() {
-            return Err("the native data path does not serve an audience-bound plane");
-        }
-        if mounted.flags != 0 || mounted.catalog {
-            return Err("the native data path admits no catalog, line, recovery or flagged route");
-        }
-        if mounted.auth != AUTH_PRINCIPAL || mounted.effective != AUTH_PRINCIPAL {
-            return Err("the native data path admits principal routes only");
+        if mounted.effective != mounted.auth {
+            return Err("the operator's auth choice for this route is not the route's own");
         }
         // A route that declares resource kinds is admitted only through its plane's selection;
         // a route that declares none is admitted through the plane's `request` (no selection).
-        if !mounted.resource_kinds.is_empty()
+        if !record.scope.selected.is_empty()
             && seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
         {
             return Err("the route declares resource kinds its plane does not select");
@@ -121,6 +294,14 @@ impl NativeDataRoute {
         if Self::admits(app, seat, mounted).is_err() || !owners.chain.is_data() {
             return Err(DataRefused::Unsupported);
         }
+        let Some(record) = Self::record_of(seat, mounted) else {
+            return Err(DataRefused::Unsupported);
+        };
+        // A route that keeps state per caller is never bound under a chain whose callers share
+        // one subject: the plan leaves it unmounted, and a plan that did not is refused here.
+        if record.caller_state == CallerState::Distinct && owners.chain.admits_anonymous() {
+            return Err(DataRefused::Unsupported);
+        }
         if !seat.driver.caller().same_incarnation(target.caller())
             || !Arc::ptr_eq(seat.driver.core(), owners.generation.core())
             || !seat
@@ -140,13 +321,61 @@ impl NativeDataRoute {
             return Err(DataRefused::Binding);
         }
         let withheld = withheld_carriers(&owners.chain, mounted.cred_header.as_deref());
+        let admission = admission_of(&record);
         Ok(Arc::new(Self {
             caller: target.caller().clone(),
             binding,
             owners,
             cost: Arc::clone(&app.cost),
             withheld,
+            audience: seat.audience.as_deref().map(Arc::from),
+            // A challenge that names a public URL the operator did not configure is a route the
+            // plan leaves unmounted (`NotMounted::NoPublicUrlForItsChallenge`); bound anyway, it
+            // answers with core's generic challenge.
+            challenge: record.mounted_challenge(seat.public_url()).unwrap_or(None),
+            record,
+            admission,
         }))
+    }
+
+    /// The route token this completion was bound to.
+    pub fn binding(&self) -> &Arc<RouteBinding> {
+        &self.binding
+    }
+
+    /// Whether a request on this route must present a credential to be verified: its admission
+    /// runs the chain on every request, the chain admits no caller that presents nothing, and
+    /// every member of the chain states the header its credential arrives in (so a head with
+    /// none of them cannot be verified by any member).
+    /// The listener answers a head that presents none without taking its body.
+    pub fn requires_credential(&self) -> bool {
+        matches!(
+            self.admission,
+            Admission::Walk | Admission::Selected | Admission::PrincipalOnly | Admission::Catalog
+        ) && !self.owners.chain.admits_anonymous()
+            && self.owners.chain.reads_only_declared_headers()
+    }
+
+    /// The route's record, as bound.
+    pub fn record(&self) -> &RouteRecord {
+        &self.record
+    }
+
+    /// The `WWW-Authenticate` text of this route's 401: its record's challenge with the plane
+    /// instance's public URL written in at bind, or `None` for core's generic one.
+    pub fn challenge(&self) -> Option<&str> {
+        self.challenge.as_deref()
+    }
+
+    /// The route's admission, as bound.
+    pub fn route_admission(&self) -> Admission {
+        self.admission
+    }
+
+    /// Whether a served request on this route opens a unit. A route that does not is answered by
+    /// the "verified, not billed" authority ([`DataAuthorization`] completed with no allocation).
+    pub fn billed(&self) -> bool {
+        self.record.money == Money::Unit
     }
 
     /// The carriers every request on this route withholds from the plane.
@@ -186,6 +415,9 @@ impl NativeDataRoute {
                 RouteTarget::Core(_) | RouteTarget::Unrouted => None,
             };
             refuse_bound_carriers(&snapshot, &self.owners.chain, cred_header)?;
+            if let Some(audience) = self.audience.as_deref() {
+                refuse_foreign_audience(&snapshot, &self.owners.chain, audience)?;
+            }
             let prepared = self
                 .owners
                 .chain
@@ -219,52 +451,100 @@ impl NativeDataRoute {
 }
 
 /// The governed key a verified identity is admitted as, valid at `now` (enabled, not deleted, not
-/// expired): the anonymous key of an explicitly empty data chain, else the key the identity's
-/// provider and groups earn through the role bindings. DATA and the upgrade route both use it.
+/// expired): the key the identity's provider and groups earn through the role bindings. The
+/// principal `anonymous` earns its key the same way, from `role_bindings.anonymous`: it has no
+/// built-in key, so an open relay reaches what its binding grants and is limited by the group its
+/// binding names. No binding, no key: the caller is not verified. DATA and the upgrade route both
+/// use it.
 pub(crate) fn governed_key(
     app: &App,
     prepared: &PreparedNativeIdentity,
     chain: &NativeChain,
     now: u64,
 ) -> Result<Arc<VirtualKey>, DataRefused> {
-    let resolved = match chain.anonymous() {
-        Some(anonymous) if prepared.is_anonymous() => Arc::clone(anonymous),
-        Some(_) => return Err(DataRefused::Binding),
-        None if prepared.is_anonymous() => return Err(DataRefused::Binding),
-        None => {
-            let identity = prepared.identity();
-            let (_, gov) = super::resolve_identity_from_bindings(
-                &app.role_bindings,
-                super::ChainVerdict::Identified {
-                    module: prepared.provider_text(),
-                    principal: super::Principal {
-                        id: identity.subject().to_owned(),
-                        name: None,
-                        roles: identity.groups().map(str::to_owned).collect(),
-                        ttl_secs: identity.cache_s().map(u64::from),
-                    },
-                    resolved: None,
-                    signed_authority: None,
-                },
-            )
-            .map_err(|_| DataRefused::Policy)?;
-            gov.key.ok_or(DataRefused::Policy)?
-        }
-    };
-    if !resolved.enabled
-        || resolved.deleted_at.is_some()
-        || resolved.expires_at.is_some_and(|until| now >= until)
-    {
+    // The anonymous principal exists only on a chain that names `anonymous`.
+    if prepared.is_anonymous() && !chain.admits_anonymous() {
+        return Err(DataRefused::Binding);
+    }
+    let identity = prepared.identity();
+    // The provider of the anonymous principal is the member that named it: `anonymous`, so its
+    // binding is `role_bindings.anonymous`.
+    let (_, gov) = super::resolve_identity_from_bindings(
+        &app.role_bindings,
+        super::ChainVerdict::Identified {
+            module: prepared.provider_text(),
+            principal: super::Principal {
+                id: identity.subject().to_owned(),
+                name: None,
+                roles: identity.groups().map(str::to_owned).collect(),
+                ttl_secs: identity.cache_s().map(u64::from),
+            },
+            resolved: None,
+            signed_authority: None,
+        },
+    )
+    .map_err(|_| DataRefused::Policy)?;
+    let resolved = gov.key.ok_or(DataRefused::Policy)?;
+    // Deleted or past its stored expiry: the identity earns no key, so the caller is not verified
+    // (the one 401). Disabled: a verified caller whose key the operator switched off (403).
+    if resolved.deleted_at.is_some() || resolved.expires_at.is_some_and(|until| now >= until) {
         return Err(DataRefused::Policy);
     }
+    if !resolved.enabled {
+        return Err(DataRefused::Disabled);
+    }
     Ok(resolved)
+}
+
+/// The audience check of a plane bound to one (MCP's `canonical_uri`, RFC 8707), on the head and
+/// before any verifier runs, exactly as the request path it replaces judged it (`auth/mod.rs`,
+/// the `audience::Binding` match): a bearer must be bound to this plane. A JWT whose `aud` names
+/// the plane goes on to the chain, which still verifies it. A JWT minted for another resource or
+/// for none, and a credential that states no audience at all (an opaque key), are refused as any
+/// bad credential is: on an audience-bound plane an unbound credential is never enough. A token
+/// core minted is judged by its verifier, which has the signature and the claims. Every
+/// occurrence of `authorization` is scanned, not a decoy first bearer.
+pub(crate) fn refuse_foreign_audience(
+    snapshot: &crate::inbound::request_snapshot::ChargedRequestSnapshot,
+    chain: &NativeChain,
+    audience: &str,
+) -> Result<(), DataRefused> {
+    // An open chain reads no credential, so there is none to bind.
+    if chain.is_open() {
+        return Ok(());
+    }
+    snapshot
+        .with_auth_input(|request| {
+            for field in request.headers {
+                if !field.name.get().eq_ignore_ascii_case("authorization") {
+                    continue;
+                }
+                let Ok(value) = std::str::from_utf8(field.value.get()) else {
+                    continue;
+                };
+                let Some((scheme, token)) = value.split_once(' ') else {
+                    continue;
+                };
+                if !scheme.eq_ignore_ascii_case("Bearer") {
+                    continue;
+                }
+                match super::audience::inspect_bearer(token.trim(), audience) {
+                    super::audience::Binding::Mismatch | super::audience::Binding::Opaque => {
+                        return Err(DataRefused::Credential)
+                    }
+                    super::audience::Binding::Bound | super::audience::Binding::Deferred => {}
+                }
+            }
+            Ok(())
+        })
+        .map_err(|_| DataRefused::Capacity)?
 }
 
 /// The credential carriers a native route is judged on, lowercase and once each: `authorization` (the
 /// bearer the scan below reads), every D_CRED_HEADER its chain's instances declare, and the route's own
 /// D_ROUTE_CRED_HEADER. Built once when the route is bound and kept by the route's completion (released
 /// with its slot); every request on the route withholds exactly these from the plane.
-pub(crate) fn withheld_carriers(chain: &NativeChain, cred_header: Option<&str>) -> Arc<[Box<str>]> {
+pub fn withheld_carriers(chain: &NativeChain, cred_header: Option<&str>) -> Arc<[Box<str>]> {
     let mut carriers: Vec<Box<str>> = Vec::new();
     for name in std::iter::once("authorization")
         .chain(chain.carriers())
@@ -289,8 +569,8 @@ pub(crate) fn refuse_bound_carriers(
     chain: &NativeChain,
     cred_header: Option<&str>,
 ) -> Result<(), DataRefused> {
-    // An explicitly empty chain verifies nothing, so no carrier is judged (1.5.5's open relay).
-    if chain.anonymous().is_some() {
+    // The open relay (`anonymous` alone) reads no credential, so no carrier is judged.
+    if chain.is_open() {
         return Ok(());
     }
     snapshot
@@ -398,6 +678,37 @@ impl PendingData {
         }
     }
 
+    /// The request's own input refused it (a body over the cap, request trailers), found while
+    /// its body was read. The caller is verified by now, so the answer is that row, rendered by
+    /// the route's plane; an unverified caller never reaches here and receives the one 401, so
+    /// the order of the refusal table holds although the body arrived first.
+    pub fn refuse_input(self, refusal: super::admission_table::Refusal) -> DataPreparationFailed {
+        use super::admission_table::Refusal;
+        let reason = match refusal {
+            Refusal::BodyTooLarge => DataRefused::TooLarge,
+            Refusal::Trailers => DataRefused::Trailers,
+            // A head screened as presenting no credential that its chain nevertheless verified:
+            // the screen was wrong, the body is gone, and a caller with a good credential must
+            // not be told it is bad. The engine's fault: the request is cancelled, and it says so.
+            Refusal::Unverified { .. } => {
+                tracing::error!(
+                    "a request answered on its head as unverifiable was then verified by its \
+                     chain; cancelled"
+                );
+                DataRefused::Binding
+            }
+            // No other row is an input's own: nothing is answered, the request is cancelled.
+            _ => DataRefused::Binding,
+        };
+        preparation_failed(
+            self.preparation,
+            self.route,
+            self.selected,
+            Some(self.prepared),
+            reason,
+        )
+    }
+
     /// Consumes the completion right before awaiting replay. Publication after this lease
     /// is not cancellation; reset/deadline and an uncertain replay still grant no effects.
     pub async fn complete(self) -> Result<DataAuthorization, DataPreparationFailed> {
@@ -416,6 +727,8 @@ impl PendingData {
                 return Err(DataRefused::Binding);
             }
             let mut key = None;
+            // The reason the gate's closure refused for: the gate reports only that it did.
+            let mut refused = DataRefused::Policy;
             let lease = binding
                 .handle()
                 .admit_current(binding.app(), binding.invocation(), |app| {
@@ -433,8 +746,8 @@ impl PendingData {
                     {
                         return Err(DataRefused::Binding);
                     }
-                    let resolved =
-                        governed_key(app, &self.prepared, &self.route.owners.chain, now)?;
+                    let resolved = governed_key(app, &self.prepared, &self.route.owners.chain, now)
+                        .inspect_err(|reason| refused = *reason)?;
                     // With a selection the key's scope is judged against it here; with none, the
                     // request walk judges the key's grant of the pool or model the plane names
                     // (`RequestRoutes::scope_admits`), before any money.
@@ -443,12 +756,13 @@ impl PendingData {
                         .as_ref()
                         .is_some_and(|selected| !selected.scope_allowed(&resolved))
                     {
-                        return Err(DataRefused::Policy);
+                        refused = DataRefused::Scope;
+                        return Err(DataRefused::Scope);
                     }
                     key = Some(resolved);
                     Ok(())
                 })
-                .map_err(|_| DataRefused::Policy)?;
+                .map_err(|_| refused)?;
             match self.prepared.claim_classified().await {
                 super::native_admin::NativeReplayClaim::Claimed => {}
                 super::native_admin::NativeReplayClaim::Duplicate => {
@@ -556,10 +870,9 @@ fn preparation_failed(
     prepared: Option<Arc<PreparedNativeIdentity>>,
     reason: DataRefused,
 ) -> DataPreparationFailed {
-    if matches!(
-        reason,
-        DataRefused::Credential | DataRefused::Policy | DataRefused::Replay
-    ) {
+    // Every reason the refusal table answers keeps the right to that answer: a denial, a refusal
+    // after verification, and a verifier that could not answer (503, never a cancelled request).
+    if reason.refusal(false).is_some() {
         match preparation.deny() {
             Ok(preparation) => DataPreparationFailed::Denied(PreparedDataDenial {
                 preparation,
@@ -609,6 +922,66 @@ impl DataAuthorization {
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
     }
+
+    /// The route this authorization was made on.
+    pub fn route(&self) -> &Arc<NativeDataRoute> {
+        &self.route
+    }
+
+    /// The governed key the verified identity earned, valid when it was judged.
+    pub fn key(&self) -> &Arc<VirtualKey> {
+        &self.key
+    }
+
+    /// The verified identity: what the plane is given in place of the credential.
+    pub fn identity(&self) -> &busbar_ports::auth::Identity {
+        self.prepared.identity()
+    }
+
+    /// The charged snapshot the identity was verified on.
+    pub fn snapshot(&self) -> &Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot> {
+        self.prepared.snapshot()
+    }
+
+    /// The identity is the subject every caller of an open chain shares.
+    pub fn is_shared(&self) -> bool {
+        self.prepared.is_anonymous()
+    }
+}
+
+/// The data chain's judgement of a request no route matched (design C4, question 4): the facts
+/// the admission decision needs to answer 404 or 405 to a verified caller and the one 401 to
+/// anyone else. Nothing is lent to any plane and nothing is claimed: an unknown path consumes no
+/// replay claim and opens no unit.
+pub async fn judge_unrouted(
+    app: &App,
+    chain: &Arc<NativeChain>,
+    binding: &Arc<RequestBinding>,
+    cx: CallCx,
+) -> (Option<Verified>, Option<Policy>) {
+    let Ok(snapshot) = binding.snapshot() else {
+        return (Some(Verified::Unavailable), None);
+    };
+    if refuse_bound_carriers(&snapshot, chain, None).is_err() {
+        return (Some(Verified::Denied), None);
+    }
+    let prepared = match chain.prepare_snapshot(cx, snapshot).await {
+        Ok(NativePreparedAnswer::Identity(prepared)) => prepared,
+        Ok(_) => return (Some(Verified::Denied), None),
+        Err(_) => return (Some(Verified::Unavailable), None),
+    };
+    if binding.check_live().is_err() {
+        return (Some(Verified::Unavailable), None);
+    }
+    let verified = Verified::Identity {
+        shared: prepared.is_anonymous(),
+    };
+    let policy = match governed_key(app, &prepared, chain, crate::store::now()) {
+        Ok(_) => Policy::Valid,
+        Err(DataRefused::Disabled) => Policy::Disabled,
+        Err(_) => Policy::NoKey,
+    };
+    (Some(verified), Some(policy))
 }
 
 /// Separate from the money phase: a successful grant cannot open effects while the
@@ -1093,6 +1466,69 @@ impl DataExecutionAdmission {
     pub fn money(&self) -> &AdmittedRequest {
         &self.money
     }
+}
+
+/// Verify the caller of a core route that requires a key (`/stats`, a plugin's own keyed route)
+/// with the data chain: the credential on the head, the key the identity earns valid now, the
+/// replay claim. The same three steps a plane's principal route runs; no plane, no selection, no
+/// unit.
+pub async fn verify_core_key(
+    chain: &Arc<NativeChain>,
+    binding: &Arc<RequestBinding>,
+    cx: CallCx,
+) -> Result<crate::inbound::native::CoreKeyAuthorization, DataRefused> {
+    let live_at = binding
+        .check_live_now()
+        .map_err(|_| DataRefused::Cancelled)?;
+    if !chain.is_data()
+        || cx.request_id != binding.invocation().request_id().get()
+        || binding.deadline().is_some_and(|at| cx.deadline > at)
+        || live_at >= cx.deadline
+    {
+        return Err(DataRefused::Binding);
+    }
+    let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
+    refuse_bound_carriers(&snapshot, chain, None)?;
+    let prepared = match chain
+        .prepare_snapshot(cx, snapshot)
+        .await
+        .map_err(|_| DataRefused::Unavailable)?
+    {
+        NativePreparedAnswer::Identity(prepared) => prepared,
+        _ => return Err(DataRefused::Credential),
+    };
+    binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+    let mut key = None;
+    let mut refused = DataRefused::Policy;
+    let lease = binding
+        .handle()
+        .admit_current(binding.app(), binding.invocation(), |app| {
+            let now = crate::store::now();
+            prepared.fresh(now).map_err(|_| DataRefused::Policy)?;
+            if !prepared.belongs_to(chain)
+                || app.config_generation.load(Ordering::Acquire) != chain.epoch()
+            {
+                refused = DataRefused::Binding;
+                return Err(DataRefused::Binding);
+            }
+            key = Some(
+                governed_key(app, &prepared, chain, now).inspect_err(|reason| refused = *reason)?,
+            );
+            Ok(())
+        })
+        .map_err(|_| refused)?;
+    match prepared.claim_classified().await {
+        super::native_admin::NativeReplayClaim::Claimed => {}
+        super::native_admin::NativeReplayClaim::Duplicate => return Err(DataRefused::Replay),
+        super::native_admin::NativeReplayClaim::Unknown(_) => return Err(DataRefused::Unavailable),
+        super::native_admin::NativeReplayClaim::Inconsistent => return Err(DataRefused::Binding),
+    }
+    binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+    Ok(crate::inbound::native::CoreKeyAuthorization::new(
+        Arc::clone(binding),
+        key.ok_or(DataRefused::Policy)?,
+        lease,
+    ))
 }
 
 #[cfg(test)]

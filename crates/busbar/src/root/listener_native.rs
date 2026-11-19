@@ -22,19 +22,30 @@ use busbar_plugin_abi::records::{tag, Records};
 use busbar_ports::transport::{ConnIn, TransportPort};
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+#[path = "listener_native_answer.rs"]
+mod answer;
+#[path = "listener_native_corekey.rs"]
+mod corekey;
 #[path = "listener_native_data.rs"]
 mod data;
 #[path = "listener_native_delivery.rs"]
 mod delivery;
 #[path = "listener_native_dispatch.rs"]
 mod dispatch;
+#[path = "listener_native_handover.rs"]
+mod handover;
 #[path = "listener_native_response.rs"]
 mod response;
 #[path = "listener_native_serve.rs"]
 mod serving;
+#[path = "listener_native_unbilled.rs"]
+mod unbilled;
+#[path = "listener_native_unrouted.rs"]
+mod unrouted;
 #[path = "listener_native_upgrade.rs"]
 mod upgrade;
 pub(crate) use delivery::RegisteredDelivery;
+pub(crate) use handover::{Adopted, HandOver, UpgradeAdopter};
 pub(crate) use serving::{serve_admitted, NativeCarrierRetired};
 
 pub(crate) type SelectNativeSlot = Arc<
@@ -42,6 +53,13 @@ pub(crate) type SelectNativeSlot = Arc<
         + Send
         + Sync,
 >;
+
+/// Whether a request's head can be verified at all: `true` when its route requires a credential
+/// and the head presents none its chain could read. Such a request is answered on its head; the
+/// screen judges nothing else, and a head that presents any credential is verified by the chain
+/// as before.
+pub(crate) type HeadScreen =
+    Arc<dyn Fn(&busbar_kernel::inbound::native::RequestBinding) -> bool + Send + Sync>;
 
 pub(crate) struct NativeLimits {
     pub(crate) max_connections: usize,
@@ -63,6 +81,9 @@ pub(crate) struct NativeListener {
     limits: NativeLimits,
     select: SelectNativeSlot,
     admin: Option<axum::Router>,
+    /// The carrier side of an upgrade's hand-over (`listener_native_handover.rs`). `None`: no
+    /// websocket transport is linked, and an admitted upgrade request is answered 501.
+    adopter: Option<Arc<dyn UpgradeAdopter>>,
 }
 
 pub(crate) struct OpenedConnection {
@@ -121,7 +142,35 @@ impl NativeListener {
             limits,
             select,
             admin,
+            adopter: None,
         })
+    }
+
+    /// The screen every connection of this listener judges its heads with.
+    fn head_screen(&self) -> HeadScreen {
+        let (select, slot) = (self.select.clone(), self.slot.clone());
+        Arc::new(move |binding| {
+            if !matches!(
+                binding.route().target(),
+                busbar_kernel::inbound::native::RouteTarget::Plane(_)
+            ) {
+                return false;
+            }
+            let Some(slot) = select(binding.app(), &slot) else {
+                return false;
+            };
+            let Ok(route) = slot.data_for(binding) else {
+                return false;
+            };
+            route.requires_credential() && !answer::presented(binding, route.withheld())
+        })
+    }
+
+    /// Link the carrier side of an upgrade's hand-over. Called once, at assembly, by the listener
+    /// plan when the candidate's websocket transport is admitted on this slot.
+    pub(crate) fn with_adopter(mut self, adopter: Arc<dyn UpgradeAdopter>) -> Self {
+        self.adopter = Some(adopter);
+        self
     }
 
     /// Observe the actual unbuffered socket before security wrapping and preserve its trusted
@@ -192,6 +241,7 @@ impl NativeListener {
             self.budget.clone(),
             self.class,
             self.limits.body_bytes,
+            Some(self.head_screen()),
         );
         // Empty: its arrays and its wake cell are made with the first response (allocation ruling).
         let delivery = DeliveryLedger::default();
@@ -266,6 +316,9 @@ pub(crate) enum InputError {
     Invalid,
     Capacity,
     TooLarge,
+    /// The request carried trailers: refused 400 (the snapshot has no trailer authority field,
+    /// and a trailer is never reinterpreted as a head field).
+    Trailers,
     Arrival(ArrivalRefusal),
     Io(std::io::Error),
     Transport(busbar_core_connector::framed_stream::session::Ended),
@@ -280,6 +333,7 @@ impl std::fmt::Display for InputError {
             Self::Invalid => f.write_str("invalid native listener input"),
             Self::Capacity => f.write_str("native listener capacity exhausted"),
             Self::TooLarge => f.write_str("native request exceeds its body limit"),
+            Self::Trailers => f.write_str("native request carried trailers"),
             Self::Arrival(reason) => write!(f, "native physical arrival refused: {reason:?}"),
             Self::Io(error) => write!(f, "native carrier failed: {error}"),
             Self::Transport(reason) => write!(f, "native transport ended: {reason:?}"),
@@ -291,33 +345,33 @@ impl std::fmt::Display for InputError {
 }
 impl std::error::Error for InputError {}
 
+impl InputError {
+    /// The row of the refusal table an input failure is answered by, where it is the request's
+    /// own doing: a full gateway (row 1), a body over the cap (row 6), request trailers (row 8).
+    /// `None`: the connection's failure, or the engine's; there is no client to answer. The
+    /// supervisor answers a row on the request's own stream and keeps the connection (an
+    /// HTTP/2 connection's other streams are untouched); it stops the connection only on `None`.
+    pub(crate) fn refusal(&self) -> Option<busbar_kernel::auth::admission_table::Refusal> {
+        use busbar_kernel::auth::admission_table::Refusal;
+        match self {
+            Self::Capacity => Some(Refusal::GatewayFull),
+            Self::TooLarge => Some(Refusal::BodyTooLarge),
+            Self::Trailers => Some(Refusal::Trailers),
+            Self::Invalid
+            | Self::Arrival(_)
+            | Self::Io(_)
+            | Self::Transport(_)
+            | Self::Body(_)
+            | Self::FinalIntent(_)
+            | Self::Delivery(_) => None,
+        }
+    }
+}
+
 impl From<ArrivalRefusal> for InputError {
     fn from(error: ArrivalRefusal) -> Self {
         Self::Arrival(error)
     }
-}
-
-/// The listener's one answer to a request that did not authenticate: a denial by its route's chain,
-/// and a head no route matched. The same status and bytes whatever the route, so a caller that has
-/// not authenticated learns nothing about which routes exist (1.5.5 ran its auth layer before
-/// routing, with the same effect). `carriers`: the route's credential carriers; one present makes the
-/// refusal's code R_BAD_CREDENTIAL, none R_AUTH_REQUIRED (§14 C-ROUTE-CRED-HEADER (b)); the code is
-/// core's record of the decision and does not change the bytes.
-pub(super) fn unauthenticated_response(
-    binding: &busbar_kernel::inbound::native::RequestBinding,
-    carriers: &[Box<str>],
-) -> Result<axum::response::Response, InputError> {
-    let presented = binding.head().fields.iter().any(|(name, _)| {
-        carriers
-            .iter()
-            .any(|carrier| carrier.eq_ignore_ascii_case(name))
-    });
-    let refusal = super::port_mount::unauthenticated(presented);
-    tracing::debug!(code = refusal.code, "native request not authenticated");
-    data::refusal_response(
-        busbar_kernel::plane_driver::port_auth::plain_refusal(&refusal),
-        &binding.request().storage(),
-    )
 }
 
 struct InputSlot {
@@ -331,6 +385,13 @@ struct InputSlot {
     owner: Arc<StreamOwner>,
     node: Option<crate::root::plane_node::NativeNodeHandle>,
     carrier_reported: bool,
+    /// The request's own input refused it (a body over the cap, request trailers): the rest of
+    /// its body is discarded unbuffered, and at its end the request is answered with this row
+    /// instead of being served. The connection, and its other streams, are untouched.
+    refused: Option<busbar_kernel::auth::admission_table::Refusal>,
+    /// The request was answered on its head ([`HeadScreen`]): its input was completed empty,
+    /// and whatever body its client still sends is discarded as it arrives.
+    answered_at_head: bool,
 }
 impl InputSlot {
     fn next_deadline(&self) -> Option<Instant> {
@@ -353,6 +414,9 @@ impl InputSlot {
 pub(crate) struct ReadyInput {
     pub(crate) request: CompletingPhysicalRequest,
     pub(crate) owner: Arc<StreamOwner>,
+    /// The request's own input refused it ([`InputError::refusal`]): dispatch verifies the caller
+    /// as for any request, then answers this row. `None`: serve it.
+    pub(crate) refused: Option<busbar_kernel::auth::admission_table::Refusal>,
 }
 
 /// The actual native stream event consumer. EOF completes input only; the physical owner stays
@@ -367,6 +431,8 @@ pub(crate) struct NativeIngress {
     slots: Vec<InputSlot>,
     last_head: u64,
     body_limit: usize,
+    /// Whether a head can be verified at all ([`HeadScreen`]). `None`: every head is taken whole.
+    screen: Option<HeadScreen>,
 }
 
 impl NativeIngress {
@@ -375,6 +441,7 @@ impl NativeIngress {
         budget: Arc<ProcessAdmission>,
         class: AdmissionClass,
         body_limit: usize,
+        screen: Option<HeadScreen>,
     ) -> Self {
         Self {
             connection,
@@ -383,6 +450,7 @@ impl NativeIngress {
             slots: Vec::new(),
             last_head: 0,
             body_limit,
+            screen,
         }
     }
 
@@ -406,10 +474,18 @@ impl NativeIngress {
                     return Err(InputError::Invalid);
                 }
                 self.last_head = stream;
-                let request = self
-                    .budget
-                    .try_enter(self.class)
-                    .map_err(|_| InputError::Capacity)?;
+                // A full gateway answers (refusal row 1): the head is taken under a lease that
+                // holds no place in the process count and room for one head only, the request is
+                // answered 503 on its own stream, and the connection and its other streams go on.
+                let (request, shed) = match self.budget.try_enter(self.class) {
+                    Ok(request) => (request, false),
+                    Err(_) => (
+                        self.budget
+                            .shed_lease(self.class)
+                            .map_err(|_| InputError::Capacity)?,
+                        true,
+                    ),
+                };
                 let DecodedHead {
                     head: decoded,
                     credit,
@@ -420,6 +496,34 @@ impl NativeIngress {
                 // PhysicalRequest now holds its own full head backing reservation.
                 drop(credit);
                 let body = InputBody::new(&request)?;
+                // A head that presents no credential its route could read cannot be verified:
+                // it is answered now, on the head, and none of its body is taken into memory.
+                let unverifiable = !shed
+                    && !end_stream
+                    && self
+                        .screen
+                        .as_ref()
+                        .is_some_and(|screen| screen(pending.binding()));
+                // A declared length over the cap is refused unread (refusal row 6): the request
+                // is completed on its head and its caller judged, so an unverified one still
+                // receives the one 401 and a verified one 413; none of the body is buffered.
+                let declared_over = !shed && !end_stream && {
+                    let binding = pending.binding();
+                    let limit = binding
+                        .app()
+                        .limits
+                        .as_ref()
+                        .map_or(self.body_limit, |limits| limits.request_body_max_bytes);
+                    binding.head().fields.iter().any(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            && std::str::from_utf8(value)
+                                .ok()
+                                .and_then(|text| text.trim().parse::<u64>().ok())
+                                .is_some_and(|declared| {
+                                    u64::try_from(limit).is_ok_and(|limit| declared > limit)
+                                })
+                    })
+                };
                 self.slots.push(InputSlot {
                     stream,
                     deadline,
@@ -430,8 +534,20 @@ impl NativeIngress {
                     owner: Arc::new(owner),
                     node: None,
                     carrier_reported: false,
+                    refused: if shed {
+                        Some(busbar_kernel::auth::admission_table::Refusal::GatewayFull)
+                    } else if unverifiable {
+                        Some(busbar_kernel::auth::admission_table::Refusal::Unverified {
+                            presented: false,
+                        })
+                    } else if declared_over {
+                        Some(busbar_kernel::auth::admission_table::Refusal::BodyTooLarge)
+                    } else {
+                        None
+                    },
+                    answered_at_head: unverifiable || shed || declared_over,
                 });
-                if end_stream {
+                if end_stream || unverifiable || shed || declared_over {
                     self.end(stream).map(Some)
                 } else {
                     Ok(None)
@@ -450,6 +566,9 @@ impl NativeIngress {
                     .iter_mut()
                     .find(|slot| slot.stream == stream)
                     .ok_or(InputError::Invalid)?;
+                if slot.answered_at_head {
+                    return Ok(None);
+                }
                 let pending = slot.pending.as_ref().ok_or(InputError::Invalid)?;
                 pending.binding().check_live()?;
                 let limit = pending
@@ -458,11 +577,26 @@ impl NativeIngress {
                     .limits
                     .as_ref()
                     .map_or(self.body_limit, |limits| limits.request_body_max_bytes);
-                slot.body.as_mut().ok_or(InputError::Invalid)?.append(
-                    pending.binding().request(),
+                // A request its own input already refused takes no more of its body into memory.
+                if slot.refused.is_some() {
+                    return Ok(None);
+                }
+                let request = pending.binding().request().clone();
+                match slot.body.as_mut().ok_or(InputError::Invalid)?.append(
+                    &request,
                     bytes.as_slice(),
                     limit,
-                )?;
+                ) {
+                    Ok(()) => {}
+                    // Over the cap: what was read is released now, the rest is discarded as it
+                    // arrives, and the request is answered 413 at its end (refusal row 6).
+                    Err(InputError::TooLarge) => {
+                        slot.body = Some(InputBody::new(&request)?);
+                        slot.refused = InputError::TooLarge.refusal();
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error),
+                }
                 if slot.body_bounds_exceeded() {
                     self.connection.cancel(&slot.owner);
                     slot.pending.take();
@@ -473,7 +607,17 @@ impl NativeIngress {
                 }
                 Ok(None)
             }
-            Inbound::End(stream) => self.end(stream).map(Some),
+            Inbound::End(stream) => {
+                // A request answered on its head completed its input then.
+                if self
+                    .slots
+                    .iter()
+                    .any(|slot| slot.stream == stream && slot.answered_at_head)
+                {
+                    return Ok(None);
+                }
+                self.end(stream).map(Some)
+            }
             Inbound::Reset { stream, .. } | Inbound::Stalled(stream) => {
                 let slot = self
                     .slots
@@ -487,7 +631,21 @@ impl NativeIngress {
             }
             // The immutable request snapshot currently has no trailer authority field. Do not
             // silently discard or reinterpret trailer credentials as original head fields.
-            Inbound::Trailers { .. } => Err(InputError::Invalid),
+            // The request is answered 400 at its end (refusal row 8); its connection is kept.
+            Inbound::Trailers { stream, .. } => {
+                let slot = self
+                    .slots
+                    .iter_mut()
+                    .find(|slot| slot.stream == stream)
+                    .ok_or(InputError::Invalid)?;
+                if slot.answered_at_head {
+                    return Ok(None);
+                }
+                if slot.refused.is_none() {
+                    slot.refused = InputError::Trailers.refusal();
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -511,6 +669,7 @@ impl NativeIngress {
         Ok(ReadyInput {
             request,
             owner: Arc::clone(&slot.owner),
+            refused: slot.refused.take(),
         })
     }
 

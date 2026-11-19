@@ -322,6 +322,7 @@ fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
     // the concrete verifier, the live generation and the replay claim.
     let route = Arc::new(NativeUpgradeRoute {
         withheld: withheld_carriers(&chain, cred_header),
+        audience: None,
         binding,
         caller,
         chain,
