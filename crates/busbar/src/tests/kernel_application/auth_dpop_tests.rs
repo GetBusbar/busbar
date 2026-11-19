@@ -411,7 +411,7 @@ async fn a_dpop_bound_line_session_credential_is_refused_and_explained() {
             "mcp",
             "stdio",
             Some(AUDIENCE),
-            Some(&bound),
+            Some(bound.as_str().into()),
         )
         .await;
         drop(guard);
@@ -429,7 +429,7 @@ async fn a_dpop_bound_line_session_credential_is_refused_and_explained() {
                 "mcp",
                 "stdio",
                 Some(AUDIENCE),
-                Some(&unbound),
+                Some(unbound.as_str().into()),
             )
             .await
             .is_ok(),

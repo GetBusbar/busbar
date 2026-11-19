@@ -187,15 +187,18 @@ where
     S: std::future::Future<Output = ()>,
 {
     let instance = seat.instance.as_str();
+    // The session's credential, moved at once into its wiping holder and on into the admission,
+    // which wipes it when the session is admitted or refused.
     let credential = std::env::var(env_credential(instance, PORT_LINE_CARRIER))
         .ok()
-        .filter(|c| !c.is_empty());
+        .filter(|c| !c.is_empty())
+        .map(busbar_contract::secure::SecureString::from);
     let gov = match session(
         app.load(),
         instance,
         PORT_LINE_CARRIER,
         seat.audience.as_deref(),
-        credential.as_deref(),
+        credential,
     )
     .await
     {

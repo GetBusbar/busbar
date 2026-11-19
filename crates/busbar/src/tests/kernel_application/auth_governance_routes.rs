@@ -117,7 +117,11 @@ async fn session(
 > {
     tokio::time::timeout(
         Duration::from_secs(10),
-        busbar_kernel::auth::admit::admit_session(app, token.map(str::to_owned), String::new()),
+        busbar_kernel::auth::admit::admit_session(
+            app,
+            token.map(busbar_contract::secure::SecureString::from),
+            String::new(),
+        ),
     )
     .await
     .expect("actual session admission is bounded")
