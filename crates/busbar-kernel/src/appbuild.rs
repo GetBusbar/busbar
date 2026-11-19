@@ -1972,18 +1972,15 @@ async fn build_app_native(
 
     resolve_model_context_max(&cfg.pools)?;
 
+    let supported = supported_provider_dialects(grammar.prepared().map(|read| &**read));
     let mut lane_inputs: Vec<LaneInput> = Vec::new();
     for (idx, ld) in lanes_data.iter().enumerate() {
         let provider_cfg = lane_provider_cfgs[idx];
 
-        let providers = crate::plane_driver::dispatch::provider_dialects();
-        if !providers.iter().any(|d| *d == provider_cfg.dialect()) {
-            return Err(format!(
-                "provider '{}' uses unknown protocol '{}' (supported: {})",
-                ld.route,
-                provider_cfg.dialect(),
-                providers.join(", ")
-            ));
+        if let Some(refusal) =
+            provider_protocol_refusal(&supported, &ld.route, provider_cfg.dialect())
+        {
+            return Err(refusal);
         }
 
         let base_url = busbar_kernel_egress::trust::net::strip_userinfo(
@@ -2693,6 +2690,26 @@ mod config_store_recovery_tests;
 #[cfg(test)]
 #[path = "tests/plugins_fetch_refusal_tests.rs"]
 mod plugins_fetch_refusal_tests;
+
+#[cfg(test)]
+#[path = "tests/provider_protocol_tests.rs"]
+mod provider_protocol_tests;
+
+/// The dialects a provider's `protocol` may name in this build: those the registered planes list.
+fn supported_provider_dialects(_read: Option<&config::grammar::PreparedConfigRead>) -> Vec<&str> {
+    crate::plane_driver::dispatch::provider_dialects()
+}
+
+/// A lane whose provider names a protocol outside `supported` is refused, naming the supported ones.
+fn provider_protocol_refusal(supported: &[&str], provider: &str, protocol: &str) -> Option<String> {
+    if supported.contains(&protocol) {
+        return None;
+    }
+    Some(format!(
+        "provider '{provider}' uses unknown protocol '{protocol}' (supported: {})",
+        supported.join(", ")
+    ))
+}
 
 /// The boot's `auth.operator.accepted` rows (OPERATOR-FROM-ADMITTED-AUTH §3.10): one per
 /// operator-backed admin provider whose instance opened, naming the operator row that backs it.
