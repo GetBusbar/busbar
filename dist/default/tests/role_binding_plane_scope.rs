@@ -111,7 +111,12 @@ impl Upstream {
         .expect("the upstream SAN")
         .signed_by(&key, &issuer)
         .expect("the upstream certificate");
-        let pin = busbar_contract::transport::trust::key_pin(&key.subject_public_key_info());
+        // `tls.pin_spki`: the SHA-256 of the leaf's SubjectPublicKeyInfo, in hex.
+        let pin = {
+            let mut h = busbar_contract::crypto::Sha256::new();
+            h.update(&key.subject_public_key_info());
+            hex::encode(h.finish())
+        };
         let tls = busbar_contract::crypto::tls::server_config(|b| {
             b.with_no_client_auth().with_single_cert(
                 vec![leaf.der().clone()],
