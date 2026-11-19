@@ -95,7 +95,7 @@ impl EffectAnswer {
         }
     }
 
-    pub(super) fn unapplied(answer: AdminAnswer) -> Self {
+    pub(crate) fn unapplied(answer: AdminAnswer) -> Self {
         Self {
             answer,
             disposition: EffectDisposition::Unapplied,
@@ -636,13 +636,70 @@ pub(crate) async fn trust_decide_effect(
             &no_details(),
         ));
     };
+    trust_rule_effect(
+        kernel,
+        TrustDecision {
+            key,
+            ruling,
+            reviewed,
+            actor,
+            operation,
+        },
+        audited,
+        trust_key_answer,
+    )
+    .await
+}
+
+/// A trust verb's refusal of its own, before the kernel decides: nothing was applied (r3 §4.5).
+pub(crate) fn trust_refused(reason: &str, message: &str) -> AdminAnswer {
+    trust_effect(refused_reason(reason, message, &no_details()), "not_applied")
+}
+
+/// A JSON answer of `status` whose body is already encoded.
+pub(crate) fn raw_json_answer(status: u16, body: Vec<u8>) -> AdminAnswer {
+    AdminAnswer {
+        status,
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body,
+    }
+}
+
+/// One decision of a trust key: what the kernel's one decision function takes.
+pub(crate) struct TrustDecision<'a> {
+    pub(crate) key: &'a str,
+    pub(crate) ruling: Ruling,
+    pub(crate) reviewed: busbar_kernel::trust::book::Reviewed<'a>,
+    pub(crate) actor: &'a str,
+    pub(crate) operation: Option<&'a str>,
+}
+
+/// THE ONE TRUST DECISION PATH of the trust verbs (`/trust/approve|revoke`, `/agents/{name}/approve`):
+/// decide `key` through the serving kernel's one decision function and answer per r3 §4.5, the
+/// decided key rendered by `answer_of`. `audited` reports to the walk whether the kernel wrote this
+/// request's typed audit row (condition A-C4b).
+pub(crate) async fn trust_rule_effect(
+    kernel: &KernelServices,
+    decision: TrustDecision<'_>,
+    audited: &AtomicBool,
+    answer_of: impl FnOnce(&KeyRow) -> Result<AdminAnswer, GovernanceError>,
+) -> Result<EffectAnswer, GovernanceError> {
+    let TrustDecision {
+        key,
+        ruling,
+        reviewed,
+        actor,
+        operation,
+    } = decision;
+    let unapplied =
+        |answer: AdminAnswer| Ok(EffectAnswer::unapplied(trust_effect(answer, "not_applied")));
     let decided = kernel
         .trust_rule_by(key, ruling, reviewed, actor, operation)
         .await;
     audited.store(decided.audited, Ordering::SeqCst);
     match decided.result {
         Ok(row) => Ok(EffectAnswer::applied(trust_effect(
-            trust_key_answer(&row)?,
+            answer_of(&row)?,
             "applied",
         ))),
         Err(TrustRefused::Unknown { op_id, decided_at }) => {

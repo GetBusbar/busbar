@@ -299,8 +299,12 @@ fn ordered(order: &Order) -> Vec<String> {
     order.lock().unwrap().clone()
 }
 
+/// `hook`, configured by the operator under its own name: the name its records carry.
 fn gate(hook: Hook) -> Arc<Call> {
-    configured(Arc::new(hook), PromptAccess::No, UserAccess::No)
+    let name = hook.name;
+    let mut call = configured(Arc::new(hook), PromptAccess::No, UserAccess::No);
+    Arc::get_mut(&mut call).unwrap().name = Arc::from(name);
+    call
 }
 
 /// RED before hooks ran on the native path: the money was asked first (the unit opened and
@@ -724,15 +728,11 @@ fn kept(records: &HookRecords) -> Vec<(String, busbar_kernel_audit::HookHead, bo
 async fn a_hook_refusal_before_the_money_hands_its_records_to_the_refusal() {
     let order = Order::default();
     let request = request(&order);
-    let allowing = configured(
-        Arc::new(Hook::answering(
-            "first",
-            &order,
-            Ok(verdict(abi::VERB_ABSTAIN, None)),
-        )),
-        PromptAccess::No,
-        UserAccess::No,
-    );
+    let allowing = gate(Hook::answering(
+        "first",
+        &order,
+        Ok(verdict(abi::VERB_ABSTAIN, None)),
+    ));
     let refusing = gate(Hook::answering(
         "gate",
         &order,
@@ -946,15 +946,11 @@ async fn a_refusing_hook_on_a_route_that_opens_no_unit_refuses_and_nothing_runs_
         "and is given no effect: it opened no unit"
     );
     // A rewrite is asked before the gates: the refusing hook is first, the other after it.
-    let refusing = configured(
-        Arc::new(Hook::answering(
-            "gate",
-            &order,
-            Ok(verdict(abi::VERB_REJECT, Some(409))),
-        )),
-        PromptAccess::No,
-        UserAccess::No,
-    );
+    let refusing = gate(Hook::answering(
+        "gate",
+        &order,
+        Ok(verdict(abi::VERB_REJECT, Some(409))),
+    ));
     let after = gate(Hook::answering(
         "after",
         &order,
@@ -1001,15 +997,11 @@ async fn a_refusing_hook_on_a_route_that_opens_no_unit_refuses_and_nothing_runs_
 async fn a_route_that_opens_no_unit_hears_its_hooks_in_the_billed_order_and_is_served() {
     let order = Order::default();
     let request = unbilled_request(52);
-    let rewrite = configured(
-        Arc::new(Hook::answering(
-            "rewrite",
-            &order,
-            Ok(verdict(abi::VERB_ABSTAIN, None)),
-        )),
-        PromptAccess::No,
-        UserAccess::No,
-    );
+    let rewrite = gate(Hook::answering(
+        "rewrite",
+        &order,
+        Ok(verdict(abi::VERB_ABSTAIN, None)),
+    ));
     let allowing = gate(Hook::answering(
         "gate",
         &order,
