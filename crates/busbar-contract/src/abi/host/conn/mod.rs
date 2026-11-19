@@ -3,12 +3,10 @@
 
 //! THE CONNECTION TABLE, lowered: [`crate::conn::Conns`] as a `#[repr(C)]` table of host slots.
 
-use std::collections::{HashMap, HashSet};
 use std::os::raw::c_void;
-use std::sync::{Arc, Mutex};
 
 use crate::abi::shared::{DeclStr, WireField};
-use crate::conn::{ConnError, ConnId, Conns, InstanceId};
+use crate::conn::ConnError;
 
 pub mod connector;
 
