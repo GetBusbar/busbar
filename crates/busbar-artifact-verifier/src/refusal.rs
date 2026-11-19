@@ -160,16 +160,15 @@ impl core::fmt::Display for Refusal {
             }
             RefusalCode::KindAbi => write!(
                 f,
-                "is built for {have}; this busbar {}.{}.{} requires {want} exactly",
-                ENGINE.major, ENGINE.minor, ENGINE.patch
+                "is {have}; {want}"
             ),
             RefusalCode::Mechanism => write!(
                 f,
-                "is built for plugin mechanism {have}; this busbar requires {want} exactly"
+                "is {have}; {want}"
             ),
             RefusalCode::Layout | RefusalCode::Semantic => write!(
                 f,
-                "is built against a different ABI ({field} {have}, expected {want}) at the same version — a mismatched SDK build"
+                "was built from another contract than this engine's ({field}: {have}; expected {want}) — a mismatched SDK build"
             ),
             RefusalCode::Target => write!(f, "is built for {have}; this busbar runs on {want}"),
             RefusalCode::EngineRange => {
