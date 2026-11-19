@@ -1205,6 +1205,17 @@ pub trait PollConns: Conns {
         None
     }
 
+    /// On a connection whose wire carries messages (a WebSocket upstream after its 101): the kind of the
+    /// message the body piece last read from `conn` belongs to: `Some(true)` text, `Some(false)` binary.
+    /// `None` = the wire has no messages, or this table does not keep the kind: the reader then hands the
+    /// piece on as bytes, never as text it did not see stated.
+    ///
+    /// A forwarding wrapper (the root's `BoundConns`) must forward it; the `Connector` answers from the
+    /// exchange's own read state. The body is here for the tables that carry no message wire.
+    fn message_text(&self, _caller: InstanceId, _conn: ConnId) -> Option<bool> {
+        None
+    }
+
     /// THE EVIDENCE OF EACH ATTEMPT `conn` made, in order, told to `each`: what the operating system
     /// accepted of the request the engine sent (`none` is proof the far end received nothing of it;
     /// `whole` means it may have acted and may charge), and what the engine did about the attempt's

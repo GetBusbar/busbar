@@ -611,6 +611,13 @@ pub trait ClientSink: Send + Sync {
     /// stay in `items`. `Ready(true)` once every item was taken; `Ready(false)` = the client went away: nothing
     /// more is wanted, and the far end is let go.
     fn poll_items(&self, cx: &mut Context<'_>, items: &mut Vec<ToClient>) -> Poll<bool>;
+
+    /// The caller's messages after an upgrade (§12.27): `Some` only on the client side of an upgrade
+    /// request's hand-over. With it, a session whose plane commits with RESPOND(101) is relayed as a message
+    /// session ([`super::port_duplex`]); without it (every other request) no session carries a message.
+    fn messages(&self) -> Option<&dyn super::port_duplex::ClientMessages> {
+        None
+    }
 }
 
 /// Hands `items` to the effects' [`ClientSink`] when it has one (leaving `items` empty), else keeps them.
@@ -1339,6 +1346,10 @@ pub struct Task<'k, K: Calls + ?Sized> {
     session: Option<K::Session>,
     once: Once,
     usage: SessionUsage,
+    /// The session is an upgrade request's (its client side takes messages, [`ClientSink::messages`]): MSG,
+    /// UP_MSG on exchange 0 and WAKE_AT are driven by the relay ([`super::port_duplex`]). Set once, by the
+    /// attempt feed, before the far end's handshake answer is handed to the plane.
+    messages: bool,
     /// The channels this session holds, by exchange; dropping the task detaches them.
     pub(super) held: Channels,
     /// The answers a resolve stage still has to resolve, reused stage to stage (`Task::resolve`).
@@ -1423,6 +1434,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             session: Some(session),
             once,
             usage: SessionUsage::new(),
+            messages: false,
             held: Channels::new(),
             queue: std::collections::VecDeque::new(),
             reads: super::port_intents::Reads::default(),
@@ -1462,6 +1474,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             session: Some(session),
             once,
             usage: SessionUsage::new(),
+            messages: false,
             held: Channels::new(),
             queue: std::collections::VecDeque::new(),
             reads: super::port_intents::Reads::default(),
@@ -1738,6 +1751,16 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         self.session.is_some()
     }
 
+    /// This session is an upgrade request's: from here on its answers may carry messages (see the field).
+    pub(crate) fn message_session(&mut self) {
+        self.messages = true;
+    }
+
+    /// Whether [`Self::message_session`] was called.
+    pub(crate) fn carries_messages(&self) -> bool {
+        self.messages
+    }
+
     fn settle(
         &mut self,
         called: Result<(), PortError>,
@@ -1757,19 +1780,24 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             self.session = None;
             return Err(SessionError::NotDriven);
         }
+        // A message session (an upgrade request's, `Self::message_session`) carries MSG, UP_MSG on exchange 0
+        // and WAKE_AT: the relay drives exactly those. Everything else a DATA unit does not drive stays
+        // refused for it too.
+        let messages = self.messages;
         if self.data.is_some()
             && (answer.emitted
                 || !answer.ex_msgs.is_empty()
                 || answer.detach.is_some()
-                || answer.wake_at.is_some()
-                || answer
-                    .client
-                    .iter()
-                    .any(|item| matches!(item, ToClient::Msg { .. }))
+                || (!messages && answer.wake_at.is_some())
+                || (!messages
+                    && answer
+                        .client
+                        .iter()
+                        .any(|item| matches!(item, ToClient::Msg { .. })))
                 || answer
                     .exchanges
                     .iter()
-                    .any(|exchange| exchange.id != 0 || !exchange.msgs.is_empty())
+                    .any(|exchange| exchange.id != 0 || (!messages && !exchange.msgs.is_empty()))
                 || answer.intents.iter().any(|intent| {
                     !matches!(
                         intent,

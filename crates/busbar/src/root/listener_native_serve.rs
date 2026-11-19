@@ -151,6 +151,14 @@ fn ended_with(native: &NativeListener, stop: &InputError) {
     );
 }
 
+/// The caller's side of an adopted connection, as the supervisor holds it.
+struct AdoptedSide {
+    /// Where the caller's events go: the plane session's side of the upgraded request.
+    to_plane: mpsc::Sender<busbar_kernel::plane_driver::port_duplex::ClientEvent>,
+    /// The one event read from the adopted session and not yet taken by the plane session.
+    held: Option<busbar_kernel::plane_driver::port_duplex::ClientEvent>,
+}
+
 struct Waiting {
     stream: u64,
     ready: Option<ReadyInput>,
@@ -202,8 +210,8 @@ async fn supervise(
             .connection(core)
             .map_err(InputError::FinalIntent)?,
     );
-    let (registrations, registered) = mpsc::channel(1);
-    let (feeds, fed) = mpsc::channel(1);
+    let (mut registrations, registered) = mpsc::channel(1);
+    let (mut feeds, fed) = mpsc::channel(1);
     let (inbound, mut inputs) = mpsc::channel(1);
     let (close, closed) = oneshot::channel();
     let mut close = Some(close);
@@ -232,6 +240,10 @@ async fn supervise(
     let mut preparing = JoinSet::new();
     let mut responses = JoinSet::new();
     let mut failure = None;
+    // The connection after a committed upgrade's hand-over (`listener_native_handover.rs`): the
+    // websocket transport's session is driven in the HTTP session's place, and what it hands up is
+    // the caller's side of the one upgraded session, not a new request.
+    let mut adopted: Option<AdoptedSide> = None;
     loop {
         if driver_done {
             for slot in &mut ingress.slots {
@@ -292,15 +304,58 @@ async fn supervise(
                 }
             },
             outcome = &mut driver, if !driver_done => {
+                // §12.27 step 3: the HTTP transport answered UPGRADE to a committed upgrade's 101.
+                // The connection, its counters, its progress reader and the upgraded answer go to
+                // the websocket transport; this supervisor goes on with them.
+                let outcome = match outcome {
+                    session::Outcome::Upgraded(upgrade) => {
+                        let owners: Vec<Arc<StreamOwner>> =
+                            ingress.slots.iter().map(|slot| slot.owner.clone()).collect();
+                        match super::handover::adopt(
+                            upgrade,
+                            &owners,
+                            ingress.connection.facts(),
+                            &native.limits,
+                        ) {
+                            Ok(next) => {
+                                driver.set(session::drive(next.conn, next.io, next.progress, next.wiring));
+                                inputs = next.inputs;
+                                close = Some(next.close);
+                                registrations = next.registrations;
+                                feeds = next.feeds;
+                                adopted = Some(AdoptedSide { to_plane: next.to_plane, held: None });
+                                // No further request arrives on an adopted connection.
+                                waiting.clear();
+                                continue;
+                            }
+                            // Not adopted: nothing was written for the 101, the writer is retired,
+                            // and the request ends cancelled (its unit settles as a cut answer).
+                            Err(error) => {
+                                failure.get_or_insert(error);
+                                None
+                            }
+                        }
+                    }
+                    outcome => Some(outcome),
+                };
+                // The caller's side of an adopted session is over with its connection.
+                adopted = None;
                 driver_done = true;
                 input_open = false;
                 inputs.close();
                 waiting.clear();
-                for slot in &ingress.slots { ingress.connection.cancel(&slot.owner); }
-                if !matches!(outcome, session::Outcome::Closed | session::Outcome::PeerClosed | session::Outcome::CoreClosed(_)) {
+                for slot in &ingress.slots {
+                    ingress.connection.cancel(&slot.owner);
+                    // A committed upgrade whose connection ended before its hand-over is let go:
+                    // its plane session is told the caller is gone.
+                    super::handover::forget(&slot.owner);
+                }
+                if outcome.as_ref().is_some_and(|outcome| !matches!(outcome, session::Outcome::Closed | session::Outcome::PeerClosed | session::Outcome::CoreClosed(_))) {
                     failure.get_or_insert(InputError::Invalid);
                 }
-                outcome.retire();
+                if let Some(outcome) = outcome {
+                    outcome.retire();
+                }
             },
             prepared = preparing.join_next(), if !preparing.is_empty() => {
                 match prepared {
@@ -352,8 +407,24 @@ async fn supervise(
                     None => {},
                 }
             },
-            input = inputs.recv(), if input_open => {
+            // One event of the caller is held for the plane session at a time: the adopted session
+            // is not read further until the plane has taken it (that is the back-pressure).
+            permit = async {
+                adopted.as_ref().expect("guarded").to_plane.clone().reserve_owned().await
+            }, if adopted.as_ref().is_some_and(|side| side.held.is_some()) => {
+                match (permit, adopted.as_mut().and_then(|side| side.held.take())) {
+                    (Ok(permit), Some(event)) => { permit.send(event); },
+                    // The plane session is over: nothing more of the caller is wanted.
+                    _ => {},
+                }
+            },
+            input = inputs.recv(), if input_open && adopted.as_ref().is_none_or(|side| side.held.is_none()) => {
                 let Some(input) = input else { input_open = false; continue };
+                if let Some(side) = adopted.as_mut() {
+                    // After the hand-over: a message of the caller, its close, or its loss.
+                    side.held = Some(super::handover::event_of(input));
+                    continue;
+                }
                 if let Inbound::Head { stream, .. } = &input {
                     waiting.push_back(Waiting { stream: *stream, ready: None });
                 }
