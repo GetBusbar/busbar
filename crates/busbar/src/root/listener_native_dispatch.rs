@@ -73,6 +73,14 @@ pub(super) async fn prepare(
     let upgrade_request = crate::root::min3_physical::is_upgrade(binding.route());
     let data_request =
         matches!(binding.route().target(), RouteTarget::Plane(_)) && !upgrade_request;
+    let class = match binding.route().target() {
+        RouteTarget::Plane(_) if upgrade_request => "plane upgrade",
+        RouteTarget::Plane(_) => "plane",
+        RouteTarget::Core(RouteAuth::None) => "core public",
+        RouteTarget::Core(RouteAuth::Admin) => "core admin",
+        RouteTarget::Core(_) => "core",
+        RouteTarget::Unrouted => "unrouted",
+    };
     let work = async {
         let (response, authority, settlement) = match binding.route().target() {
             RouteTarget::Plane(_) if upgrade_request => {
@@ -134,10 +142,16 @@ pub(super) async fn prepare(
                     // A raw request binding is not output authority. A denied walk needs its
                     // own consumed physical refusal owner before it can register a response.
                     (None, None) => {
+                        tracing::error!(
+                            status = response.status().as_u16(),
+                            unit = binding.invocation().request_id().get(),
+                            "the admin router answered a native request with neither a physical \
+                             execution nor a recorded refusal; the answer is not delivered"
+                        );
                         return Err(InputError::Delivery(
                             busbar_contract::response_delivery::ResponseStop::Integrity,
                         )
-                        .into())
+                        .into());
                     }
                 };
                 (response, authority, None)
@@ -189,11 +203,37 @@ pub(super) async fn prepare(
     if data_request {
         // DATA owns the plane session and monetary state. Its producer observes the
         // original cancellation/deadline and joins that work; dropping this await would detach it.
-        return work.await;
+        return unanswered(work.await, &binding, class);
     }
-    tokio::select! {
+    let result = tokio::select! {
         result = work => result,
         () = binding.cancelled() => Err(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Cancelled).into()),
         () = tokio::time::sleep_until(deadline) => Err(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline).into()),
+    };
+    unanswered(result, &binding, class)
+}
+
+/// A request that leaves `prepare` with an error is closed with no answer written. Say which class
+/// of route it was on and what stopped it: a silent close names no layer (the admin listener's
+/// zero bytes were exactly this). A caller that went away is not a fault and is not logged.
+fn unanswered(
+    result: Result<Prepared, data::DataPrepareError>,
+    binding: &busbar_kernel::inbound::native::RequestBinding,
+    class: &'static str,
+) -> Result<Prepared, data::DataPrepareError> {
+    use busbar_contract::response_delivery::ResponseStop;
+    if let Err(
+        data::DataPrepareError::Input(error) | data::DataPrepareError::HeldNode { error, .. },
+    ) = &result
+    {
+        if !matches!(error, InputError::Delivery(ResponseStop::Cancelled)) {
+            tracing::error!(
+                route = class,
+                unit = binding.invocation().request_id().get(),
+                stop = %error,
+                "a native request is closed with no answer written"
+            );
+        }
     }
+    result
 }
