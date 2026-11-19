@@ -13,7 +13,7 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
@@ -36,7 +36,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[derive(Default)]
 struct Pipes {
-    read: VecDeque<u8>,
+    /// The far end's bytes not yet read: wiped as they are read and when the conn is released.
+    read: busbar_secure::SecureVec,
     eof: bool,
     reader: Option<Waker>,
     write: busbar_secure::SecureVec,
@@ -87,18 +88,23 @@ struct Shared {
     base: Instant,
 }
 
+/// A task's waker. `Shared` stores wakers (the pipe's reader and writer, timer slots, provenance
+/// release gates), so the waker must not own `Shared`: a strong reference here would make the state
+/// hold itself and never be freed. Once the conn is gone a wake has nothing to queue and does nothing.
 struct TaskWaker {
     id: usize,
     queued: AtomicBool,
-    shared: Arc<Shared>,
+    shared: Weak<Shared>,
 }
 impl Wake for TaskWaker {
     fn wake(self: Arc<Self>) {
         self.wake_by_ref();
     }
     fn wake_by_ref(self: &Arc<Self>) {
-        if !self.queued.swap(true, Ordering::AcqRel) {
-            lock(&self.shared.sched).ready.push_back(self.id);
+        if !self.queued.swap(true, Ordering::AcqRel)
+            && let Some(shared) = self.shared.upgrade()
+        {
+            lock(&shared.sched).ready.push_back(self.id);
         }
     }
 }
@@ -164,7 +170,7 @@ impl MemIo {
             if bytes.is_empty() {
                 p.eof = true;
             } else {
-                p.read.extend(bytes.iter().copied());
+                p.read.extend_from_slice(bytes);
             }
             p.reader.take()
         };
@@ -263,7 +269,7 @@ impl MemIo {
             let waker = Arc::new(TaskWaker {
                 id,
                 queued: AtomicBool::new(true),
-                shared: self.shared.clone(),
+                shared: Arc::downgrade(&self.shared),
             });
             self.tasks[id] = Some(Entry { fut, waker });
             self.live += 1;
@@ -293,6 +299,22 @@ impl MemIo {
     }
 }
 
+/// The conn's tasks end with it. One spawned after the last `run` still waits in `Shared`'s inbox
+/// and may hold a handle to `Shared` (a `MemStream`, a `MemTimer`): `Shared` would hold itself, so
+/// the inbox is emptied here, its tasks dropped outside the lock, until dropping spawns no more.
+impl Drop for MemIo {
+    fn drop(&mut self) {
+        self.tasks.clear();
+        loop {
+            let spawned = std::mem::take(&mut lock(&self.shared.sched).inbox);
+            if spawned.is_empty() {
+                break;
+            }
+            drop(spawned);
+        }
+    }
+}
+
 /// The conn's byte pipe for hyper: reads what `feed` supplied, writes what `flush` drains.
 pub struct MemStream {
     shared: Arc<Shared>,
@@ -305,13 +327,10 @@ impl hyper::rt::Read for MemStream {
     ) -> Poll<io::Result<()>> {
         let mut p = lock(&self.shared.pipes);
         if !p.read.is_empty() {
-            // Straight from the queue's two slices into hyper's cursor, then dropped from the queue.
+            // Straight from the pipe into hyper's cursor, then wiped from the pipe.
             let n = p.read.len().min(buf.remaining());
-            let (front, back) = p.read.as_slices();
-            let a = front.len().min(n);
-            buf.put_slice(&front[..a]);
-            buf.put_slice(&back[..n - a]);
-            p.read.drain(..n);
+            buf.put_slice(&p.read.as_slice()[..n]);
+            p.read.consume(n);
             return Poll::Ready(Ok(()));
         }
         if p.eof {
