@@ -444,6 +444,27 @@ fn accepted_text(text: &str) -> Result<Box<str>, StorageDenied> {
 
 type Streams = Arc<Mutex<HashMap<u64, Weak<StreamState>>>>;
 
+/// A request's arrival: the ONE monotonic clock reading its admission made, and the deadline
+/// derived from that same reading. The binding records both, so nothing on the request path reads
+/// the clock again to learn when the request arrived.
+#[derive(Clone, Copy, Debug)]
+pub struct Arrival {
+    mono_ns: u64,
+    deadline: Instant,
+}
+impl Arrival {
+    /// The arrival at `mono_ns` (one reading of `store::monotonic_ns`), due `timeout` after it.
+    /// `None` when that deadline lies beyond the clock's range.
+    pub fn at(mono_ns: u64, timeout: std::time::Duration) -> Option<Arrival> {
+        busbar_contract::mono_instant::instant_at(mono_ns)
+            .checked_add(timeout)
+            .map(|deadline| Arrival { mono_ns, deadline })
+    }
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+}
+
 pub struct PhysicalConnection {
     listener: PhysicalListener,
     facts: Arc<AcceptedConnection>,
@@ -689,6 +710,12 @@ impl RequestBinding {
     }
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
+    }
+    /// The one monotonic clock reading this request's admission made, in nanoseconds on the
+    /// node's monotonic clock (`store::monotonic_ns`); its deadline was derived from it. Every
+    /// call made for this request is handed this reading; none reads the clock again for it.
+    pub fn mono_ns(&self) -> Option<u64> {
+        self.mono_ns
     }
     pub fn connection(&self) -> &AcceptedConnection {
         &self.facts

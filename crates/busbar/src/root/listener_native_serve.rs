@@ -432,13 +432,18 @@ async fn supervise(
                     Inbound::Reset { stream, .. } | Inbound::Stalled(stream) => Some(*stream),
                     _ => None,
                 };
-                let Some(deadline) = std::time::Instant::now().checked_add(native.limits.request_timeout) else {
+                // The arrival's one monotonic reading: its deadline is derived from it and every
+                // call made for the request is handed it.
+                let Some(arrival) = busbar_kernel::inbound::native::Arrival::at(
+                    busbar_kernel::store::monotonic_ns(),
+                    native.limits.request_timeout,
+                ) else {
                     failure.get_or_insert(InputError::Capacity);
                     input_open = false;
                     stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
                     continue;
                 };
-                match ingress.accept(input, Some(deadline)) {
+                match ingress.accept(input, Some(arrival)) {
                     Ok(Some(ready)) => {
                         let stream = ready.request.binding().stream();
                         if let Some(entry) = waiting.iter_mut().find(|entry| entry.stream == stream) {

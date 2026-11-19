@@ -485,7 +485,7 @@ impl NativeIngress {
     pub(crate) fn accept(
         &mut self,
         input: Inbound,
-        deadline: Option<Instant>,
+        arrival: Option<busbar_kernel::inbound::native::Arrival>,
     ) -> Result<Option<ReadyInput>, InputError> {
         match input {
             Inbound::Head {
@@ -520,7 +520,7 @@ impl NativeIngress {
                 } = decode_head(head.as_slice(), &request)?;
                 let (pending, owner) =
                     self.connection
-                        .head(stream, decoded, request.clone(), deadline)?;
+                        .head(stream, decoded, request.clone(), arrival)?;
                 // PhysicalRequest now holds its own full head backing reservation.
                 drop(credit);
                 let body = InputBody::new(&request)?;
@@ -550,7 +550,7 @@ impl NativeIngress {
                 };
                 self.slots.push(InputSlot {
                     stream,
-                    deadline,
+                    deadline: arrival.map(|arrival| arrival.deadline()),
                     body_started,
                     body_deadline: total_deadline,
                     pending: Some(pending),
