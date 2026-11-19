@@ -67,6 +67,7 @@ fn port(routes: &[RouteInfo], admin_openapi: Option<&str>, states: bool) -> Admi
         routes: routes.to_vec(),
         openapi: admin_openapi.map(str::to_owned),
         states,
+        checked: Vec::new(),
         answer: Err(()),
     }
 }
@@ -443,6 +444,7 @@ async fn hydrate_is_an_admin_op_and_its_answer_goes_to_core_as_it_is() {
         routes: Vec::new(),
         openapi: None,
         states: true,
+        checked: Vec::new(),
         answer: Ok(b"answer".to_vec()),
     };
     assert_eq!(admin_hydrate(&port, b"stored").await.unwrap(), b"answer");
@@ -455,6 +457,7 @@ async fn hydrate_is_an_admin_op_and_its_answer_goes_to_core_as_it_is() {
         routes: Vec::new(),
         openapi: None,
         states: true,
+        checked: Vec::new(),
         answer: Err(()),
     };
     assert!(admin_hydrate(&failing, b"stored").await.is_err());
