@@ -2219,6 +2219,48 @@ mod tests {
         assert_eq!(d.admin_openapi, None);
     }
 
+    /// Plane 2.0: the plane-only path items (0x4000-0x4002) load; the two core-written positions are
+    /// RFC 6901 pointers to a member, each at most once (D_UPSTREAM_PATH is judged by
+    /// `upstream_paths::validate` before this decoder runs).
+    #[test]
+    fn a_plane_stating_its_path_items_loads_and_a_bad_or_second_position_refuses() {
+        let stated = |items: &[(u16, &str)]| {
+            let mut r = Reply::new();
+            route(&mut r, 1, POST, 0, p::AUTH_PRINCIPAL, "/v1/realtime");
+            for (tag, text) in items {
+                r.put_text(*tag, text).unwrap();
+            }
+            describe(&r, p::ALL, 0)
+        };
+        assert!(stated(&[
+            (t::D_PUBLIC_URL_PATH, "/public_url"),
+            (t::D_CALLER_UPSTREAMS_PATH, "/caller_upstreams"),
+            (t::D_UPSTREAM_PATH, "/upstreams/*"),
+        ])
+        .is_ok());
+        let url = DescribeInvalid("describe.public_url_path");
+        let callers = DescribeInvalid("describe.caller_upstreams_path");
+        for bad in ["", "public_url", "/a~2b"] {
+            assert_eq!(stated(&[(t::D_PUBLIC_URL_PATH, bad)]).err(), Some(url));
+            assert_eq!(
+                stated(&[(t::D_CALLER_UPSTREAMS_PATH, bad)]).err(),
+                Some(callers)
+            );
+        }
+        assert_eq!(
+            stated(&[(t::D_PUBLIC_URL_PATH, "/a"), (t::D_PUBLIC_URL_PATH, "/b")]).err(),
+            Some(url)
+        );
+        assert_eq!(
+            stated(&[
+                (t::D_CALLER_UPSTREAMS_PATH, "/a"),
+                (t::D_CALLER_UPSTREAMS_PATH, "/b")
+            ])
+            .err(),
+            Some(callers)
+        );
+    }
+
     #[test]
     fn admin_routes_need_the_openapi_fragment_and_operator_auth() {
         let mut r = Reply::new();
