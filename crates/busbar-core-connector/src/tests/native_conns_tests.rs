@@ -387,7 +387,11 @@ async fn an_idle_connection_past_the_posture_timeout_is_closed_not_lent() {
     while idle.take(0, &key(3), then, POSTURE).is_some() {
         kept += 1;
     }
-    assert_eq!(kept, POSTURE.max_idle_per_host);
+    // The stated figure is the deployment's, divided across the cores (v1.5.5's rule), at least one per core.
+    assert_eq!(
+        kept,
+        crate::outbound::lend::idle_bound(POSTURE.max_idle_per_host, super::pool::shard_count())
+    );
 }
 
 #[test]
