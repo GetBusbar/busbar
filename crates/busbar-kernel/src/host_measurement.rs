@@ -22,8 +22,14 @@ const MAX_TEXT: usize = 1024;
 const MAX_CLASS_TEXT: usize = 256;
 pub(crate) const MAX_EVIDENCE_BYTES: usize = 16 * 1024 * 1024;
 
+/// Written internally tagged by `kind`. Read through [`OriginWire`], never through serde's
+/// internally tagged reader: that one buffers the object and replays every number through
+/// `deserialize_any`, where the exact-number JSON facade hands it as a token map, so a request
+/// origin's `unit` and each target's `window` were refused as "a map, expected u64" and a stored
+/// measurement checkpoint could not be read back.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
+#[serde(tag = "kind")]
+#[serde(try_from = "OriginWire")]
 enum Origin {
     Request {
         principal: String,
@@ -32,6 +38,63 @@ enum Origin {
         unit: u64,
     },
     System,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+enum OriginKind {
+    Request,
+    System,
+}
+
+/// The same object [`Origin`] writes, read field by field: the four request members belong to
+/// `Request` alone (all required there, all refused on `System`, never `null`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OriginWire {
+    kind: OriginKind,
+    #[serde(default, deserialize_with = "present")]
+    principal: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    group: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    targets: Option<Vec<UnitTarget>>,
+    #[serde(default, deserialize_with = "present")]
+    unit: Option<u64>,
+}
+
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    decoder: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(decoder).map(Some)
+}
+
+impl TryFrom<OriginWire> for Origin {
+    type Error = &'static str;
+
+    fn try_from(wire: OriginWire) -> Result<Self, Self::Error> {
+        let OriginWire {
+            kind,
+            principal,
+            group,
+            targets,
+            unit,
+        } = wire;
+        match (kind, principal, group, targets, unit) {
+            (OriginKind::Request, Some(principal), Some(group), Some(targets), Some(unit)) => {
+                Ok(Self::Request {
+                    principal,
+                    group,
+                    targets,
+                    unit,
+                })
+            }
+            (OriginKind::Request, ..) => {
+                Err("a request origin requires principal, group, targets and unit")
+            }
+            (OriginKind::System, None, None, None, None) => Ok(Self::System),
+            (OriginKind::System, ..) => Err("a system origin carries no request members"),
+        }
+    }
 }
 
 /// Constructed by the root from original authenticated admission, or explicitly

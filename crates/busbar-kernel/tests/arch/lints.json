@@ -5,12 +5,16 @@
     "traits": {
       "crates/busbar-contract/src/auth_calls.rs": ["PerRequestHandle"],
       "crates/busbar-contract/src/conn.rs": ["LendCredential"],
-      "crates/busbar-contract/src/export_calls.rs": ["ExportAxis"],
+      "crates/busbar-contract/src/export_calls.rs": ["ExportAxis", "ExportObserver"],
       "crates/busbar-contract/src/framing_scope.rs": ["FramingScope"],
       "crates/busbar-contract/src/io_host.rs": ["IoHost"],
+      "crates/busbar-contract/src/kept/blocks.rs": ["Kept"],
+      "crates/busbar-contract/src/persistence.rs": ["PersistenceBackend"],
+      "crates/busbar-contract/src/persistence/conformance.rs": ["Subject"],
       "crates/busbar-contract/src/plane_calls.rs": ["AuthenticatedRouteInFlight", "PieceInFlight", "PlaneCalls", "ServeInFlight"],
       "crates/busbar-contract/src/plugin_rows.rs": ["PluginRows"],
-      "crates/busbar-contract/src/secret.rs": ["SecretCalls", "SecretResolve"],
+      "crates/busbar-contract/src/plugin_settings.rs": ["Custody"],
+      "crates/busbar-contract/src/secret.rs": ["SecretAxis", "SecretCalls", "SecretResolve"],
       "crates/busbar-contract/src/services.rs": ["CredentialRead"],
       "crates/busbar-contract/src/yaml.rs": ["MappingExt", "ValueExt"],
       "crates/busbar-core-admin/src/admin_state.rs": ["AppAdmin"],
@@ -22,6 +26,7 @@
       "crates/busbar-core-connector/src/need/exchange.rs": ["Reply"],
       "crates/busbar-core-oauth2/src/cimd.rs": ["CimdFetch"],
       "crates/busbar-kernel-audit/src/amend.rs": ["AmendSink"],
+      "crates/busbar-kernel-audit/src/linked_walk.rs": ["Evidence", "LinkedRange", "TrustedHead", "WalkedLine"],
       "crates/busbar-kernel-audit/src/record.rs": ["Audit"],
       "crates/busbar-kernel-egress/src/ports.rs": ["PermitHandle"],
       "crates/busbar-kernel-egress/src/walk.rs": ["Shape"],
@@ -40,6 +45,7 @@
       "crates/busbar-kernel/src/directory/events.rs": ["DirectoryEvents"],
       "crates/busbar-kernel/src/door.rs": ["PoolView"],
       "crates/busbar-kernel/src/durable.rs": ["DurableFs"],
+      "crates/busbar-kernel/src/governance/fee_debt.rs": ["FeeDebtAssociate"],
       "crates/busbar-kernel/src/governance/mod.rs": ["IntoStoreResult"],
       "crates/busbar-kernel/src/governance/recovery.rs": ["RecoverySink"],
       "crates/busbar-kernel/src/host_records.rs": ["RecordRows"],
@@ -121,5 +127,17 @@
       "crates/busbar-kernel/src/trust/validate.rs": "trust::validate::Grant is one scope or egress grant a visibility check needs (Copy by design), not the capability token"
     }
   },
-  "admitted": {}
+  "admitted": {
+    "crates/busbar-contract/src/export_calls.rs ExportObserver": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar-contract/src/kept/blocks.rs Kept": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar-contract/src/persistence.rs PersistenceBackend": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar-contract/src/persistence/conformance.rs Subject": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar-contract/src/plugin_settings.rs Custody": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): the reader's only other users are the held old-interface tree (abi/sdk/cred/protected_json.rs); made concrete when house/engine-cut deletes that tree",
+    "crates/busbar-contract/src/secret.rs SecretAxis": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar-kernel-audit/src/linked_walk.rs Evidence": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar-kernel-audit/src/linked_walk.rs LinkedRange": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar-kernel-audit/src/linked_walk.rs TrustedHead": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar-kernel-audit/src/linked_walk.rs WalkedLine": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar-kernel/src/governance/fee_debt.rs FeeDebtAssociate": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)"
+  }
 }

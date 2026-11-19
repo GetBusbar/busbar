@@ -522,6 +522,38 @@ impl AuditRecord {
         }
         UnitId::of(self.node, self.unit.boot_nonce, self.what.unit_key.get())
     }
+
+    /// WHICH RULE PROVES THIS RECORD, read from what it stores (nothing stored is rewritten):
+    /// [`RecordVersion::SignedLine`] for a record that carries its own signature and key id (every
+    /// record sealed before SEALING-FIX, and the legacy-signing fixtures), verified by that
+    /// signature; [`RecordVersion::SignedHead`] for a record with neither, proved by its links up to
+    /// a signed chain head (`/audit/head`, `/audit/range`). One without the other is malformed.
+    #[must_use]
+    pub fn record_version(&self) -> Option<RecordVersion> {
+        match (&self.signature, &self.key_id) {
+            (Some(_), Some(_)) => Some(RecordVersion::SignedLine),
+            (None, None) => Some(RecordVersion::SignedHead),
+            _ => None,
+        }
+    }
+}
+
+/// How an [`AuditRecord`] is proved; see [`AuditRecord::record_version`]. The number is what the
+/// admin API's audit row names it by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordVersion {
+    /// Version 1: signed singly; its own signature verifies it.
+    SignedLine = 1,
+    /// Version 2: chained and unsigned; the signed head over its links verifies it.
+    SignedHead = 2,
+}
+
+impl RecordVersion {
+    /// The number the admin API's audit row carries.
+    #[must_use]
+    pub fn number(self) -> u8 {
+        self as u8
+    }
 }
 
 mod sealed {

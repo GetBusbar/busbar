@@ -190,9 +190,7 @@ impl Durability {
         };
         let mut sealed = Vec::new();
         let mut last_node_seq = 0;
-        let mut keyed = false;
         for record in records {
-            keyed |= record.class == RecordClass::Bootstrap;
             if record.class != RecordClass::Transaction {
                 continue;
             }
@@ -201,9 +199,6 @@ impl Durability {
                 &busbar_kernel::Registration::meter_class,
             ) {
                 Ok(Some(audit)) => {
-                    if keyed && self.audit_signed_from.is_none() {
-                        self.audit_signed_from = Some(audit.chain_seq());
-                    }
                     last_node_seq = record.node_seq;
                     sealed.push(audit);
                 }
@@ -325,11 +320,7 @@ impl Durability {
         let installed = install(line, run, original.clone());
         self.record.advance(&linked);
         self.head.publish_original(head, original.as_ref());
-        let record = linked.into_record();
-        if record.key_id.is_some() && self.audit_signed_from.is_none() {
-            self.audit_signed_from = Some(record.seq);
-        }
-        self.audit_ring.push(record);
+        self.audit_ring.push(linked.into_record());
         Ok(installed)
     }
 
@@ -438,18 +429,20 @@ impl Durability {
             findings.push(format!("{broken:?}"));
         }
         let keys = keyset_of(&self.record);
+        // Each record by its version's rule: version 2 (chained, unsigned) is proved by the
+        // window's links above up to a signed head; version 1 by its own signature.
         for record in self.audit_records() {
-            let Some(key_id) = record.key_id.as_deref() else {
-                if self
-                    .audit_signed_from
-                    .is_some_and(|from| record.seq >= from)
-                {
+            let key_id = match (record.record_version(), record.key_id.as_deref()) {
+                (Some(busbar_kernel_audit::RecordVersion::SignedHead), _) => continue,
+                (Some(busbar_kernel_audit::RecordVersion::SignedLine), Some(key_id)) => key_id,
+                _ => {
                     findings.push(format!(
-                        "record {} is unsigned, sealed after the keyset was bound",
+                        "record {} carries a signature without its key or a key without its \
+                         signature",
                         record.seq
                     ));
+                    continue;
                 }
-                continue;
             };
             let verified = keys
                 .get(key_id)
