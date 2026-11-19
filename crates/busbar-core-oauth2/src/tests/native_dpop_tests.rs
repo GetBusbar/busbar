@@ -449,7 +449,12 @@ async fn a_jwt_that_is_not_a_proof_is_refused() {
     let claims = json!({
         "jti": jti(), "htm": "POST", "htu": RESOURCE, "iat": now(), "ath": ath(&access),
     });
-    for typ in [json!("JWT"), json!("at+jwt"), json!("DPOP+JWT"), json!(null)] {
+    for typ in [
+        json!("JWT"),
+        json!("at+jwt"),
+        json!("DPOP+JWT"),
+        json!(null),
+    ] {
         let mut header = json!({ "alg": "ES256", "jwk": key.public_json() });
         if !typ.is_null() {
             header["typ"] = typ.clone();

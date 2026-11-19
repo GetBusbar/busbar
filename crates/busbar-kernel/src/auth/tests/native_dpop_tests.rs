@@ -40,8 +40,7 @@ fn reads(name: &str) -> bool {
 
 fn presented<'h>(head: &'h [(&'h str, String)]) -> Presentation<'h> {
     read(
-        head.iter()
-            .map(|(name, value)| (*name, value.as_bytes())),
+        head.iter().map(|(name, value)| (*name, value.as_bytes())),
         reads,
     )
 }
@@ -127,10 +126,7 @@ fn a_dpop_presentation_without_exactly_one_proof_is_refused() {
         Presentation::Refused(Reason::NotOneProof),
         "RFC 9449 s4.3 (1): not more than one DPoP header"
     );
-    let not_text: [(&str, &[u8]); 2] = [
-        ("authorization", b"DPoP a.b.c"),
-        ("dpop", &[0xff, 0xfe]),
-    ];
+    let not_text: [(&str, &[u8]); 2] = [("authorization", b"DPoP a.b.c"), ("dpop", &[0xff, 0xfe])];
     assert_eq!(
         read(not_text.iter().copied(), reads),
         Presentation::Refused(Reason::NotOneProof)

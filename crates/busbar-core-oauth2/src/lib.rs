@@ -118,6 +118,7 @@ pub fn install<C: Connections>() {
             mount: mount::seam_mount,
             mount_operator: mount::seam_mount_operator,
             verify_dpop: plane::seam_verify_dpop,
+            prove_dpop: plane::seam_prove_dpop,
             access_standing: plane::seam_access_standing,
         },
     );

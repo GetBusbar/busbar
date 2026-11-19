@@ -440,14 +440,35 @@ impl NativeDataRoute {
             };
             let chain = &self.owners.chain;
             let audience = self.audience.as_deref();
-            // A chain that does not name `keys` refuses every core-signed token outright; one
-            // that does lets exactly that token through to core's own verifier below. A
-            // sender-constrained presentation is refused on either.
-            if chain.admits_keys() {
-                refuse_sender_bound(&snapshot, chain, cred_header)?;
-            } else {
-                refuse_bound_carriers(&snapshot, chain, cred_header)?;
-            }
+            // The sender constraint first (RFC 9449, `native_dpop::judge`): a bound token
+            // presented as a bearer is refused; a DPoP presentation is admitted to the chain only
+            // when its proof of possession is proven for this request, and then as the head's one
+            // credential, restated as a bearer for everything below; an unbound token is
+            // untouched. The proof's URL is the origin of the plane's public URL (its audience)
+            // and the path as received.
+            let snapshot = match super::native_dpop::judge(
+                binding.app(),
+                snapshot,
+                chain,
+                cred_header,
+                audience,
+            )
+            .await?
+            {
+                super::native_dpop::Sender::Proven(proven) => proven,
+                super::native_dpop::Sender::Unconstrained(snapshot) => {
+                    // A chain that does not name `keys` refuses every core-signed token
+                    // outright; one that does lets exactly that token through to core's own
+                    // verifier below. A sender-constrained presentation that reached here
+                    // unproven is refused on either.
+                    if chain.admits_keys() {
+                        refuse_sender_bound(&snapshot, chain, cred_header)?;
+                    } else {
+                        refuse_bound_carriers(&snapshot, chain, cred_header)?;
+                    }
+                    snapshot
+                }
+            };
             if let Some(audience) = audience {
                 refuse_foreign_audience(&snapshot, chain, audience)?;
             }

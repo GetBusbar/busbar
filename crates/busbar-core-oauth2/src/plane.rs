@@ -33,7 +33,7 @@ use super::signer::{Es256Key, Es256Verifier, Ps256Verifier};
 mod serve;
 pub(crate) use serve::Granted;
 
-pub(crate) use serve::{seam_access_standing, seam_verify_dpop};
+pub(crate) use serve::{seam_access_standing, seam_prove_dpop, seam_verify_dpop};
 
 pub(crate) type AsStore = super::cimd::CimdStore;
 
