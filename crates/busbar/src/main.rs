@@ -716,10 +716,7 @@ async fn run(
     let boot_guard = guard_judge.guard().clone();
     let dest = BootstrapDestJudge::new(guard_judge);
     let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
-    // Cold configuration, migration and recovery explicitly run without billable measurements.
-    // Keep the scope on the actual future: synchronous Secret resolution and every resumed
-    // native Store/Transport call inherit it before the durable measurement runtime exists.
-    let bootstrap = Box::pin(root::measurements::maintenance(async {
+    let bootstrap = Box::pin(async {
         let _connector = root::connector::boot(
             process_io.handle(),
             &root::policy::client_settings(&base_cfg.limits),
@@ -943,7 +940,7 @@ async fn run(
             effective_images,
             bootstrap_ready,
         ))
-    }))
+    })
     .await;
     let Some((
         store_admission,
@@ -1004,7 +1001,7 @@ async fn run(
     root::records_capture::configure(&deploy.records);
 
     let plugins_cfg = deploy.plugins.clone();
-    root::measurements::maintenance(root::boot::admit_recovered_plugins(&plugins_cfg))
+    root::boot::admit_recovered_plugins(&plugins_cfg)
         .await
         .unwrap_or_else(|error| die(format!("Store plugin-floor admission: {error}")));
 
@@ -1542,13 +1539,11 @@ async fn run(
     // (`governance::drain::MAX_PENDING_CHECKPOINTS`), set when the gate is built.
     let governance = app_handle.load().governance.clone();
     let budget_flusher = governance.clone().map(|gov| {
-        tokio::spawn(root::measurements::maintenance(
-            busbar_kernel::governance::run_budget_flusher(
-                gov,
-                shutdown_tx.subscribe(),
-                Some(app_handle.clone()),
-                Some(Arc::clone(&drain_clock)),
-            ),
+        tokio::spawn(busbar_kernel::governance::run_budget_flusher(
+            gov,
+            shutdown_tx.subscribe(),
+            Some(app_handle.clone()),
+            Some(Arc::clone(&drain_clock)),
         ))
     });
     let work_recovery = recovery_served.spawn_work_recovery(
@@ -1763,9 +1758,9 @@ fn spawn_predecessor_task(
         .and_then(|audit| audit.take_predecessor());
     let book = book.map(|book| Arc::clone(&book.durability));
     let task = Arc::clone(&fence);
-    let handle = tokio::spawn(root::measurements::maintenance(async move {
+    let handle = tokio::spawn(async move {
         root::durability::predecessor::run(task, sealing, book, stop).await;
-    }));
+    });
     Some((handle, fence))
 }
 

@@ -135,11 +135,7 @@ pub(crate) fn pool_posture(settings: &TransportSettings) -> PoolPosture {
 
 #[must_use]
 pub(crate) fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretFn {
-    |secret, scope| {
-        super::measurements::configuration_refresh(|| {
-            busbar_core_connector::spawn_env::linked_spawn_secret(secret, scope)
-        })
-    }
+    busbar_core_connector::spawn_env::linked_spawn_secret
 }
 
 /// THE PROCESS'S ONE CONNECTOR, built once at boot: its reactor, the destination guard, the

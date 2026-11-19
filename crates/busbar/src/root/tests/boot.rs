@@ -1145,9 +1145,6 @@ fn provider_location_reads_the_scheme_table_and_needs_the_carriers_supplier() {
     assert!(!http.secure);
 }
 
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-owner_test_sources!(boot_carrier_locate);
-
 /// COORD-STORE-C2 (live boot bug): when the MIN-3 walk opened and admitted the configured store, that admission
 /// is the boot's store admission (taken once) and the old ABI's preparation is never entered; a boot with no
 /// MIN-3 store image keeps the old path and takes nothing from the walk; a walk that reports a store it did not

@@ -8,12 +8,10 @@
 //! submodule is named for the request-path module it builds for.
 
 pub(crate) mod auth_bindings;
-pub(crate) mod dispatch;
 pub(crate) mod door_steps;
 pub(crate) mod egress_ports;
 pub(crate) mod exports;
 pub(crate) mod hooks;
-pub(crate) mod inbound;
 pub(crate) mod listener;
 pub(crate) mod model_egress;
 pub(crate) mod native_nests;

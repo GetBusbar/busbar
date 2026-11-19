@@ -2037,10 +2037,10 @@ impl BookPreparation {
             tokio::select! {
                 biased;
                 _ = stop.wait_for(|stopping| *stopping) => Err("startup stopped during boot book preparation".to_owned()),
-                result = Box::pin(super::measurements::maintenance(self.run(app, store))) => result,
+                result = Box::pin(self.run(app, store)) => result,
             }
         } else {
-            Box::pin(super::measurements::maintenance(self.run(app, store))).await
+            Box::pin(self.run(app, store)).await
         };
         match result {
             Ok(book) => Ok((book, self.node_lease_task.take())),
@@ -2073,12 +2073,10 @@ impl BookPreparation {
         // shutdown signal: a drain may outlast the lease TTL (SHUTDOWN-HANG F4 "Lease").
         // A preparation that fails still aborts the task on its way out.
         if let (Some(watch), Some(lease)) = (&self.lease_watch, self.node_lease.clone()) {
-            self.node_lease_task = Some(tokio::spawn(super::measurements::maintenance(
-                crate::refresh_node_lease(
-                    lease,
-                    super::shutdown::retire_rx(),
-                    watch.failure.clone(),
-                ),
+            self.node_lease_task = Some(tokio::spawn(crate::refresh_node_lease(
+                lease,
+                super::shutdown::retire_rx(),
+                watch.failure.clone(),
             )));
         }
         let node = self.taken.as_ref().expect("retained node result").id;
@@ -2256,7 +2254,6 @@ impl BookPreparation {
             tracing::warn!(%error,"usage correction remains retained for continuation");
         }
         super::durability::bind_amendments(shared, &app.amendments).await?;
-        super::measurements::install(app)?;
         {
             let recovered = shared.lock().unwrap_or_else(|poison| poison.into_inner());
             audit
