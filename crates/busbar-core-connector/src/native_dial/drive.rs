@@ -6,7 +6,7 @@
 //! keeps its socket, its TLS session to the target and its socket queue, and decides nothing
 //! itself about delivery, sealing, credit, the proxy or which address is tried.
 //!
-//! NOT YET DECLARED: `native_dial.rs` gains `#[path = "native_dial/drive.rs"] mod drive;` in the
+//! NOT YET DECLARED: `native_dial.rs` gains `#[path = "native_dial/drive.rs"] pub(crate) mod drive;` in the
 //! same change that gives `NativeConnection` the fields listed below and switches the four call
 //! sites. Until then the crate builds without this file.
 //!
@@ -88,7 +88,7 @@ fn fault_text(fault: Fault) -> String {
 /// How a failed attempt ended, for [`crate::outbound::redial::decide`]: read from the failure's
 /// stage, and from the far end's own reset where there was one. `began` = the transport's session
 /// had begun on this connection (a failure before that is the dial's).
-pub(super) fn ended_of(failure: &NativeFailure, far_end: Option<Ended>, began: bool) -> Ended {
+pub(crate) fn ended_of(failure: &NativeFailure, far_end: Option<Ended>, began: bool) -> Ended {
     if failure.cause.outbound {
         return Ended::Local;
     }
@@ -398,18 +398,26 @@ impl NativeConnection {
     /// the route's own judged acceptance or an exact per-destination entry, never the app-wide
     /// acceptance.
     ///
+    /// `handed_back` = the sealed values of this same head, returned by a `STREAM_BUSY` or by a
+    /// failed attempt that is being sent again: the head's fields no longer hold them, so they
+    /// are offered as they are and nothing is taken from the fields a second time.
+    ///
     /// # Errors
     /// A refusal that is the engine's own (`outbound`): unreadable sealing metadata, or a sealed
     /// value that would cross a connection in the clear. Nothing was emitted.
     pub(super) fn seal_and_encode(
         &mut self,
         head: &mut NativeHead,
+        handed_back: Option<Slots>,
         destination_accepts: bool,
     ) -> Result<SecureVec, NativeFailure> {
         if self.located.carrier == busbar_plugin_abi::plane::CARRIER_WEBSOCKET {
             crate::outbound::ws::drop_handshake_lines(&mut head.fields);
         }
-        let slots = Slots::take_from(&mut head.fields).map_err(NativeFailure::outbound)?;
+        let slots = match handed_back {
+            Some(slots) => slots,
+            None => Slots::take_from(&mut head.fields).map_err(NativeFailure::outbound)?,
+        };
         slots
             .admit(self.tls.is_some(), destination_accepts)
             .map_err(NativeFailure::outbound)?;
@@ -515,6 +523,55 @@ impl NativeConnection {
     /// the count in the call's `credit`).
     pub(super) fn reader_took(&mut self, stream: u64, len: usize) -> Option<u64> {
         self.wire.taken(stream, len as u64)
+    }
+
+    /// How much of `stream`'s request the operating system accepted, as it stands.
+    pub(crate) fn sent_state(&self, stream: u64) -> crate::outbound::delivery::State {
+        self.wire.state_of(stream)
+    }
+
+    /// How the far end itself ended `stream`, where it said so (a reset, with or without its
+    /// statement that it did not act on the stream).
+    pub(crate) fn far_end_ended(&self, stream: u64) -> Option<Ended> {
+        self.wire.ended_how(stream)
+    }
+
+    /// The transport's session has begun on this connection.
+    pub(crate) fn session_began(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// The answer's head of `stream` was handed up.
+    pub(crate) fn answered(&self, stream: u64) -> bool {
+        self.streams
+            .iter()
+            .any(|one| one.id == stream && one.answered)
+    }
+
+    /// The engine can no longer send `stream`'s head again: its sealed values are wiped now.
+    pub(crate) fn release_head(&mut self, stream: u64) {
+        self.wire.release_head(stream);
+    }
+
+    /// The engine is done with `stream` on this connection. With `resend`, its sealed values come
+    /// back rewound for the next head; the credit the stream still owed is given to the transport
+    /// so the connection's window is not left closed behind it. REPLACES the bookkeeping half of
+    /// `finish` and `reset` (which keep their `emit(E_RESET)` and their `streams` removal).
+    pub(crate) fn stream_over(&mut self, stream: u64, resend: bool) -> Option<Slots> {
+        let (slots, credit) = self.wire.over(stream, resend);
+        if let Some(count) = credit {
+            if let Some(session) = self.session.as_mut().filter(|session| session.is_live()) {
+                // `emit(stream, E_CONSUMED)` with `count` in the call's `credit`: nothing is
+                // written for it but what the transport answers (a window update).
+                if session
+                    .consumed(stream, count, std::time::Instant::now())
+                    .is_ok()
+                {
+                    let _ = self.apply_outbound();
+                }
+            }
+        }
+        slots
     }
 }
 
