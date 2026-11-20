@@ -400,9 +400,9 @@ criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/granit-parser fork revision under serde-saphyr (the settled YAML stack, DEP-3), carrying the opt-in serde_yaml-compatibility patches offered upstream. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.h2]]
-version = "0.4.20@git:45b907798147b992b03334e500fdedc8d7e29a40"
+version = "0.4.20@git:e5609a5e5dff1cccf43ff0e11c7cd758884dbe83"
 criteria = "safe-to-deploy"
-notes = "DEP-5 coordinator exemption for this exact adopted fork revision: HTTP/2 serializer attribution and release barriers retain the adopted native delivery contract. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
+notes = "DEP-5 coordinator exemption for this exact adopted fork revision (engine 2afdaf4b82, 19 Nov: the serialization-labels cohort repin of h2, hyper and hyper-util), replacing the exemption for 45b90779 it is 3 commits ahead of (14 files, +501 -743, no unsafe added): wire-stream labels on both roles, sealed header values and path places, the release hold and response binding removed, the client preface labelled. Trusted imported audits do not cover these local deltas. Source selection is the transport cohort's (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.half]]
 version = "2.7.1"
@@ -447,18 +447,18 @@ criteria = "safe-to-deploy"
 notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.hyper]]
-version = "1.12.0@git:96fc11745ef61f4b7a37a51f5484836a7807e8eb"
+version = "1.12.0@git:ba66651802c4aa70a709cfde732600e4f9bd488e"
 criteria = "safe-to-deploy"
-notes = "DEP-5 coordinator exemption for the adopted fork rebased onto hyper v1.12.0 (96fc1174), the same three commits as the earlier c140435f: 5b1c5189 plus one compile-only commit in src/proto/h1/encode.rs (chunked serialization spans read through the bytes Chain accessors); hyper manifest unchanged. Same source record as 5b1c5189 (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
+notes = "DEP-5 coordinator exemption for this exact adopted fork revision (engine 2afdaf4b82 and its follow-up, 19 Nov: the serialization-labels cohort repin of h2, hyper and hyper-util), replacing the exemption for 96fc1174 it is 5 commits ahead of (14 files, +774 -520): three infallible label calls on both roles, sealed marks on the client, no hold and no batch; Incoming carries the wire stream number and a manual receive-window release; a sealed span outside the target seals nothing further; every Encode carries its marks; in-package symlinks replaced by regular files (the only unsafe added is in tests/support/tokiort.rs, the upstream tokio adapter copied in place of its symlink, test-only). Needs want 0.3.2 (Taker::unwant). Trusted imported audits do not cover these local deltas. Source selection is the transport cohort's (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.hyper-rustls]]
 version = "0.27.9"
 criteria = "safe-to-run"
 
 [[exemptions.hyper-util]]
-version = "0.1.21@git:2abd71badaf5aefcfaf6118a87656e849fbfca64"
+version = "0.1.21@git:6008c6a4a06490b18a8c057d3944739d4a51424e"
 criteria = "safe-to-deploy"
-notes = "DEP-5 coordinator exemption for this exact adopted fork revision: Carries the same adopted serializer provenance through the connection builder. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
+notes = "DEP-5 coordinator exemption for this exact adopted fork revision (engine 2afdaf4b82, 19 Nov: the serialization-labels cohort repin of h2, hyper and hyper-util), replacing the exemption for 2abd71ba it is 1 commit ahead of (src/server/conn/auto/mod.rs, +6 -5): auto::Builder::serialization_observer renamed labels and forwards the label sink to both protocols. Trusted imported audits do not cover these local deltas. Source selection is the transport cohort's (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.idna]]
 version = "1.1.0"
